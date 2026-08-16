@@ -1,0 +1,33 @@
+name: Go CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/accorda/go.mod
+
+      - name: Check formatting
+        run: |
+          find src/accorda -name '*.go' -print0 | xargs -0 gofmt -w
+          git diff --exit-code -- src/accorda
+
+      - name: Run tests
+        run: |
+          cd src/accorda
+          go test ./...
+
+      - name: Build
+        run: |
+          cd src/accorda
+          go build ./...
