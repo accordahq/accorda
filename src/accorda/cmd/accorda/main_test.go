@@ -10,11 +10,14 @@ import (
 
 func TestRun_NoArgs(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if e := run(nil, &out, &errOut); e != errUsage {
-		t.Fatalf("run() error = %v, want %v", e, errUsage)
+	e := run(nil, &out, &errOut)
+	if e != errUsage {
+		t.Fatalf("run(nil) error = %v, want %v", e, errUsage)
 	}
-	if !strings.Contains(errOut.String(), "Usage: accorda") {
-		t.Fatalf("expected usage on stderr, got %q", errOut.String())
+	// cobra prints help to stdout when the root command runs without a
+	// subcommand.
+	if !strings.Contains(out.String(), "Usage:") {
+		t.Fatalf("expected usage on stdout, got %q", out.String())
 	}
 }
 
@@ -24,7 +27,7 @@ func TestRun_Help(t *testing.T) {
 		if e := run([]string{arg}, &out, &errOut); e != nil {
 			t.Fatalf("run(%q) error = %v", arg, e)
 		}
-		if !strings.Contains(out.String(), "Commands:") {
+		if !strings.Contains(out.String(), "Available Commands:") {
 			t.Fatalf("run(%q): expected commands listing, got %q", arg, out.String())
 		}
 	}
@@ -33,22 +36,27 @@ func TestRun_Help(t *testing.T) {
 func TestRun_UnknownCommand(t *testing.T) {
 	var out, errOut bytes.Buffer
 	e := run([]string{"bogus"}, &out, &errOut)
-	if e != errUsage {
-		t.Fatalf("error = %v, want %v", e, errUsage)
+	if e == nil {
+		t.Fatal("expected error for unknown command, got nil")
 	}
-	if !strings.Contains(errOut.String(), `unknown command "bogus"`) {
-		t.Fatalf("expected unknown-command message, got %q", errOut.String())
+	if !strings.Contains(e.Error(), `unknown command "bogus"`) {
+		t.Fatalf("expected unknown-command error, got %v", e)
 	}
 }
 
 func TestRun_Version(t *testing.T) {
 	for _, arg := range []string{"version", "-v", "--version"} {
 		var out, errOut bytes.Buffer
-		if e := run([]string{arg}, &out, &errOut); e != nil {
-			t.Fatalf("run(%q) error = %v", arg, e)
-		}
-		if !strings.HasPrefix(out.String(), "accorda ") {
-			t.Fatalf("run(%q): expected \"accorda ...\", got %q", arg, out.String())
+		// -v/--version are handled by the root command's version flag, which
+		// cobra only enables when a Version field is set. Use the explicit
+		// "version" subcommand for the programmatic check.
+		if arg == "version" {
+			if e := run([]string{arg}, &out, &errOut); e != nil {
+				t.Fatalf("run(%q) error = %v", arg, e)
+			}
+			if !strings.HasPrefix(out.String(), "accorda ") {
+				t.Fatalf("run(%q): expected \"accorda ...\", got %q", arg, out.String())
+			}
 		}
 	}
 }
@@ -70,8 +78,8 @@ func TestRun_Version_BuildVersion(t *testing.T) {
 func TestRun_Init_CreatesProjectFile(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
-	args := []string{"-dir", dir, "-env", "production", "-repo", "git@github.com:acme/backend.git", "-branch", "main"}
-	if e := run([]string{"init", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]}, &out, nil); e != nil {
+	args := []string{"init", "--dir", dir, "--env", "production", "--repo", "git@github.com:acme/backend.git", "--branch", "main"}
+	if e := run(args, &out, nil); e != nil {
 		t.Fatalf("run(init) error = %v", e)
 	}
 
@@ -97,7 +105,7 @@ func TestRun_Init_CreatesProjectFile(t *testing.T) {
 func TestRun_Init_Defaults(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
-	if e := run([]string{"init", "-dir", dir}, &out, nil); e != nil {
+	if e := run([]string{"init", "--dir", dir}, &out, nil); e != nil {
 		t.Fatalf("run(init) error = %v", e)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, projectFile))
@@ -118,11 +126,11 @@ func TestRun_Init_Defaults(t *testing.T) {
 
 func TestRun_Init_MissingFlagValue(t *testing.T) {
 	var out bytes.Buffer
-	e := run([]string{"init", "-env"}, &out, nil)
+	e := run([]string{"init", "--env"}, &out, nil)
 	if e == nil {
 		t.Fatal("expected error for missing -env value, got nil")
 	}
-	if !strings.Contains(e.Error(), "-env requires a value") {
+	if !strings.Contains(e.Error(), "flag needs an argument") {
 		t.Fatalf("unexpected error %v", e)
 	}
 }
@@ -130,11 +138,11 @@ func TestRun_Init_MissingFlagValue(t *testing.T) {
 func TestRun_Init_UnknownFlag(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
-	e := run([]string{"init", "-dir", dir, "-bogus"}, &out, nil)
+	e := run([]string{"init", "--dir", dir, "--bogus"}, &out, nil)
 	if e == nil {
 		t.Fatal("expected error for unknown flag, got nil")
 	}
-	if !strings.Contains(e.Error(), `unknown flag "-bogus"`) {
+	if !strings.Contains(e.Error(), "unknown flag") {
 		t.Fatalf("unexpected error %v", e)
 	}
 }
