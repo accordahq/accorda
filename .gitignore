@@ -1,0 +1,15 @@
+# Compiled binary
+src/accorda/accorda
+
+# Accorda project file written by `accorda init`
+src/accorda/accorda.env
+
+# Go test/coverage output
+*.out
+coverage.*
+
+# Go profiling output
+*.prof
+
+# macOS
+.DS_Store
