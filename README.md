@@ -14,10 +14,10 @@ This repository is being bootstrapped as a Go-based foundation for the Accorda O
 cd src/accorda
 go build ./cmd/accorda
 ./accorda version
-./accorda init -env production -repo git@github.com:acme/backend.git -branch main
+./accorda init --env production --repo git@github.com:acme/backend.git --branch main
 ```
 
-`accorda init` writes a minimal `accorda.env` project file in the current directory (override with `-dir <path>`). `accorda version` prints the build version, falling back to VCS revision info from the Go build.
+`accorda init` writes a minimal `accorda.env` project file in the current directory (override with `--dir <path>`). `accorda version` prints the build version, falling back to VCS revision info from the Go build. The CLI is built on [cobra](https://github.com/spf13/cobra); run `accorda --help` or `accorda <command> --help` for details.
 
 ## Project file
 
