@@ -47,16 +47,11 @@ func TestRun_UnknownCommand(t *testing.T) {
 func TestRun_Version(t *testing.T) {
 	for _, arg := range []string{"version", "-v", "--version"} {
 		var out, errOut bytes.Buffer
-		// -v/--version are handled by the root command's version flag, which
-		// cobra only enables when a Version field is set. Use the explicit
-		// "version" subcommand for the programmatic check.
-		if arg == "version" {
-			if e := run([]string{arg}, &out, &errOut); e != nil {
-				t.Fatalf("run(%q) error = %v", arg, e)
-			}
-			if !strings.HasPrefix(out.String(), "accorda ") {
-				t.Fatalf("run(%q): expected \"accorda ...\", got %q", arg, out.String())
-			}
+		if e := run([]string{arg}, &out, &errOut); e != nil {
+			t.Fatalf("run(%q) error = %v", arg, e)
+		}
+		if !strings.HasPrefix(out.String(), "accorda ") {
+			t.Fatalf("run(%q): expected \"accorda ...\", got %q", arg, out.String())
 		}
 	}
 }

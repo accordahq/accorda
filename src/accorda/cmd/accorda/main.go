@@ -46,12 +46,19 @@ func newRootCmd() *cobra.Command {
 		Short: "Accorda — GitOps reconciliation for Docker Compose",
 		Long: "Accorda is a GitOps reconciliation tool for Docker Compose\n" +
 			"deployments. See docs/ACCORDA.md for the full product specification.",
+		// Setting Version enables cobra's built-in --version/-v flag. The
+		// value is resolved lazily so it reflects build-time -ldflags and
+		// VCS fallback at runtime, mirroring the `version` subcommand.
+		Version:      versionString(),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.Help()
 			return errUsage
 		},
 	}
+	// Print "accorda <version>\n" to match the `version` subcommand output
+	// instead of cobra's default "<name> version <version>" template.
+	root.SetVersionTemplate("accorda {{.Version}}\n")
 
 	root.AddCommand(
 		newInitCmd(),
@@ -98,16 +105,23 @@ func newVersionCmd() *cobra.Command {
 // build time via -ldflags, then the VCS information embedded by the Go
 // toolchain in the build info, and finally a dev placeholder.
 func runVersion(w io.Writer) error {
+	fmt.Fprintf(w, "accorda %s\n", versionString())
+	return nil
+}
+
+// versionString resolves the version reported by both the `version`
+// subcommand and the root command's --version/-v flag. It prefers the
+// version baked in at build time via -ldflags, then the VCS information
+// embedded by the Go toolchain in the build info, and finally a dev
+// placeholder.
+func versionString() string {
 	if buildVersion != "" {
-		fmt.Fprintf(w, "accorda %s\n", buildVersion)
-		return nil
+		return buildVersion
 	}
 	if v := vcsVersion(); v != "" {
-		fmt.Fprintf(w, "accorda %s\n", v)
-		return nil
+		return v
 	}
-	fmt.Fprintln(w, "accorda dev (no version info)")
-	return nil
+	return "dev (no version info)"
 }
 
 // vcsVersion extracts a version string from the VCS data embedded in the
