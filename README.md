@@ -6,7 +6,7 @@ This repository intentionally stays focused on the OSS product and does not incl
 
 ## Project status
 
-This repository is being bootstrapped as a Go-based foundation for the Accorda OSS runtime. The CLI (`cmd/accorda`) implements the command surface from `docs/ACCORDA.md` §11 and §45; `accorda version` and `accorda init` are functional, while the reconciliation commands (`status`, `diff`, `plan`, `sync`, `history`) are wired up and report that they are not yet implemented until the backing core packages land. The unified project format and its loader (`internal/config`) are implemented; see "Project file" below.
+This repository is being bootstrapped as a Go-based foundation for the Accorda OSS runtime. The CLI (`cmd/accorda`) implements the command surface from `docs/ACCORDA.md` §11 and §45; `accorda version` and `accorda init` are functional, while the reconciliation commands (`status`, `diff`, `plan`, `sync`, `history`) are wired up and report that they are not yet implemented until the backing core packages land. The unified project format and its loader (`internal/config`) are implemented; see "Project file" below. The core abstractions from `docs/ACCORDA.md` §12 are defined: the `Target` interface (`internal/targets`), the `Source` interface (`internal/sources`), and the typed `state`, `plan`, and `health` structs (`internal/core`), with compile-time interface checks and unit tests for value semantics; see "Core interfaces" below.
 
 ## Quick start
 
@@ -46,6 +46,18 @@ health:
 ```
 
 `config.Load(dir)` reads and validates `accorda.yaml` from a directory; `config.Parse(data)` does the same for raw YAML bytes. The loader is target-agnostic (Compose, Kubernetes, and Helm target types are recognized), applies defaults for omitted optional fields, rejects unknown fields, and returns field-oriented errors for invalid configuration. See the package documentation in `src/accorda/internal/config` for the accepted fields and validation rules.
+
+## Core interfaces
+
+The core abstractions defined in `docs/ACCORDA.md` §12 are implemented so that Accorda core never depends on a specific Git host or deployment target:
+
+- `internal/core/state` — the three states Accorda reasons about: `DesiredState` (what Git declares), `DeployedState` (what Accorda successfully deployed), and `RuntimeState` (what is actually running), plus `Service` and `RuntimeService` value types. Each state has a `Clone` deep-copy method and a `Validate` method.
+- `internal/core/plan` — the `Plan` and `Action` value types that describe the concrete actions needed to reconcile desired state with a target's current state, including the target-agnostic `DriftActions` diffing helper (create, recreate, start, stop, remove, noop).
+- `internal/core/health` — the `Health` and `ServiceHealth` value types that distinguish `DEPLOYED`, `HEALTHY`, and `SYNCED` as separate outcomes, with a `Summarize` helper that derives the aggregate status from per-service results.
+- `internal/targets` — the `Target` interface (`Validate`, `Current`, `Plan`, `Apply`, `Health`) with a compile-time `Stub` implementation guarding the interface.
+- `internal/sources` — the `Source` interface (`Validate`, `Fetch`, `Desired`) with a compile-time `Stub` implementation guarding the interface.
+
+The interfaces carry no GitHub- or Docker-specific assumptions. Concrete Git and target drivers will implement these interfaces under `internal/sources`, `internal/providers`, and `internal/targets` in later milestones.
 
 ## Commands
 
@@ -99,10 +111,12 @@ The CLI implements the minimum command set from `docs/ACCORDA.md` §79 Step 6 pl
 
 Each package under `internal/` contains a `doc.go` describing its
 responsibility, matching the core and adapter boundaries defined in
-`docs/ACCORDA.md`. `internal/config` is the first package with a full
-implementation (the `accorda.yaml` loader and validator); the remaining
-adapter and core packages hold only their package documentation until their
-backing implementations land.
+`docs/ACCORDA.md`. `internal/config` implements the `accorda.yaml` loader and
+validator. The core interface packages (`internal/core/state`, `plan`, and
+`health`, and `internal/targets` and `internal/sources`) define the typed
+abstractions from §12 with compile-time interface checks and unit tests. The
+remaining adapter and core packages hold only their package documentation
+until their backing implementations land.
 
 ## Verification
 
