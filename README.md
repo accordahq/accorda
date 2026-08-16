@@ -6,7 +6,7 @@ This repository intentionally stays focused on the OSS product and does not incl
 
 ## Project status
 
-This repository is being bootstrapped as a Go-based foundation for the Accorda OSS runtime. The CLI (`cmd/accorda`) implements the command surface from `docs/ACCORDA.md` §11 and §45; `accorda version` and `accorda init` are functional, while the reconciliation commands (`status`, `diff`, `plan`, `sync`, `history`) are wired up and report that they are not yet implemented until the backing core packages land.
+This repository is being bootstrapped as a Go-based foundation for the Accorda OSS runtime. The CLI (`cmd/accorda`) implements the command surface from `docs/ACCORDA.md` §11 and §45; `accorda version` and `accorda init` are functional, while the reconciliation commands (`status`, `diff`, `plan`, `sync`, `history`) are wired up and report that they are not yet implemented until the backing core packages land. The unified project format and its loader (`internal/config`) are implemented; see "Project file" below.
 
 ## Quick start
 
@@ -18,6 +18,34 @@ go build ./cmd/accorda
 ```
 
 `accorda init` writes a minimal `accorda.env` project file in the current directory (override with `-dir <path>`). `accorda version` prints the build version, falling back to VCS revision info from the Go build.
+
+## Project file
+
+The unified Accorda project format is defined in `docs/ACCORDA.md` §8 (Docker Compose Target) and §25 (Unified Project Format) and implemented by the `internal/config` package. A project is described in an `accorda.yaml` file:
+
+```yaml
+version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+  branch: production
+  path: services/api
+target:
+  type: compose
+  file: compose.yaml
+sync:
+  interval: 30s
+images:
+  pull: changed
+reconcile:
+  drift: repair
+  remove_orphans: true
+health:
+  timeout: 120s
+```
+
+`config.Load(dir)` reads and validates `accorda.yaml` from a directory; `config.Parse(data)` does the same for raw YAML bytes. The loader is target-agnostic (Compose, Kubernetes, and Helm target types are recognized), applies defaults for omitted optional fields, rejects unknown fields, and returns field-oriented errors for invalid configuration. See the package documentation in `src/accorda/internal/config` for the accepted fields and validation rules.
 
 ## Commands
 
@@ -48,6 +76,7 @@ The CLI implements the minimum command set from `docs/ACCORDA.md` §79 Step 6 pl
 │       │   └── accorda/
 │       │       └── main.go
 │       ├── internal/
+│       │   ├── config/
 │       │   ├── core/
 │       │   │   ├── state/
 │       │   │   ├── plan/
@@ -68,9 +97,12 @@ The CLI implements the minimum command set from `docs/ACCORDA.md` §79 Step 6 pl
 └── .github/
 ```
 
-Each package under `internal/` currently contains a `doc.go` describing its
+Each package under `internal/` contains a `doc.go` describing its
 responsibility, matching the core and adapter boundaries defined in
-`docs/ACCORDA.md`. No provider or target implementation code is included yet.
+`docs/ACCORDA.md`. `internal/config` is the first package with a full
+implementation (the `accorda.yaml` loader and validator); the remaining
+adapter and core packages hold only their package documentation until their
+backing implementations land.
 
 ## Verification
 
