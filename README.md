@@ -34,6 +34,18 @@ Hello, friend! Accorda OSS is ready.
 │       │   └── accorda/
 │       │       └── main.go
 │       ├── internal/
+│       │   ├── core/
+│       │   │   ├── state/
+│       │   │   ├── plan/
+│       │   │   ├── reconcile/
+│       │   │   ├── health/
+│       │   │   ├── history/
+│       │   │   └── events/
+│       │   ├── sources/
+│       │   ├── providers/
+│       │   ├── targets/
+│       │   ├── secrets/
+│       │   ├── notifications/
 │       │   └── hello/
 │       │       ├── greet.go
 │       │       └── greet_test.go
@@ -44,6 +56,10 @@ Hello, friend! Accorda OSS is ready.
 ├── LICENSE
 └── .github/
 ```
+
+Each package under `internal/` currently contains a `doc.go` describing its
+responsibility, matching the core and adapter boundaries defined in
+`docs/ACCORDA.md`. No provider or target implementation code is included yet.
 
 ## Verification
 
