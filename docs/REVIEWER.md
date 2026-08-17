@@ -46,6 +46,46 @@ intended `APPROVE` or `REQUEST_CHANGES` recommendation in the review body.
 If a check cannot run safely without altering PR or repository state beyond
 the temporary local checkout, skip it and report the limitation.
 
+## GitHub CLI and outage handling
+
+Use `gh` for all GitHub reads and writes. Confirm flags against the installed
+`gh` version before relying on them — the review-submission flags differ from
+the older `--event` form and have caused silent failures:
+
+```bash
+# Author identity (run once per review, before submitting anything):
+gh api user --jq .login
+
+# Read-only inspection:
+gh pr view <PR> --json number,title,body,author,baseRefName,headRefName,url,commits,files,statusCheckRollup
+gh pr diff <PR>
+gh pr checks <PR>
+gh issue view <ISSUE>           # for a linked issue body when available
+
+# Submit a review. Use EXACTLY ONE of the event flags:
+gh pr review <PR> --approve     --body-file <file>   # or -b "<body>"
+gh pr review <PR> --request-changes --body-file <file>
+gh pr review <PR> --comment     --body-file <file>   # or -F <file>
+```
+
+`--event COMMENT|APPROVE|REQUEST_CHANGES` is **not** accepted by current `gh`;
+it prints `unknown flag: --event` and submits nothing. The valid short forms
+are `--approve`/`-a`, `--request-changes`/`-r`, `--comment`/`-c`, paired with
+`--body`/`-b` or `--body-file`/`-F`. Prefer `--body-file` with a temp file for
+multi-paragraph reviews to avoid shell quoting issues.
+
+Authorship rule: GitHub rejects `--approve` and `--request-changes` from the PR
+author. Always compare `gh api user --jq .login` against the PR `author.login`
+first. If they match, submit `--comment` and record the intended verdict
+(`APPROVE` or `REQUEST_CHANGES`) in the review body, as noted in the Reviewer
+boundary above.
+
+If `gh` calls fail with a transient GitHub error (e.g. 5xx), retry once or
+twice; if it keeps failing, fall back to the local branch and report PR
+metadata, CI, and any linked issue as unavailable. When `gh` is unavailable
+for the rest of the session, deliver the full review in the chat and state
+that it could not be posted to GitHub.
+
 ## Review workflow
 
 ### 1. Establish scope and intent
@@ -69,6 +109,10 @@ gh pr diff <PR>
 git diff <BASE>...<HEAD>
 rg '<symbol-or-contract>'
 ```
+
+When the user gives a PR URL, also run `gh pr view <PR> --json author,headRefName`
+and confirm the local branch matches `headRefName` before reviewing the working
+tree, so the review targets the PR head and not an unrelated checkout.
 
 ### 2. Trace system impact
 

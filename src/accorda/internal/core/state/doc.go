@@ -10,6 +10,10 @@
 // health, history) can share a single representation of state instead of each
 // package redefining its own.
 //
+// The Compare helper produces the SYNCED / OUT_OF_SYNC / DRIFTED result that
+// the reconcile loop uses to decide whether to deploy, repair drift, or do
+// nothing.
+//
 // See docs/ACCORDA.md §5 (Core Reconciliation Model) for the authoritative
 // description of these concepts.
 package state
