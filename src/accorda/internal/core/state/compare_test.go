@@ -1,6 +1,7 @@
 package state
 
 import (
+	"sort"
 	"testing"
 	"time"
 )
@@ -127,6 +128,27 @@ func TestCompare_ServiceStoppedManually_IsDrifted(t *testing.T) {
 	}
 }
 
+func TestCompare_ServicePresentButStopped_IsDrifted(t *testing.T) {
+	// The canonical §5.3 drift case: a Compose target reports a stopped
+	// container as present with an unchanged image. Compare must still
+	// detect drift via Status.
+	svcs := map[string]Service{"api": svc("api:1")}
+	cmp := Compare(
+		desired("a84fd21", svcs),
+		deployed("dep_1", "a84fd21", svcs),
+		runtime(map[string]RuntimeService{"api": {Status: "stopped", Image: "api:1"}}),
+	)
+	if cmp.Result != ResultDrifted {
+		t.Fatalf("Result = %s, want %s", cmp.Result, ResultDrifted)
+	}
+	if got := cmp.Services["api"].Result; got != ResultDrifted {
+		t.Fatalf("api: %s, want %s", got, ResultDrifted)
+	}
+	if len(cmp.Reasons) == 0 {
+		t.Fatal("expected drift reasons, got none")
+	}
+}
+
 func TestCompare_RuntimeImageDiffers_IsDrifted(t *testing.T) {
 	svcs := map[string]Service{"api": svc("api:1")}
 	cmp := Compare(
@@ -232,5 +254,57 @@ func TestResult_String(t *testing.T) {
 		if got := c.r.String(); got != c.want {
 			t.Errorf("%v.String() = %q, want %q", c.r, got, c.want)
 		}
+	}
+}
+
+func TestCompare_EnvDiffersBetweenDesiredAndDeployed_IsOutOfSync(t *testing.T) {
+	// Git changed only env, image unchanged: Accorda must still detect a
+	// needed redeploy.
+	dSvcs := map[string]Service{"api": {Image: "api:1", Env: map[string]string{"LOG_LEVEL": "debug"}}}
+	pSvcs := map[string]Service{"api": {Image: "api:1", Env: map[string]string{"LOG_LEVEL": "info"}}}
+	cmp := Compare(
+		desired("a84fd21", dSvcs),
+		deployed("dep_1", "a84fd21", pSvcs),
+		runtime(map[string]RuntimeService{"api": rsvc("api:1", "running")}),
+	)
+	if cmp.Result != ResultOutOfSync {
+		t.Fatalf("Result = %s, want %s", cmp.Result, ResultOutOfSync)
+	}
+	if got := cmp.Services["api"].Result; got != ResultOutOfSync {
+		t.Fatalf("api: %s, want %s", got, ResultOutOfSync)
+	}
+}
+
+func TestCompare_EnvEqualWhenBothNil_IsSynced(t *testing.T) {
+	svcs := map[string]Service{"api": svc("api:1")}
+	cmp := Compare(
+		desired("a84fd21", svcs),
+		deployed("dep_1", "a84fd21", svcs),
+		runtime(map[string]RuntimeService{"api": rsvc("api:1", "running")}),
+	)
+	if got := cmp.Services["api"].Result; got != ResultSynced {
+		t.Fatalf("api: %s, want %s", got, ResultSynced)
+	}
+}
+
+func TestCompare_ReasonsAreSorted(t *testing.T) {
+	// Multiple out-of-sync services produce multiple reasons; the slice
+	// must be sorted so output is deterministic across runs.
+	cmp := Compare(
+		desired("a84fd21", map[string]Service{
+			"worker": svc("worker:1"),
+			"api":    svc("api:1"),
+		}),
+		deployed("dep_1", "a84fd21", map[string]Service{}),
+		runtime(map[string]RuntimeService{}),
+	)
+	if cmp.Result != ResultOutOfSync {
+		t.Fatalf("Result = %s, want %s", cmp.Result, ResultOutOfSync)
+	}
+	if len(cmp.Reasons) < 2 {
+		t.Fatalf("expected at least 2 reasons, got %d", len(cmp.Reasons))
+	}
+	if !sort.StringsAreSorted(cmp.Reasons) {
+		t.Fatalf("Reasons not sorted: %v", cmp.Reasons)
 	}
 }

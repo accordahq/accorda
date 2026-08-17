@@ -1,6 +1,9 @@
 package state
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Result is the outcome of comparing the desired, deployed, and runtime
 // states (docs/ACCORDA.md §5). The three outcomes correspond to the three
@@ -26,6 +29,15 @@ const (
 
 // String returns the result as a stable uppercase label.
 func (r Result) String() string { return string(r) }
+
+// RunningStatus is the runtime status value that indicates a service is
+// actually running. A runtime service whose Status differs from this is
+// considered drifted even when its image matches the desired/deployed image,
+// matching the canonical drift example in docs/ACCORDA.md §5.3
+// ("docker compose stop api" → DRIFT DETECTED). Targets that report
+// stopped/exited containers as present RuntimeServices must use this status
+// for running services so that Compare can distinguish them.
+const RunningStatus = "running"
 
 // Comparison is the structured outcome of Compare. It carries the aggregate
 // Result plus the per-service and per-attribute reasons that produced it, so
@@ -67,11 +79,12 @@ func (c Comparison) String() string {
 //   - A service is SYNCED when it is present in desired and deployed with a
 //     matching commit/image and is running at runtime with a matching image.
 //   - A service is OUT_OF_SYNC when desired and deployed disagree (missing
-//     from deployed, or deployed image differs from desired). Runtime is not
-//     consulted for this determination because Accorda must deploy before it
-//     can verify runtime.
+//     from deployed, deployed image differs from desired, or deployed env
+//     differs from desired). Runtime is not consulted for this determination
+//     because Accorda must deploy before it can verify runtime.
 //   - A service is DRIFTED when desired and deployed agree but the runtime
-//     differs: the service is not running, its runtime image differs, or it
+//     differs: the service is not running (absent at runtime, or present with
+//     a Status other than RunningStatus), its runtime image differs, or it
 //     is an orphan running outside the desired set.
 //
 // The aggregate Result is the most severe outcome present, with OUT_OF_SYNC
@@ -135,6 +148,8 @@ func Compare(desired *DesiredState, deployed *DeployedState, runtime *RuntimeSta
 	default:
 		cmp.Result = ResultSynced
 	}
+	// Sort Reasons so CLI, event, and history output is deterministic.
+	sort.Strings(cmp.Reasons)
 	return cmp
 }
 
@@ -197,6 +212,11 @@ func compareService(
 			"service %q: deployed image %q != desired image %q",
 			name, psvc.Image, dsvc.Image))
 		return sc
+	case dHas && pHas && !envsEqual(dsvc.Env, psvc.Env):
+		sc.Result = ResultOutOfSync
+		sc.Reasons = append(sc.Reasons, fmt.Sprintf(
+			"service %q: deployed env != desired env", name))
+		return sc
 	}
 
 	// From here desired and deployed agree (both present with a matching
@@ -208,12 +228,20 @@ func compareService(
 		return sc
 	}
 
-	// DRIFTED: desired == deployed but runtime diverges.
+	// DRIFTED: desired == deployed but runtime diverges. A service present
+	// at runtime but with a Status other than RunningStatus is drifted
+	// (docs/ACCORDA.md §5.3: a manually stopped container is drift even
+	// when its image is unchanged).
 	switch {
 	case !rHas:
 		sc.Result = ResultDrifted
 		sc.Reasons = append(sc.Reasons, fmt.Sprintf(
 			"service %q: expected running but absent at runtime", name))
+	case rsvc.Status != RunningStatus:
+		sc.Result = ResultDrifted
+		sc.Reasons = append(sc.Reasons, fmt.Sprintf(
+			"service %q: runtime status %q != expected %q",
+			name, rsvc.Status, RunningStatus))
 	case rsvc.Image != dsvc.Image:
 		sc.Result = ResultDrifted
 		sc.Reasons = append(sc.Reasons, fmt.Sprintf(
@@ -222,4 +250,20 @@ func compareService(
 	}
 
 	return sc
+}
+
+// envsEqual reports whether two env maps contain the same key/value pairs.
+// nil and empty maps are considered equal. RuntimeService has no Env field,
+// so runtime env drift is undetectable with the current model; this helper
+// covers desired-vs-deployed env drift only.
+func envsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
 }
