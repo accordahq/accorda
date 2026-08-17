@@ -43,10 +43,10 @@ func parseComposeServices(data []byte) (map[string]state.Service, error) {
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Drop comments and trailing whitespace.
-		if i := strings.Index(line, "#"); i >= 0 {
-			line = line[:i]
-		}
+		// Drop comments and trailing whitespace. A `#` is a comment only
+		// when it starts the line or is preceded by whitespace, and not
+		// when it appears inside a quoted value (e.g. PASSWORD: "a#b").
+		line = stripComment(line)
 		trimmed := strings.TrimRight(line, " \t")
 		if strings.TrimSpace(trimmed) == "" {
 			continue
@@ -200,4 +200,56 @@ func leadingSpaces(s string) int {
 		}
 	}
 	return n
+}
+
+// stripComment removes a trailing YAML comment from s, honoring quotes. A
+// `#` starts a comment only when it begins the line or is preceded by a
+// whitespace character, and only when it is not inside a single- or
+// double-quoted region. A `#` inside a quoted value (e.g. `PASSWORD: "a#b"`)
+// is preserved.
+func stripComment(s string) string {
+	var (
+		out      strings.Builder
+		inSingle bool
+		inDouble bool
+	)
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case inSingle:
+			if r == '\'' {
+				inSingle = false
+			}
+			out.WriteRune(r)
+		case inDouble:
+			if r == '\\' && i+1 < len(runes) {
+				// Preserve an escaped character inside double quotes.
+				out.WriteRune(r)
+				i++
+				out.WriteRune(runes[i])
+				continue
+			}
+			if r == '"' {
+				inDouble = false
+			}
+			out.WriteRune(r)
+		case r == '\'':
+			inSingle = true
+			out.WriteRune(r)
+		case r == '"':
+			inDouble = true
+			out.WriteRune(r)
+		case r == '#':
+			// A comment starts when `#` is at the line start or preceded by
+			// whitespace. Otherwise it is part of an unquoted value.
+			if i == 0 || runes[i-1] == ' ' || runes[i-1] == '\t' {
+				return strings.TrimRight(out.String(), " \t")
+			}
+			out.WriteRune(r)
+		default:
+			out.WriteRune(r)
+		}
+	}
+	return strings.TrimRight(out.String(), " \t")
 }

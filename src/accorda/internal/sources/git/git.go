@@ -129,7 +129,12 @@ func (g *Git) Fetch(ctx context.Context) (sources.Commit, error) {
 // nil ref means "use the fetched HEAD".
 //
 // The desired state is read from the Compose-style services file under the
-// configured source path. The minimal parser here understands the flat
+// configured source path, at the given commit. When a non-nil ref is passed,
+// the file content is read from that commit via `git show <sha>:<path>` so the
+// returned services match the reported SHA. When ref is nil, the content is
+// read from the checked-out HEAD of the configured branch.
+//
+// The minimal parser here understands the flat
 // `services.<name>.image` and `services.<name>.environment` form shown in
 // docs/ACCORDA.md §9. If no services file is found, the returned desired
 // state still carries the repository, branch, and commit metadata so that
@@ -142,7 +147,7 @@ func (g *Git) Desired(ctx context.Context, ref *sources.Commit) (*state.DesiredS
 	if err != nil {
 		return nil, err
 	}
-	services, err := g.parseServices()
+	services, err := g.parseServices(ctx, commit.SHA)
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +213,14 @@ func (g *Git) clone(ctx context.Context, dir string) error {
 }
 
 // fetch fetches the configured branch from the origin remote.
+//
+// Only the configured branch is fetched, so only
+// refs/remotes/origin/<branch> is updated. This matches the current Source
+// contract (Fetch returns HEAD of the configured branch), but callers that
+// later ask Desired for a commit on a different branch may find that ref
+// absent or stale. Fetching additional refs would require a broader
+// `git fetch origin` here; that is deliberately avoided to keep fetches
+// cheap and scoped to the configured branch.
 func (g *Git) fetch(ctx context.Context, dir string) error {
 	args := []string{"fetch", "origin", g.Source.Branch}
 	cmd := g.command(ctx, args...)
@@ -220,18 +233,19 @@ func (g *Git) fetch(ctx context.Context, dir string) error {
 
 // checkout checks out the given branch and resets it to the fetched ref so
 // the working tree matches the remote tip.
+//
+// It uses `git checkout -B <branch> origin/<branch>` directly rather than a
+// two-step "checkout then fallback to checkout -B". The two-step form
+// swallowed the original checkout error (e.g. a dirty working tree) when the
+// fallback succeeded, hiding the real signal. The single -B form creates or
+// resets the local branch to the remote tip in one step and surfaces any
+// failure unambiguously.
 func (g *Git) checkout(ctx context.Context, dir, branch string) error {
-	// Try to check out the local branch; if it does not exist, create it
-	// tracking the remote.
-	checkout := g.command(ctx, "checkout", branch)
-	checkout.Dir = dir
-	if out, err := checkout.CombinedOutput(); err != nil {
-		create := g.command(ctx, "checkout", "-B", branch, "origin/"+branch)
-		create.Dir = dir
-		if out2, err2 := create.CombinedOutput(); err2 != nil {
-			return fmt.Errorf("git source: checkout %q: %w: %s | %s", branch, err,
-				bytes.TrimSpace(out), bytes.TrimSpace(out2))
-		}
+	create := g.command(ctx, "checkout", "-B", branch, "origin/"+branch)
+	create.Dir = dir
+	if out, err := create.CombinedOutput(); err != nil {
+		return fmt.Errorf("git source: checkout %q to origin/%s: %w: %s",
+			branch, branch, err, bytes.TrimSpace(out))
 	}
 	reset := g.command(ctx, "reset", "--hard", "origin/"+branch)
 	reset.Dir = dir
@@ -303,24 +317,57 @@ func (g *Git) commitTime(ctx context.Context, dir, ref string) (time.Time, error
 	return t.UTC(), nil
 }
 
-// parseServices reads the services file under the configured source path
-// from the checked-out working tree.
-func (g *Git) parseServices() (map[string]state.Service, error) {
+// parseServices reads the services file under the configured source path.
+// When sha is non-empty, the content is read from that commit via
+// `git show <sha>:<path>` so the returned services match the reported commit.
+// When sha is empty, the file is read from the checked-out working tree, which
+// is appropriate for the nil-ref (HEAD) case.
+func (g *Git) parseServices(ctx context.Context, sha string) (map[string]state.Service, error) {
 	path := servicesPath(g.Source.Path)
 	dir := g.cacheDir()
-	full := filepath.Join(dir, path)
-	data, err := os.ReadFile(full)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+
+	var (
+		data []byte
+		err  error
+	)
+	if sha != "" {
+		data, err = g.showFile(ctx, dir, sha, path)
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("git source: read %q: %w", path, err)
+	} else {
+		full := filepath.Join(dir, path)
+		data, err = os.ReadFile(full)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("git source: read %q: %w", path, err)
+		}
 	}
+
 	services, err := parseComposeServices(data)
 	if err != nil {
 		return nil, fmt.Errorf("git source: parse %q: %w", path, err)
 	}
 	return services, nil
+}
+
+// showFile returns the content of path as it exists at commit sha in the
+// repository rooted at dir, via `git show <sha>:<path>`.
+func (g *Git) showFile(ctx context.Context, dir, sha, path string) ([]byte, error) {
+	cmd := g.command(ctx, "show", sha+":"+path)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		// A missing path at the commit is not an error: it means no services
+		// were declared there, mirroring the worktree os.ReadFile handling.
+		if exit, ok := exitStderr(err); ok && isNotFoundExit(exit) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("git source: show %s:%s: %w: %s", sha, path, err, bytes.TrimSpace(out))
+	}
+	return out, nil
 }
 
 // command builds an exec.Cmd for git with the given args, inheriting the
@@ -345,6 +392,28 @@ func repoExists(dir string) (bool, error) {
 	}
 	_ = info
 	return true, nil
+}
+
+// exitStderr extracts the *exec.ExitError from an error returned by an
+// exec.Cmd, reporting ok=true when the command failed with a captured
+// stderr buffer. It is used to classify git command failures.
+func exitStderr(err error) (*exec.ExitError, bool) {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit, true
+	}
+	return nil, false
+}
+
+// isNotFoundExit reports whether a git exit error corresponds to a missing
+// object/path (git exit status 128 with stderr containing "does not exist"
+// or "exists on disk, but not in"). It is used to treat a missing services
+// file at a commit as an empty desired state rather than a hard error.
+func isNotFoundExit(exit *exec.ExitError) bool {
+	msg := string(exit.Stderr)
+	return strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "exists on disk, but not in") ||
+		strings.Contains(msg, "no such path")
 }
 
 // servicesPath returns the path to the services file relative to the repo

@@ -73,6 +73,82 @@ services:
 	return url, sha, branch, committedAt
 }
 
+// makeOriginRepoWithHistory creates a repository with two commits whose
+// compose.yaml differs, then returns the URL plus both commits' metadata:
+// the older (old) and the current HEAD (head). It is used to verify that
+// Desired(ref) reads content at the passed commit, not the checked-out HEAD.
+func makeOriginRepoWithHistory(t *testing.T) (url, branch string, old, head commitInfo) {
+	t.Helper()
+	gitConfig := []string{"-c", "user.name=Accorda Test", "-c", "user.email=test@accorda.dev"}
+	run := func(dir string, args ...string) string {
+		args = append(gitConfig, args...)
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	info := func(dir, ref string) commitInfo {
+		sha := run(dir, "rev-parse", ref)
+		raw := run(dir, "log", "-1", "--format=%aI", ref)
+		when, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			t.Fatalf("parse commit time %q: %v", raw, err)
+		}
+		return commitInfo{SHA: sha, Branch: "production", Time: when.UTC()}
+	}
+
+	origin := t.TempDir()
+	run(origin, "init", "--initial-branch=production")
+
+	// Commit 1: the older desired state.
+	compose1 := `
+services:
+  api:
+    image: ghcr.io/acme/api:1.8
+    environment:
+      LOG_LEVEL: info
+  redis:
+    image: redis:7
+`
+	if err := os.WriteFile(filepath.Join(origin, "compose.yaml"), []byte(compose1), 0o644); err != nil {
+		t.Fatalf("write compose.yaml: %v", err)
+	}
+	run(origin, "add", "compose.yaml")
+	run(origin, "commit", "-m", "v1")
+	old = info(origin, "HEAD")
+
+	// Commit 2: the new HEAD, with different services.
+	compose2 := `
+services:
+  api:
+    image: ghcr.io/acme/api:1.9
+    environment:
+      LOG_LEVEL: warning
+  redis:
+    image: redis:8
+`
+	if err := os.WriteFile(filepath.Join(origin, "compose.yaml"), []byte(compose2), 0o644); err != nil {
+		t.Fatalf("write compose.yaml: %v", err)
+	}
+	run(origin, "add", "compose.yaml")
+	run(origin, "commit", "-m", "v2")
+	head = info(origin, "HEAD")
+
+	branch = "production"
+	url = "file://" + origin
+	return url, branch, old, head
+}
+
+// commitInfo mirrors sources.Commit for test fixtures.
+type commitInfo struct {
+	SHA    string
+	Branch string
+	Time   time.Time
+}
+
 func TestGitSource_CloneFetchCheckoutAndHead(t *testing.T) {
 	requireGit(t)
 	url, wantSHA, wantBranch, wantTime := makeOriginRepo(t)
@@ -153,6 +229,59 @@ func TestGitSource_DesiredAtExplicitRef(t *testing.T) {
 	}
 	if ds.Commit != wantSHA {
 		t.Errorf("Desired Commit = %q, want %q", ds.Commit, wantSHA)
+	}
+}
+
+func TestGitSource_DesiredAtOlderCommit(t *testing.T) {
+	// Regression guard for PR #46 review [HIGH]: Desired(ref) must read the
+	// services file at the passed commit, not at the checked-out HEAD. The
+	// repository has two commits with different services; after Fetch
+	// (HEAD = v2), requesting the older commit (v1) must return v1 services.
+	requireGit(t)
+	url, wantBranch, old, head := makeOriginRepoWithHistory(t)
+
+	src := config.Source{Type: "git", URL: url, Branch: wantBranch}
+	g := New(src, WithCacheDir(t.TempDir()), WithBaseDir(t.TempDir()))
+
+	ctx := context.Background()
+	fetched, err := g.Fetch(ctx)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if fetched.SHA != head.SHA {
+		t.Fatalf("Fetch SHA = %q, want HEAD %q", fetched.SHA, head.SHA)
+	}
+
+	// Request the older commit explicitly.
+	ref := &sources.Commit{SHA: old.SHA, Branch: old.Branch, Time: old.Time}
+	ds, err := g.Desired(ctx, ref)
+	if err != nil {
+		t.Fatalf("Desired at older commit: %v", err)
+	}
+	if ds.Commit != old.SHA {
+		t.Errorf("Desired Commit = %q, want older %q", ds.Commit, old.SHA)
+	}
+	// The services must come from v1, not the checked-out v2 HEAD.
+	if got, want := ds.Services["api"].Image, "ghcr.io/acme/api:1.8"; got != want {
+		t.Errorf("Desired api.Image at older commit = %q, want %q", got, want)
+	}
+	if got, want := ds.Services["api"].Env["LOG_LEVEL"], "info"; got != want {
+		t.Errorf("Desired api.Env[LOG_LEVEL] at older commit = %q, want %q", got, want)
+	}
+	if got, want := ds.Services["redis"].Image, "redis:7"; got != want {
+		t.Errorf("Desired redis.Image at older commit = %q, want %q", got, want)
+	}
+
+	// Sanity: requesting HEAD via nil ref must still return v2 services.
+	dsHead, err := g.Desired(ctx, nil)
+	if err != nil {
+		t.Fatalf("Desired at HEAD: %v", err)
+	}
+	if got, want := dsHead.Services["api"].Image, "ghcr.io/acme/api:1.9"; got != want {
+		t.Errorf("Desired api.Image at HEAD = %q, want %q", got, want)
+	}
+	if got, want := dsHead.Services["redis"].Image, "redis:8"; got != want {
+		t.Errorf("Desired redis.Image at HEAD = %q, want %q", got, want)
 	}
 }
 

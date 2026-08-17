@@ -85,6 +85,56 @@ func TestParseComposeServices_EmptyInput(t *testing.T) {
 	}
 }
 
+func TestParseComposeServices_HashInQuotedValues(t *testing.T) {
+	// A `#` inside a quoted value must be preserved; a `#` preceded by
+	// whitespace starts a comment. This guards the regression called out in
+	// the PR #46 review (MEDIUM).
+	data := []byte(`services:
+  api:
+    image: "ghcr.io/acme/api:1.9#build"
+    environment:
+      PASSWORD: "a#b"
+      TOKEN: 'c#d'
+      PLAIN: e#f   # trailing comment
+`)
+	services, err := parseComposeServices(data)
+	if err != nil {
+		t.Fatalf("parseComposeServices: %v", err)
+	}
+	api := services["api"]
+	if api.Image != "ghcr.io/acme/api:1.9#build" {
+		t.Errorf("api.Image = %q, want ghcr.io/acme/api:1.9#build", api.Image)
+	}
+	if api.Env["PASSWORD"] != "a#b" {
+		t.Errorf("api.Env[PASSWORD] = %q, want a#b", api.Env["PASSWORD"])
+	}
+	if api.Env["TOKEN"] != "c#d" {
+		t.Errorf("api.Env[TOKEN] = %q, want c#d", api.Env["TOKEN"])
+	}
+	if api.Env["PLAIN"] != "e#f" {
+		t.Errorf("api.Env[PLAIN] = %q, want e#f", api.Env["PLAIN"])
+	}
+}
+
+func TestStripComment(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"image: redis:8 # comment", "image: redis:8"},
+		{"# full line comment", ""},
+		{"PASSWORD: \"a#b\"", "PASSWORD: \"a#b\""},
+		{"TOKEN: 'c#d' # trailing", "TOKEN: 'c#d'"},
+		{"image: \"x#y\"", "image: \"x#y\""},
+		{"PLAIN: e#f", "PLAIN: e#f"},
+		{"no comment here", "no comment here"},
+	}
+	for _, c := range cases {
+		if got := stripComment(c.in); got != c.want {
+			t.Errorf("stripComment(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestServicesPath(t *testing.T) {
 	cases := []struct {
 		in, want string
