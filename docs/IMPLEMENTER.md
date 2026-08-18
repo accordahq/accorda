@@ -136,10 +136,25 @@ When a reviewer leaves comments on the pull request, resolve them:
   commits to the same branch.
 - Reply to the review thread summarizing what changed so the reviewer can
   re-review without re-reading the whole diff.
-- Mark each addressed thread as resolved (e.g. `gh api graphql` with the
-  `resolveReviewThread` mutation, or the GitHub UI). Replying with a comment
-  does not resolve a thread; resolution is a separate action, and leaving
-  threads unresolved blocks the reviewer from seeing the PR as addressed.
+- Mark each addressed thread as resolved. Replying with a comment does not
+  resolve a thread; resolution is a separate action, and leaving threads
+  unresolved blocks the reviewer from seeing the PR as addressed.
+
+To keep API output small (and save tokens), fetch only the fields you need
+with `--jq`, and resolve threads in one loop:
+
+```bash
+# List thread IDs + a short body snippet (not the full body).
+gh api graphql -f query='query { repository(owner:"O", name:"R") { pullRequest(number:N) { reviewThreads(first:50) { nodes { id isResolved } } } } }' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .id'
+
+# Resolve each unresolved thread.
+for id in <thread-ids>; do
+  gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' -f id="$id" --jq '.data.resolveReviewThread.thread.isResolved'
+done
+```
+
+Prefer `--jq` over dumping full JSON; it trims the response to the fields you
+actually need and avoids re-reading large comment bodies.
 
 ## Completion and handoff
 
