@@ -146,10 +146,10 @@ modes and never resolves a thread you did not explicitly list:
 ```bash
 # List unresolved threads (id + short body snippet) so you can decide which
 # are actually addressed before resolving them.
-scripts/resolve-review-threads.sh <pr-number>
+scripts/review-threads.sh <pr-number>
 
 # Resolve only the threads you pass (copy the IDs from the list output).
-scripts/resolve-review-threads.sh resolve <pr-number> <thread-id>...
+scripts/review-threads.sh resolve <pr-number> <thread-id>...
 ```
 
 Resolve a thread only after its finding is addressed (fixed, or answered
