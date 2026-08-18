@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -197,5 +198,72 @@ func TestDriftActions_NilSafe(t *testing.T) {
 	actions := DriftActions(nil, nil, nil)
 	if len(actions) != 0 {
 		t.Fatalf("actions len = %d, want 0 for nil states", len(actions))
+	}
+}
+
+func TestDriftActions_DeterministicOrder(t *testing.T) {
+	// Multiple services must produce actions in sorted service-name order so
+	// a plan is stable regardless of Go's randomized map iteration order
+	// (docs/DECISIONS.md #12). The raw slice order is asserted, not re-sorted.
+	desired := &state.DesiredState{
+		Commit: "abc",
+		Services: map[string]state.Service{
+			"zebra":  {Image: "zebra:1"},
+			"alpha":  {Image: "alpha:1"},
+			"middle": {Image: "middle:1"},
+		},
+	}
+	actions := DriftActions(desired, nil, &state.RuntimeState{})
+	if len(actions) != 3 {
+		t.Fatalf("actions len = %d, want 3: %v", len(actions), actions)
+	}
+	want := []string{"alpha", "middle", "zebra"}
+	for i, name := range want {
+		if actions[i].Service != name {
+			t.Errorf("actions[%d].Service = %q, want %q", i, actions[i].Service, name)
+		}
+	}
+}
+
+func TestPlan_Changed(t *testing.T) {
+	noop := New("dep_1", "production", "abc", time.Unix(0, 0))
+	noop.AddAction(NoopFor("api"))
+	if noop.Changed() {
+		t.Error("Changed() = true for a plan with only Noop actions")
+	}
+
+	empty := New("dep_1", "production", "abc", time.Unix(0, 0))
+	if empty.Changed() {
+		t.Error("Changed() = true for a plan with no actions")
+	}
+
+	changed := New("dep_1", "production", "abc", time.Unix(0, 0))
+	changed.AddAction(Action{Kind: ActionRecreate, Service: "api"})
+	if !changed.Changed() {
+		t.Error("Changed() = false for a plan with a Recreate action")
+	}
+
+	var nilPlan *Plan
+	if nilPlan.Changed() {
+		t.Error("Changed() = true for a nil plan")
+	}
+}
+
+func TestPlan_String(t *testing.T) {
+	p := New("dep_1", "production", "abc", time.Unix(0, 0))
+	p.AddAction(Action{Kind: ActionRecreate, Service: "api"}).
+		AddAction(NoopFor("redis"))
+
+	got := p.String()
+	if !strings.Contains(got, "api") || !strings.Contains(got, "CHANGED") {
+		t.Errorf("String() = %q, want it to mention api as CHANGED", got)
+	}
+	if !strings.Contains(got, "redis") || !strings.Contains(got, "UNCHANGED") {
+		t.Errorf("String() = %q, want it to mention redis as UNCHANGED", got)
+	}
+
+	var nilPlan *Plan
+	if got := nilPlan.String(); !strings.Contains(got, "<nil>") {
+		t.Errorf("String() on nil plan = %q, want a nil marker", got)
 	}
 }

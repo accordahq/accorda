@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 
 	"accorda/internal/config"
+	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 	"accorda/internal/targets"
 )
@@ -343,14 +344,114 @@ func TestPlan_Apply_Health_NotImplemented(t *testing.T) {
 	cli := &fakeDockerClient{}
 	tgt := newTarget(t, path, cli)
 
-	if _, err := tgt.Plan(context.Background(), &state.DesiredState{}); !errors.Is(err, targets.ErrNotImplemented) {
-		t.Errorf("Plan err = %v, want ErrNotImplemented", err)
-	}
 	if err := tgt.Apply(context.Background(), nil); !errors.Is(err, targets.ErrNotImplemented) {
 		t.Errorf("Apply err = %v, want ErrNotImplemented", err)
 	}
 	if _, err := tgt.Health(context.Background()); !errors.Is(err, targets.ErrNotImplemented) {
 		t.Errorf("Health err = %v, want ErrNotImplemented", err)
+	}
+}
+
+func TestPlan_ComputesDesiredVsDeployedDiff(t *testing.T) {
+	// Desired declares api (changed image) and worker (new); runtime has api
+	// running an old image and an orphan. Plan must produce per-service
+	// CHANGED/UNCHANGED actions without applying anything.
+	path := writeComposeFile(t)
+	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			summary(project, "api"),
+			summary(project, "orphan"),
+		},
+		inspected: map[string]container.InspectResponse{
+			"id-api":    inspect("api:1", "running", "healthy"),
+			"id-orphan": inspect("old:1", "running", "none"),
+		},
+	}
+	tgt := newTarget(t, path, cli)
+
+	desired := &state.DesiredState{
+		Repository: "acme/infra",
+		Commit:     "abc123",
+		Services: map[string]state.Service{
+			"api":    {Image: "api:2"},
+			"worker": {Image: "worker:1"},
+		},
+	}
+	p, err := tgt.Plan(context.Background(), desired)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if p == nil {
+		t.Fatal("Plan returned nil")
+	}
+	if p.Commit != "abc123" {
+		t.Errorf("Commit = %q, want %q", p.Commit, "abc123")
+	}
+	if p.Environment != "acme/infra" {
+		t.Errorf("Environment = %q, want %q", p.Environment, "acme/infra")
+	}
+
+	kinds := map[string]plan.ActionKind{}
+	for _, a := range p.Actions {
+		kinds[a.Service] = a.Kind
+	}
+	if kinds["api"] != plan.ActionRecreate {
+		t.Errorf("api kind = %q, want %q", kinds["api"], plan.ActionRecreate)
+	}
+	if kinds["worker"] != plan.ActionCreate {
+		t.Errorf("worker kind = %q, want %q", kinds["worker"], plan.ActionCreate)
+	}
+	if kinds["orphan"] != plan.ActionRemove {
+		t.Errorf("orphan kind = %q, want %q", kinds["orphan"], plan.ActionRemove)
+	}
+	if !p.Changed() {
+		t.Error("Changed() = false, want true for a plan with changes")
+	}
+}
+
+func TestPlan_Converged_IsUnchanged(t *testing.T) {
+	// Desired and runtime agree: the plan must contain only Noop actions and
+	// report unchanged.
+	path := writeComposeFile(t)
+	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			summary(project, "api"),
+		},
+		inspected: map[string]container.InspectResponse{
+			"id-api": inspect("api:1", "running", "healthy"),
+		},
+	}
+	tgt := newTarget(t, path, cli)
+
+	desired := &state.DesiredState{
+		Repository: "acme/infra",
+		Commit:     "abc123",
+		Services:   map[string]state.Service{"api": {Image: "api:1"}},
+	}
+	p, err := tgt.Plan(context.Background(), desired)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(p.Actions) != 1 {
+		t.Fatalf("actions len = %d, want 1: %v", len(p.Actions), p.Actions)
+	}
+	if p.Actions[0].Kind != plan.ActionNoop {
+		t.Errorf("kind = %q, want %q", p.Actions[0].Kind, plan.ActionNoop)
+	}
+	if p.Changed() {
+		t.Error("Changed() = true, want false for a converged plan")
+	}
+}
+
+func TestPlan_NilDesired_IsError(t *testing.T) {
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{}
+	tgt := newTarget(t, path, cli)
+
+	if _, err := tgt.Plan(context.Background(), nil); err == nil {
+		t.Fatal("expected error for nil desired state, got nil")
 	}
 }
 

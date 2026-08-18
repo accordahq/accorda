@@ -13,8 +13,11 @@
 // and pings the Docker engine; the Current phase reads the runtime state of
 // the project's containers via the Docker engine API and maps it back to
 // Accorda service names using the Compose labels, returning a
-// state.RuntimeState (docs/ACCORDA.md §5.3). The Docker engine is reached
-// through the Docker SDK (github.com/docker/docker), confined to this adapter
-// via a dockerClient seam so core never imports it (docs/DECISIONS.md #3).
-// Plan, Apply, and Health remain stubbed until later milestones.
+// state.RuntimeState (docs/ACCORDA.md §5.3). The Plan phase computes the
+// desired-vs-deployed diff (docs/ACCORDA.md §9) by delegating to
+// plan.DriftActions, producing a per-service CHANGED/UNCHANGED plan without
+// applying it. The Docker engine is reached through the Docker SDK
+// (github.com/docker/docker), confined to this adapter via a dockerClient
+// seam so core never imports it (docs/DECISIONS.md #3). Apply and Health
+// remain stubbed until later milestones.
 package compose

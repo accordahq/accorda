@@ -2,6 +2,7 @@ package health
 
 import (
 	"fmt"
+	"maps"
 	"time"
 )
 
@@ -124,9 +125,7 @@ func (h *Health) Summarize() {
 func (h Health) Clone() Health {
 	out := h
 	out.Services = make(map[string]ServiceHealth, len(h.Services))
-	for k, v := range h.Services {
-		out.Services[k] = v
-	}
+	maps.Copy(out.Services, h.Services)
 	return out
 }
 
