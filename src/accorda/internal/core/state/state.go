@@ -32,13 +32,109 @@ type DesiredState struct {
 // Service describes a single service as declared in the desired state. It is
 // target-agnostic: a Compose service and a Kubernetes deployment both surface
 // as a Service with an image reference and environment variables.
+//
+// The fields beyond Image and Env hold the normalized service definition
+// loaded from a Docker Compose file (docs/ACCORDA.md §8): command, ports,
+// volumes, networks, labels, healthcheck, and service dependencies. Core
+// reasons about these to plan recreation and health verification; the git
+// source adapter currently populates only Image and Env, while the Compose
+// target driver populates the full set. The fields are value types or slices
+// of value types so a Service copies without aliasing mutable state.
 type Service struct {
 	// Image is the container image reference declared in Git, e.g.
 	// "ghcr.io/acme/api:2.4.1" or "ghcr.io/acme/api@sha256:91a...".
 	Image string
+	// Command is the normalized command for the service. Compose's shell
+	// form (a single string) is stored as a one-element slice; the exec
+	// form (a list) is stored verbatim.
+	Command []string
 	// Env is the environment variables declared for the service, keyed by
 	// variable name. Secret values are referenced, never inlined.
 	Env map[string]string
+	// Ports is the set of ports the service exposes, normalized from
+	// Compose's short and long forms.
+	Ports []Port
+	// Volumes is the set of volumes mounted into the service, normalized
+	// from Compose's short and long forms.
+	Volumes []Volume
+	// Networks is the set of network names the service is attached to.
+	Networks []string
+	// Labels is the set of labels applied to the service, keyed by label
+	// name.
+	Labels map[string]string
+	// Healthcheck is the service health check, if declared. A zero value
+	// means no healthcheck was declared.
+	Healthcheck Healthcheck
+	// DependsOn is the set of service names this service depends on, in
+	// declaration order.
+	DependsOn []string
+}
+
+// Port is a normalized container port mapping. Host and Container are kept as
+// strings so Compose port ranges (e.g. "8080-8085") and host bind addresses
+// round-trip without loss.
+type Port struct {
+	// HostIP is the host IP the port is published on, when specified, e.g.
+	// "127.0.0.1". Empty means all interfaces.
+	HostIP string
+	// Host is the published host port or range, e.g. "8080" or "8080-8085".
+	// Empty means the host port is assigned by the target.
+	Host string
+	// Container is the container port or range the service listens on,
+	// e.g. "8080" or "8080-8085".
+	Container string
+	// Protocol is the IP protocol, defaulting to "tcp".
+	Protocol string
+}
+
+// Volume is a normalized volume mount. Type distinguishes bind mounts,
+// named volumes, and anonymous volumes.
+type Volume struct {
+	// Type is "bind", "volume", or "tmpfs". It is inferred from the source
+	// for short-form mounts when Compose does not state it explicitly.
+	Type string
+	// Source is the host path (for binds) or named volume name. Empty for
+	// anonymous volumes.
+	Source string
+	// Target is the in-container mount path.
+	Target string
+	// ReadOnly is true when the mount is read-only.
+	ReadOnly bool
+}
+
+// Healthcheck is a normalized Compose healthcheck. It captures the fields
+// Accorda needs to wait for a service to become healthy
+// (docs/ACCORDA.md §19).
+type Healthcheck struct {
+	// Test is the normalized healthcheck command. Compose's scalar form is
+	// stored as ["CMD-SHELL", <string>]; the list form is stored verbatim.
+	// Nil when the healthcheck is disabled.
+	Test []string
+	// Interval is the time between health checks.
+	Interval time.Duration
+	// Timeout is the time a single health check may take before it fails.
+	Timeout time.Duration
+	// Retries is the number of consecutive failures before the service is
+	// considered unhealthy.
+	Retries int
+	// StartPeriod is the grace period during which health check failures
+	// do not count toward retries.
+	StartPeriod time.Duration
+	// Disable is true when the healthcheck is explicitly disabled.
+	Disable bool
+}
+
+// Clone returns a deep copy of the healthcheck so callers can mutate the copy
+// without aliasing the original.
+func (h Healthcheck) Clone() Healthcheck {
+	return Healthcheck{
+		Test:        append([]string(nil), h.Test...),
+		Interval:    h.Interval,
+		Timeout:     h.Timeout,
+		Retries:     h.Retries,
+		StartPeriod: h.StartPeriod,
+		Disable:     h.Disable,
+	}
 }
 
 // DeployedState is what Accorda has successfully deployed
@@ -127,8 +223,15 @@ func (s RuntimeState) Clone() RuntimeState {
 // Clone returns a deep copy of the service.
 func (s Service) Clone() Service {
 	return Service{
-		Image: s.Image,
-		Env:   cloneStringMap(s.Env),
+		Image:       s.Image,
+		Command:     append([]string(nil), s.Command...),
+		Env:         cloneStringMap(s.Env),
+		Ports:       clonePorts(s.Ports),
+		Volumes:     cloneVolumes(s.Volumes),
+		Networks:    append([]string(nil), s.Networks...),
+		Labels:      cloneStringMap(s.Labels),
+		Healthcheck: s.Healthcheck.Clone(),
+		DependsOn:   append([]string(nil), s.DependsOn...),
 	}
 }
 
@@ -200,4 +303,20 @@ func cloneStringMap(m map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// clonePorts returns a deep copy of p. A nil slice stays nil.
+func clonePorts(p []Port) []Port {
+	if p == nil {
+		return nil
+	}
+	return append([]Port(nil), p...)
+}
+
+// cloneVolumes returns a deep copy of v. A nil slice stays nil.
+func cloneVolumes(v []Volume) []Volume {
+	if v == nil {
+		return nil
+	}
+	return append([]Volume(nil), v...)
 }

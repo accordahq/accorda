@@ -6,7 +6,7 @@ This repository intentionally stays focused on the OSS product and does not incl
 
 ## Project status
 
-This repository is being bootstrapped as a Go-based foundation for the Accorda OSS runtime. The CLI (`cmd/accorda`) implements the command surface from `docs/ACCORDA.md` §11 and §45; `accorda version` and `accorda init` are functional, while the reconciliation commands (`status`, `diff`, `plan`, `sync`, `history`) are wired up and report that they are not yet implemented until the backing core packages land. The unified project format and its loader (`internal/config`) are implemented; see "Project file" below. The core abstractions from `docs/ACCORDA.md` §12 are defined: the `Target` interface (`internal/targets`), the `Source` interface (`internal/sources`), and the typed `state`, `plan`, and `health` structs (`internal/core`), with compile-time interface checks and unit tests for value semantics. The generic Git source adapter (`internal/sources/git`) is implemented: it clones, fetches, checks out, and returns HEAD commit metadata against any Git server over SSH or HTTPS, with no GitHub-specific calls; see "Git source" below.
+This repository is being bootstrapped as a Go-based foundation for the Accorda OSS runtime. The CLI (`cmd/accorda`) implements the command surface from `docs/ACCORDA.md` §11 and §45; `accorda version` and `accorda init` are functional, while the reconciliation commands (`status`, `diff`, `plan`, `sync`, `history`) are wired up and report that they are not yet implemented until the backing core packages land. The unified project format and its loader (`internal/config`) are implemented; see "Project file" below. The core abstractions from `docs/ACCORDA.md` §12 are defined: the `Target` interface (`internal/targets`), the `Source` interface (`internal/sources`), and the typed `state`, `plan`, and `health` structs (`internal/core`), with compile-time interface checks and unit tests for value semantics. The generic Git source adapter (`internal/sources/git`) is implemented: it clones, fetches, checks out, and returns HEAD commit metadata against any Git server over SSH or HTTPS, with no GitHub-specific calls; see "Git source" below. The Docker Compose target's load/validate phase (`internal/targets/compose`) is implemented: it parses a Compose file into Accorda's normalized service model and validates required fields; see "Compose target" below.
 
 ## Quick start
 
@@ -51,10 +51,10 @@ health:
 
 The core abstractions defined in `docs/ACCORDA.md` §12 are implemented so that Accorda core never depends on a specific Git host or deployment target:
 
-- `internal/core/state` — the three states Accorda reasons about: `DesiredState` (what Git declares), `DeployedState` (what Accorda successfully deployed), and `RuntimeState` (what is actually running), plus `Service` and `RuntimeService` value types. Each state has a `Clone` deep-copy method and a `Validate` method.
+- `internal/core/state` — the three states Accorda reasons about: `DesiredState` (what Git declares), `DeployedState` (what Accorda successfully deployed), and `RuntimeState` (what is actually running), plus `Service` and `RuntimeService` value types. `Service` carries the normalized Compose definition (image, command, env, ports, volumes, networks, labels, healthcheck, dependencies); each state has a `Clone` deep-copy method and a `Validate` method.
 - `internal/core/plan` — the `Plan` and `Action` value types that describe the concrete actions needed to reconcile desired state with a target's current state, including the target-agnostic `DriftActions` diffing helper (create, recreate, start, stop, remove, noop).
 - `internal/core/health` — the `Health` and `ServiceHealth` value types that distinguish `DEPLOYED`, `HEALTHY`, and `SYNCED` as separate outcomes, with a `Summarize` helper that derives the aggregate status from per-service results.
-- `internal/targets` — the `Target` interface (`Validate`, `Current`, `Plan`, `Apply`, `Health`) with a compile-time `Stub` implementation guarding the interface.
+- `internal/targets` — the `Target` interface (`Validate`, `Current`, `Plan`, `Apply`, `Health`) with a compile-time `Stub` implementation guarding the interface, and the `internal/targets/compose` driver implementing Compose file load/validate.
 - `internal/sources` — the `Source` interface (`Validate`, `Fetch`, `Desired`) with a compile-time `Stub` implementation guarding the interface.
 
 ## Git source
@@ -100,6 +100,15 @@ go test ./internal/sources/git/ -tags integration
 ```
 
 Provider integrations (`internal/providers`) and the remaining target drivers will build on these interfaces in later milestones.
+
+## Compose target
+
+The Docker Compose target driver (`internal/targets/compose`, `docs/ACCORDA.md` §8) loads and normalizes a Compose file into Accorda's service model. The load/validate phase is implemented: `compose.LoadFile(path)` (or `compose.Parse(data)` for raw bytes) reads the `services:` map and normalizes each service into a `state.Service` with image, command, environment, ports, volumes, networks, labels, healthcheck, and dependencies. Required fields are validated: a service must declare an image, every port needs a container port, and every volume needs a target mount. Unknown service-level keys are rejected so configuration typos surface. The remainder of the Compose driver — reading runtime state, planning, applying, and health verification — builds on the structures produced here in later milestones.
+
+```bash
+cd src/accorda
+go test ./internal/targets/compose/
+```
 
 ## Commands
 
