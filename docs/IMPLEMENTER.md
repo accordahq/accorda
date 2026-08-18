@@ -140,21 +140,16 @@ When a reviewer leaves comments on the pull request, resolve them:
   resolve a thread; resolution is a separate action, and leaving threads
   unresolved blocks the reviewer from seeing the PR as addressed.
 
-To keep API output small (and save tokens), fetch only the fields you need
-with `--jq`, and resolve threads in one loop:
+Use the bundled script to list and resolve unresolved threads in one step
+(it fetches only thread IDs via `--jq`, so output stays small):
 
 ```bash
-# List thread IDs + a short body snippet (not the full body).
-gh api graphql -f query='query { repository(owner:"O", name:"R") { pullRequest(number:N) { reviewThreads(first:50) { nodes { id isResolved } } } } }' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .id'
-
-# Resolve each unresolved thread.
-for id in <thread-ids>; do
-  gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' -f id="$id" --jq '.data.resolveReviewThread.thread.isResolved'
-done
+scripts/resolve-review-threads.sh <owner> <repo> <pr-number>
 ```
 
-Prefer `--jq` over dumping full JSON; it trims the response to the fields you
-actually need and avoids re-reading large comment bodies.
+The script resolves every unresolved thread and prints each resolved ID. If
+you need to inspect a thread's content first, query it with `--jq` to trim
+the response to the fields you need rather than dumping full JSON.
 
 ## Completion and handoff
 
