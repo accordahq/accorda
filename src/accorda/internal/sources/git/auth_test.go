@@ -45,9 +45,10 @@ func TestApplyAuth_SSHDoesNotOverrideExplicitCommand(t *testing.T) {
 	}
 }
 
-// TestApplyAuth_HTTPSEmbedsCredentials verifies that auth.type=https rewrites
-// an https URL to embed the token in the userinfo and that the token is not
-// placed on the git command line or in authEnv.
+// TestApplyAuth_HTTPSEmbedsCredentials verifies that auth.type=https
+// derives a credential-bearing remoteURL embedding the token in the
+// userinfo, while Source.URL stays clean and the token is not placed on
+// the git command line or in authEnv (docs/ACCORDA.md §18, §56).
 func TestApplyAuth_HTTPSEmbedsCredentials(t *testing.T) {
 	const token = "ghp_secrettoken"
 	g := New(config.Source{
@@ -56,11 +57,18 @@ func TestApplyAuth_HTTPSEmbedsCredentials(t *testing.T) {
 		Branch: "main",
 		Auth:   config.Auth{Type: config.AuthHTTPS, Token: token},
 	})
-	if !strings.HasPrefix(g.Source.URL, "https://") {
-		t.Fatalf("URL = %q, want https scheme", g.Source.URL)
+	if !strings.HasPrefix(g.remoteURL, "https://") {
+		t.Fatalf("remoteURL = %q, want https scheme", g.remoteURL)
 	}
-	if !strings.Contains(g.Source.URL, ":"+token+"@") {
-		t.Errorf("URL = %q, want embedded token in userinfo", g.Source.URL)
+	if !strings.Contains(g.remoteURL, ":"+token+"@") {
+		t.Errorf("remoteURL = %q, want embedded token in userinfo", g.remoteURL)
+	}
+	// Source.URL must remain the clean identifier.
+	if strings.Contains(g.Source.URL, token) {
+		t.Errorf("Source.URL leaks token: %q", g.Source.URL)
+	}
+	if g.Source.URL != "https://git.internal/acme/infra.git" {
+		t.Errorf("Source.URL = %q, want unchanged clean URL", g.Source.URL)
 	}
 	// The token must not appear in authEnv: HTTPS auth uses the URL, not env.
 	for _, e := range g.authEnv {
@@ -79,8 +87,8 @@ func TestApplyAuth_HTTPSDefaultsUser(t *testing.T) {
 		Branch: "main",
 		Auth:   config.Auth{Type: config.AuthHTTPS, Token: "tok"},
 	})
-	if !strings.Contains(g.Source.URL, "oauth2:tok@") {
-		t.Errorf("URL = %q, want oauth2 default user", g.Source.URL)
+	if !strings.Contains(g.remoteURL, "oauth2:tok@") {
+		t.Errorf("remoteURL = %q, want oauth2 default user", g.remoteURL)
 	}
 }
 
@@ -93,13 +101,13 @@ func TestApplyAuth_HTTPSPreservesExplicitUser(t *testing.T) {
 		Branch: "main",
 		Auth:   config.Auth{Type: config.AuthHTTPS, Token: "tok", Username: "ci-bot"},
 	})
-	if !strings.Contains(g.Source.URL, "ci-bot:tok@") {
-		t.Errorf("URL = %q, want explicit username ci-bot", g.Source.URL)
+	if !strings.Contains(g.remoteURL, "ci-bot:tok@") {
+		t.Errorf("remoteURL = %q, want explicit username ci-bot", g.remoteURL)
 	}
 }
 
 // TestApplyAuth_HTTPSIdempotent verifies that re-applying auth does not
-// stack userinfo segments.
+// stack userinfo segments in remoteURL and that Source.URL stays clean.
 func TestApplyAuth_HTTPSIdempotent(t *testing.T) {
 	g := New(config.Source{
 		Type:   "git",
@@ -109,13 +117,17 @@ func TestApplyAuth_HTTPSIdempotent(t *testing.T) {
 	})
 	g.applyAuth()
 	g.applyAuth()
-	if strings.Count(g.Source.URL, "@") != 1 {
-		t.Errorf("URL = %q, want exactly one @ after repeated applyAuth", g.Source.URL)
+	if strings.Count(g.remoteURL, "@") != 1 {
+		t.Errorf("remoteURL = %q, want exactly one @ after repeated applyAuth", g.remoteURL)
+	}
+	if strings.Contains(g.Source.URL, "tok") {
+		t.Errorf("Source.URL = %q, must not contain token after re-apply", g.Source.URL)
 	}
 }
 
 // TestApplyAuth_NonHTTPSURLUnchanged verifies that ssh:// and git@ URLs are
-// not rewritten by https auth.
+// not rewritten by https auth: remoteURL equals the clean Source.URL and
+// carries no token.
 func TestApplyAuth_NonHTTPSURLUnchanged(t *testing.T) {
 	cases := []string{
 		"git@git.internal:acme/infra.git",
@@ -130,7 +142,13 @@ func TestApplyAuth_NonHTTPSURLUnchanged(t *testing.T) {
 			Auth:   config.Auth{Type: config.AuthHTTPS, Token: "tok"},
 		})
 		if g.Source.URL != u {
-			t.Errorf("URL = %q, want unchanged %q", g.Source.URL, u)
+			t.Errorf("Source.URL = %q, want unchanged %q", g.Source.URL, u)
+		}
+		if g.remoteURL != u {
+			t.Errorf("remoteURL = %q, want unchanged %q", g.remoteURL, u)
+		}
+		if strings.Contains(g.remoteURL, "tok") {
+			t.Errorf("remoteURL leaks token for non-https URL: %q", g.remoteURL)
 		}
 	}
 }
@@ -221,6 +239,14 @@ func TestHTTPSURLWithCredentials(t *testing.T) {
 			want:  "https://oauth2:a%2Fb%40c@git.internal/acme/infra.git",
 			ok:    true,
 		},
+		{
+			name:  "encodes literal percent in token",
+			url:   "https://git.internal/acme/infra.git",
+			user:  "oauth2",
+			token: "abc%2F",
+			want:  "https://oauth2:abc%252F@git.internal/acme/infra.git",
+			ok:    true,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -262,8 +288,9 @@ func TestURLUser(t *testing.T) {
 // TestCommand_NoSecretsInArgs verifies that neither the SSH key path content
 // nor the HTTPS token appears as a command-line argument. The SSH key path
 // appears in GIT_SSH_COMMAND (an env var), which is acceptable; the token
-// appears only in the URL passed to git, which is the standard HTTPS auth
-// mechanism. This test guards against accidentally moving secrets into args.
+// appears only in the remote URL passed to git, which is the standard HTTPS
+// auth mechanism. This test guards against accidentally moving secrets into
+// args.
 func TestCommand_NoSecretsInArgs(t *testing.T) {
 	const token = "ghp_supersecret"
 	g := New(config.Source{
@@ -275,8 +302,9 @@ func TestCommand_NoSecretsInArgs(t *testing.T) {
 	ctx := context.Background()
 	cmd := g.command(ctx, "fetch", "origin", "main")
 	for _, a := range cmd.Args {
-		// The token legitimately appears in the remote URL when HTTPS auth
-		// is used; assert it never appears in a non-URL argument.
+		// The token legitimately appears in the credential-bearing remote
+		// URL when HTTPS auth is used; assert it never appears in a
+		// non-URL argument.
 		if a == token {
 			t.Errorf("token appears as a bare command argument: %q", a)
 		}
@@ -287,5 +315,97 @@ func TestCommand_NoSecretsInArgs(t *testing.T) {
 		if strings.Contains(e, token) {
 			t.Errorf("authEnv leaks token: %q", e)
 		}
+	}
+}
+
+// TestCloneError_NoTokenLeak verifies that a failed clone with HTTPS auth
+// does not leak the token into the returned error string. The error must
+// reference the clean Source.URL, not the credential-bearing remoteURL
+// (docs/ACCORDA.md §18, §56; review HIGH finding).
+func TestCloneError_NoTokenLeak(t *testing.T) {
+	const token = "ghp_supersecret"
+	g := New(config.Source{
+		Type:   "git",
+		URL:    "https://git.internal/acme/infra.git",
+		Branch: "main",
+		Auth:   config.Auth{Type: config.AuthHTTPS, Token: token},
+	})
+	// Use a temp dir parent so mkdir succeeds and git clone actually runs
+	// (and fails on the unreachable host). The credential URL is used
+	// internally, but the error must use the redacted Source.URL.
+	cache := t.TempDir()
+	ctx := context.Background()
+	err := g.clone(ctx, cache)
+	if err == nil {
+		t.Skip("clone unexpectedly succeeded; cannot assert leak")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Errorf("clone error leaks token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "git.internal/acme/infra.git") {
+		t.Errorf("clone error missing clean URL: %v", err)
+	}
+}
+
+// TestDesiredState_RepositoryNoToken verifies that the DesiredState produced
+// by an HTTPS-auth source carries the clean URL, not the token-embedded
+// remoteURL (docs/ACCORDA.md §18, §56; review HIGH finding).
+func TestDesiredState_RepositoryNoToken(t *testing.T) {
+	const token = "ghp_supersecret"
+	g := New(config.Source{
+		Type:   "git",
+		URL:    "https://git.internal/acme/infra.git",
+		Branch: "main",
+		Auth:   config.Auth{Type: config.AuthHTTPS, Token: token},
+	})
+	got := redactURL(g.Source.URL)
+	if strings.Contains(got, token) {
+		t.Errorf("redacted Source.URL leaks token: %q", got)
+	}
+	// Confirm the field actually used by Desired (redactURL(Source.URL)) is
+	// clean even if someone later embeds credentials in Source.URL.
+	if strings.Contains(redactURL("https://oauth2:"+token+"@git.internal/acme/infra.git"), token) {
+		t.Errorf("redactURL failed to strip userinfo containing token")
+	}
+}
+
+// TestRedactURL covers the userinfo-stripping helper.
+func TestRedactURL(t *testing.T) {
+	cases := []struct {
+		name, url, want string
+	}{
+		{
+			name: "https with userinfo",
+			url:  "https://oauth2:tok@git.internal/acme/infra.git",
+			want: "https://git.internal/acme/infra.git",
+		},
+		{
+			name: "https without userinfo",
+			url:  "https://git.internal/acme/infra.git",
+			want: "https://git.internal/acme/infra.git",
+		},
+		{
+			name: "ssh scp-like unchanged",
+			url:  "git@git.internal:acme/infra.git",
+			want: "git@git.internal:acme/infra.git",
+		},
+		{
+			name: "no scheme unchanged",
+			url:  "host/path",
+			want: "host/path",
+		},
+		{
+			name: "https user only",
+			url:  "https://git@git.internal/repo",
+			want: "https://git.internal/repo",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := redactURL(c.url)
+			if got != c.want {
+				t.Errorf("redactURL(%q) = %q, want %q", c.url, got, c.want)
+			}
+		})
 	}
 }

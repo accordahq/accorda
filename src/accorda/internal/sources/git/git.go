@@ -46,6 +46,13 @@ type Git struct {
 	// from the validated Source.Auth and is applied to every git command.
 	authEnv []string
 
+	// remoteURL is the credential-bearing remote URL used by clone/fetch.
+	// It is derived from Source.URL in applyAuth and carries embedded
+	// HTTPS userinfo (token). It is never used in error messages or
+	// exposed via DesiredState.Repository; Source.URL remains the clean,
+	// loggable identifier (docs/ACCORDA.md §18, §56).
+	remoteURL string
+
 	// git is the command used to run git. It defaults to "git" and is
 	// overridable in tests.
 	git string
@@ -59,9 +66,11 @@ type Git struct {
 //
 //   - auth.type=ssh sets GIT_SSH_COMMAND to "ssh -i <key> -o
 //     IdentitiesOnly=yes" unless WithSSHCommand overrides it.
-//   - auth.type=https records the token in the process environment only; it
-//     is never placed on the command line. The remote URL is rewritten to
-//     embed the credentials so git's HTTPS transport uses them directly.
+//   - auth.type=https embeds the token into a separate remoteURL used only
+//     by clone/fetch, so git's HTTPS transport uses it directly. Source.URL
+//     is left unchanged as the clean, loggable identifier and is used in
+//     error messages and DesiredState.Repository. The token is never placed
+//     on the command line or in error output (§18, §56).
 //
 // Secret values are never logged. Error messages reference field names, not
 // values.
@@ -207,7 +216,7 @@ func (g *Git) Desired(ctx context.Context, ref *sources.Commit) (*state.DesiredS
 		return nil, err
 	}
 	return &state.DesiredState{
-		Repository: g.Source.URL,
+		Repository: redactURL(g.Source.URL),
 		Branch:     commit.Branch,
 		Commit:     commit.SHA,
 		CommitTime: commit.Time,
@@ -250,6 +259,10 @@ func (g *Git) cacheDir() string {
 // clone clones the configured URL into dir without checking out a branch
 // yet; checkout is performed separately so the same code path is used for
 // fresh clones and existing caches.
+//
+// It uses g.remoteURL, which carries embedded HTTPS credentials when
+// auth.type=https. The error message references the clean Source.URL so
+// the token is never leaked via an error (docs/ACCORDA.md §18, §56).
 func (g *Git) clone(ctx context.Context, dir string) error {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return fmt.Errorf("git source: create cache parent: %w", err)
@@ -258,11 +271,11 @@ func (g *Git) clone(ctx context.Context, dir string) error {
 	if name == "" {
 		return fmt.Errorf("git source: invalid cache dir %q", dir)
 	}
-	args := []string{"clone", "--no-checkout", g.Source.URL, name}
+	args := []string{"clone", "--no-checkout", g.remoteURL, name}
 	cmd := g.command(ctx, args...)
 	cmd.Dir = parent
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git source: clone %q: %w: %s", g.Source.URL, err, bytes.TrimSpace(out))
+		return fmt.Errorf("git source: clone %q: %w: %s", redactURL(g.Source.URL), err, bytes.TrimSpace(out))
 	}
 	return nil
 }
@@ -448,11 +461,14 @@ func (g *Git) command(ctx context.Context, args ...string) *exec.Cmd {
 //
 // For auth.type=ssh, it sets GIT_SSH_COMMAND to point at the configured key
 // unless WithSSHCommand provided an explicit override. For auth.type=https,
-// it embeds the token into the remote URL so git's HTTPS transport uses it
-// directly; the credentials live only in the in-memory URL string and the
-// process environment passed to git, never in logs.
+// it derives a credential-bearing remoteURL from Source.URL and embeds the
+// token there so git's HTTPS transport uses it directly. Source.URL is left
+// unchanged so it remains a clean identifier for error messages and
+// DesiredState.Repository; the token lives only in remoteURL, which is used
+// solely by clone/fetch and is never logged (§18, §56).
 func (g *Git) applyAuth() {
 	g.authEnv = nil
+	g.remoteURL = g.Source.URL
 	switch g.Source.Auth.Type {
 	case config.AuthSSH:
 		key := strings.TrimSpace(g.Source.Auth.Key)
@@ -466,7 +482,7 @@ func (g *Git) applyAuth() {
 		}
 		token := g.Source.Auth.Token
 		if u, ok := httpsURLWithCredentials(g.Source.URL, user, token); ok {
-			g.Source.URL = u
+			g.remoteURL = u
 		}
 	}
 }
@@ -607,8 +623,11 @@ func urlUser(rawURL string) (string, bool) {
 
 // urlEscape percent-encodes a credential component for use in a URL
 // userinfo section, covering the reserved characters that break parsing.
+// A literal "%" is encoded first so a token like "abc%2F" is not
+// silently decoded by git into "abc/" (docs/ACCORDA.md §15).
 func urlEscape(s string) string {
 	r := strings.NewReplacer(
+		"%", "%25",
 		":", "%3A",
 		"@", "%40",
 		"/", "%2F",
@@ -616,4 +635,25 @@ func urlEscape(s string) string {
 		"?", "%3F",
 	)
 	return r.Replace(s)
+}
+
+// redactURL returns rawURL with any userinfo (credentials) removed so it is
+// safe to use in error messages, DesiredState.Repository, and other
+// loggable identifiers (docs/ACCORDA.md §18, §56). When there is no
+// userinfo, rawURL is returned unchanged.
+func redactURL(rawURL string) string {
+	i := strings.Index(rawURL, "://")
+	if i < 0 {
+		return rawURL
+	}
+	rest := rawURL[i+3:]
+	at := strings.Index(rest, "@")
+	if at < 0 {
+		return rawURL
+	}
+	// Only strip the segment before the first "/" (the authority).
+	if slash := strings.Index(rest, "/"); slash >= 0 && at > slash {
+		return rawURL
+	}
+	return rawURL[:i+3] + rest[at+1:]
 }
