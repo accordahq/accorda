@@ -255,12 +255,11 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 			} else {
 				actions = append(actions, Action{Kind: ActionCreate, Service: name, Image: dsvc.Image})
 			}
-		case rsvc.Status != state.RunningStatus:
-			// Present but stopped/exited: drift, not convergence. Mirror
-			// compareService's status check so a manually stopped service
-			// surfaces as a Start action rather than a silent Noop.
-			actions = append(actions, Action{Kind: ActionStart, Service: name, Image: dsvc.Image})
 		case rsvc.Image != dsvc.Image:
+			// Image changed: the container must be recreated with the new
+			// image, regardless of its current status. This case precedes the
+			// status check so a stopped service with a changed image is
+			// recreated rather than started with the stale image.
 			actions = append(actions, Action{
 				Kind:    ActionRecreate,
 				Service: name,
@@ -268,6 +267,12 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 				From:    rsvc.Image,
 				To:      dsvc.Image,
 			})
+		case rsvc.Status != state.RunningStatus:
+			// Present but stopped/exited with an unchanged image: drift, not
+			// convergence. Mirror compareService's status check so a manually
+			// stopped service surfaces as a Start action rather than a silent
+			// Noop.
+			actions = append(actions, Action{Kind: ActionStart, Service: name, Image: dsvc.Image})
 		default:
 			actions = append(actions, NoopFor(name))
 		}

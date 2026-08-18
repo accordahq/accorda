@@ -179,6 +179,33 @@ func TestDriftActions_StoppedService_IsStart(t *testing.T) {
 	}
 }
 
+func TestDriftActions_StoppedWithChangedImage_IsRecreate(t *testing.T) {
+	// A service that is both stopped and has a changed image must be
+	// recreated (not started), so the image change is not silently dropped.
+	// The image check must precede the status check.
+	desired := &state.DesiredState{
+		Commit: "abc",
+		Services: map[string]state.Service{
+			"api": {Image: "api:2"},
+		},
+	}
+	runtime := &state.RuntimeState{
+		Services: map[string]state.RuntimeService{
+			"api": {Status: "exited", Image: "api:1"},
+		},
+	}
+	actions := DriftActions(desired, nil, runtime)
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %d, want 1: %v", len(actions), actions)
+	}
+	if actions[0].Kind != ActionRecreate {
+		t.Errorf("kind = %q, want %q", actions[0].Kind, ActionRecreate)
+	}
+	if actions[0].From != "api:1" || actions[0].To != "api:2" {
+		t.Errorf("from/to = %q/%q, want api:1/api:2", actions[0].From, actions[0].To)
+	}
+}
+
 func TestDriftActions_NoopWhenConverged(t *testing.T) {
 	desired := &state.DesiredState{
 		Commit: "abc",
