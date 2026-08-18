@@ -63,7 +63,34 @@ The generic Git source adapter (`internal/sources/git`, `docs/ACCORDA.md` §13) 
 
 `git.New(config.Source, opts...)` constructs a source configured from `accorda.yaml`. `Validate` checks the configuration and that the `git` CLI is available without cloning. `Fetch` clones the repository into a local cache directory on first use, then fetches and checks out the configured branch on subsequent calls, returning the `Commit` (SHA, branch, authored time) that `HEAD` points to. `Desired` reads the Compose-style services file under the configured `source.path` and returns a `state.DesiredState` carrying the repository, branch, commit, and declared services.
 
-Authentication follows §15: SSH keys via `git.WithSSHCommand("ssh -i /etc/Accorda/git.key -o IdentitiesOnly=yes")` (sets `GIT_SSH_COMMAND`) and HTTPS credentials/tokens via the user's Git environment. The cache directory is configurable with `git.WithCacheDir` or derived under `git.WithBaseDir`.
+Authentication follows §15 and is configured explicitly via `source.auth` in `accorda.yaml` (or `git.WithAuth` in code):
+
+```yaml
+source:
+  type: git
+  url: ssh://git@git.internal/acme/prod.git
+  branch: production
+  auth:
+    type: ssh
+    key: /etc/Accorda/git.key
+```
+
+```yaml
+source:
+  type: git
+  url: https://git.internal/acme/infra.git
+  branch: main
+  auth:
+    type: https
+    token: ghp_personal_or_installation_token
+    username: x-access-token   # optional; defaults to "oauth2"
+```
+
+- `auth.type: ssh` sets `GIT_SSH_COMMAND` to `ssh -i <key> -o IdentitiesOnly=yes` (override with `git.WithSSHCommand`). The key material is never read or logged by Accorda.
+- `auth.type: https` embeds the token in the remote URL so Git's HTTPS transport uses it directly. Credentials are never placed on the command line or in logs.
+- An absent `auth` section means "use the ambient Git environment" (SSH agent, Git credential helpers), which remains the default for local development.
+
+The cache directory is configurable with `git.WithCacheDir` or derived under `git.WithBaseDir`.
 
 Unit tests cover the services-file parser and path/URL helpers. Integration tests (build tag `integration`, requiring the `git` executable) create a local repository, clone and check it out, and assert that `Fetch` returns the correct HEAD commit info and that `Desired` returns the declared services:
 
