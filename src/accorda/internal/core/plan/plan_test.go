@@ -151,6 +151,34 @@ func TestDriftActions_RecreateOnImageChange(t *testing.T) {
 	}
 }
 
+func TestDriftActions_StoppedService_IsStart(t *testing.T) {
+	// A service present at runtime but with a non-running status (e.g.
+	// "exited" after `docker compose stop api`) is drift, not convergence.
+	// It must surface as a Start action, mirroring compareService's status
+	// check (docs/ACCORDA.md §5.3).
+	desired := &state.DesiredState{
+		Commit: "abc",
+		Services: map[string]state.Service{
+			"api": {Image: "api:2"},
+		},
+	}
+	runtime := &state.RuntimeState{
+		Services: map[string]state.RuntimeService{
+			"api": {Status: "exited", Image: "api:2"},
+		},
+	}
+	actions := DriftActions(desired, nil, runtime)
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %d, want 1: %v", len(actions), actions)
+	}
+	if actions[0].Kind != ActionStart {
+		t.Errorf("kind = %q, want %q", actions[0].Kind, ActionStart)
+	}
+	if actions[0].Service != "api" {
+		t.Errorf("service = %q, want %q", actions[0].Service, "api")
+	}
+}
+
 func TestDriftActions_NoopWhenConverged(t *testing.T) {
 	desired := &state.DesiredState{
 		Commit: "abc",

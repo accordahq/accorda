@@ -190,11 +190,14 @@ func (t *Target) Current(ctx context.Context) (*state.RuntimeState, error) {
 // CHANGED/UNCHANGED plan without applying anything.
 //
 // Plan is safe and idempotent: it makes no changes to the target and returns
-// the same plan for the same desired and runtime states. The plan's
-// identifying fields (DeploymentID, Environment, Commit) are populated from
-// the desired state; DeploymentID is empty because the Compose target does
-// not yet assign deployment identifiers (that is the reconcile loop's
-// responsibility, docs/ACCORDA.md §7).
+// the same action set for the same desired and runtime states. The plan's
+// identifying fields are populated from the desired state: Commit is the
+// desired commit, and Environment is a stand-in holding the repository
+// because DesiredState has no environment field yet (see the TODO below).
+// DeploymentID is empty because the Compose target does not yet assign
+// deployment identifiers (that is the reconcile loop's responsibility,
+// docs/ACCORDA.md §7). CreatedAt is wall-clock time, so two runs differ only
+// in that field; the action ordering is deterministic (docs/DECISIONS.md #12).
 func (t *Target) Plan(ctx context.Context, desired *state.DesiredState) (*plan.Plan, error) {
 	if t == nil {
 		return nil, errors.New("compose target: nil target")
@@ -206,6 +209,9 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState) (*plan.P
 	if err != nil {
 		return nil, err
 	}
+	// TODO: Environment is a stand-in for the repository until DesiredState
+	// carries an environment concept; the field is documented as "the target
+	// environment the plan applies to" (docs/ACCORDA.md §31).
 	p := plan.New("", desired.Repository, desired.Commit, time.Now())
 	for _, a := range plan.DriftActions(desired, nil, runtime) {
 		p.AddAction(a)

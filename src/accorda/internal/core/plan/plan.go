@@ -219,6 +219,9 @@ func (p *Plan) String() string {
 // The comparison uses desired as the source of truth:
 //   - A service in desired but not running is created (or started if it is
 //     already deployed but stopped).
+//   - A service present at runtime but with a Status other than
+//     state.RunningStatus is started (it was stopped, e.g. "docker compose
+//     stop api", the canonical §5.3 drift example).
 //   - A service whose desired image differs from the running image is
 //     recreated.
 //   - A service running but not in desired is removed (orphan).
@@ -244,14 +247,19 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 	var actions []Action
 	for _, name := range sortedKeys(desired.Services) {
 		dsvc := desired.Services[name]
-		rsvc, running := runtime.Services[name]
+		rsvc, present := runtime.Services[name]
 		switch {
-		case !running:
+		case !present:
 			if deployedExists[name] {
 				actions = append(actions, Action{Kind: ActionStart, Service: name, Image: dsvc.Image})
 			} else {
 				actions = append(actions, Action{Kind: ActionCreate, Service: name, Image: dsvc.Image})
 			}
+		case rsvc.Status != state.RunningStatus:
+			// Present but stopped/exited: drift, not convergence. Mirror
+			// compareService's status check so a manually stopped service
+			// surfaces as a Start action rather than a silent Noop.
+			actions = append(actions, Action{Kind: ActionStart, Service: name, Image: dsvc.Image})
 		case rsvc.Image != dsvc.Image:
 			actions = append(actions, Action{
 				Kind:    ActionRecreate,
