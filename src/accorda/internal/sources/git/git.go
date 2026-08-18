@@ -116,6 +116,9 @@ func WithBaseDir(dir string) Option {
 // WithSSHCommand is kept for API compatibility. With go-git the SSH key is
 // read from Source.Auth.Key; the command string is no longer used.
 func WithSSHCommand(_ string) Option {
+	// No-op: go-git reads the SSH key from Source.Auth.Key directly, so the
+	// GIT_SSH_COMMAND string that the previous CLI-based implementation used
+	// is no longer needed. The option is retained so existing callers compile.
 	return func(*Git) {}
 }
 
@@ -298,7 +301,7 @@ func (g *Git) fetch(ctx context.Context, dir string) error {
 
 // checkout checks out the configured branch and resets the worktree to the
 // fetched remote tip.
-func (g *Git) checkout(ctx context.Context, dir, branch string) error {
+func (g *Git) checkout(_ context.Context, dir, branch string) error {
 	r, err := git.PlainOpen(dir)
 	if err != nil {
 		return fmt.Errorf("git source: open cache: %w", err)
@@ -319,7 +322,7 @@ func (g *Git) checkout(ctx context.Context, dir, branch string) error {
 }
 
 // headCommit reads the SHA, branch, and authored time of HEAD using go-git.
-func (g *Git) headCommit(ctx context.Context, dir, branch string) (sources.Commit, error) {
+func (g *Git) headCommit(_ context.Context, dir, branch string) (sources.Commit, error) {
 	r, err := git.PlainOpen(dir)
 	if err != nil {
 		return sources.Commit{}, fmt.Errorf("git source: open cache: %w", err)
@@ -408,7 +411,7 @@ func (g *Git) readServicesFile(ctx context.Context, dir, sha, path string) ([]by
 
 // readFileAtCommit reads a file's content from a specific commit's tree
 // using go-git, replacing the previous `git show <sha>:<path>` approach.
-func (g *Git) readFileAtCommit(ctx context.Context, dir, sha, path string) ([]byte, error) {
+func (g *Git) readFileAtCommit(_ context.Context, dir, sha, path string) ([]byte, error) {
 	r, err := git.PlainOpen(dir)
 	if err != nil {
 		return nil, fmt.Errorf("git source: open cache: %w", err)
