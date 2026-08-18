@@ -3,6 +3,8 @@ package plan
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"accorda/internal/core/state"
@@ -173,6 +175,42 @@ func (p *Plan) Clone() *Plan {
 	return out
 }
 
+// Changed reports whether the plan contains any action that changes the
+// target. A plan with only Noop actions (or no actions at all) is unchanged.
+func (p *Plan) Changed() bool {
+	if p == nil {
+		return false
+	}
+	for _, a := range p.Actions {
+		if a.Kind != ActionNoop {
+			return true
+		}
+	}
+	return false
+}
+
+// String returns a human-readable summary of the plan suitable for CLI
+// output (docs/ACCORDA.md §9, §11). It lists each service with its action
+// kind, using the CHANGED/UNCHANGED vocabulary from §9 so a plan can be
+// shown as a per-service diff. The output is deterministic because Actions
+// are produced in sorted service order.
+func (p *Plan) String() string {
+	if p == nil {
+		return "plan: <nil>"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "deployment=%s environment=%s commit=%s\n", p.DeploymentID, p.Environment, p.Commit)
+	for _, a := range p.Actions {
+		switch a.Kind {
+		case ActionNoop:
+			fmt.Fprintf(&b, "%-12s %s\n", a.Service, "UNCHANGED")
+		default:
+			fmt.Fprintf(&b, "%-12s %s\n", a.Service, "CHANGED")
+		}
+	}
+	return b.String()
+}
+
 // DriftActions computes the actions needed to reconcile desired against
 // runtime and deployed. It is the pure, target-agnostic diffing logic shared
 // by all target drivers: a target's Plan method produces the desired and
@@ -181,6 +219,9 @@ func (p *Plan) Clone() *Plan {
 // The comparison uses desired as the source of truth:
 //   - A service in desired but not running is created (or started if it is
 //     already deployed but stopped).
+//   - A service present at runtime but with a Status other than
+//     state.RunningStatus is started (it was stopped, e.g. "docker compose
+//     stop api", the canonical §5.3 drift example).
 //   - A service whose desired image differs from the running image is
 //     recreated.
 //   - A service running but not in desired is removed (orphan).
@@ -199,17 +240,26 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 		}
 	}
 
+	// Iterate service names in sorted order so the returned action slice is
+	// deterministic regardless of Go's randomized map iteration order. A
+	// plan is intended to be hashed and signed (docs/ACCORDA.md §31), so its
+	// action order must be stable (docs/DECISIONS.md #12).
 	var actions []Action
-	for name, dsvc := range desired.Services {
-		rsvc, running := runtime.Services[name]
+	for _, name := range sortedKeys(desired.Services) {
+		dsvc := desired.Services[name]
+		rsvc, present := runtime.Services[name]
 		switch {
-		case !running:
+		case !present:
 			if deployedExists[name] {
 				actions = append(actions, Action{Kind: ActionStart, Service: name, Image: dsvc.Image})
 			} else {
 				actions = append(actions, Action{Kind: ActionCreate, Service: name, Image: dsvc.Image})
 			}
 		case rsvc.Image != dsvc.Image:
+			// Image changed: the container must be recreated with the new
+			// image, regardless of its current status. This case precedes the
+			// status check so a stopped service with a changed image is
+			// recreated rather than started with the stale image.
 			actions = append(actions, Action{
 				Kind:    ActionRecreate,
 				Service: name,
@@ -217,14 +267,31 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 				From:    rsvc.Image,
 				To:      dsvc.Image,
 			})
+		case rsvc.Status != state.RunningStatus:
+			// Present but stopped/exited with an unchanged image: drift, not
+			// convergence. Mirror compareService's status check so a manually
+			// stopped service surfaces as a Start action rather than a silent
+			// Noop.
+			actions = append(actions, Action{Kind: ActionStart, Service: name, Image: dsvc.Image})
 		default:
 			actions = append(actions, NoopFor(name))
 		}
 	}
-	for name, rsvc := range runtime.Services {
+	for _, name := range sortedKeys(runtime.Services) {
 		if _, ok := desired.Services[name]; !ok {
-			actions = append(actions, Action{Kind: ActionRemove, Service: name, Image: rsvc.Image})
+			actions = append(actions, Action{Kind: ActionRemove, Service: name, Image: runtime.Services[name].Image})
 		}
 	}
 	return actions
+}
+
+// sortedKeys returns the keys of m in sorted order. It is used to make plan
+// action ordering deterministic (docs/DECISIONS.md #12).
+func sortedKeys[V any](m map[string]V) []string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

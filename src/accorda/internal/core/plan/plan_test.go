@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -150,6 +151,61 @@ func TestDriftActions_RecreateOnImageChange(t *testing.T) {
 	}
 }
 
+func TestDriftActions_StoppedService_IsStart(t *testing.T) {
+	// A service present at runtime but with a non-running status (e.g.
+	// "exited" after `docker compose stop api`) is drift, not convergence.
+	// It must surface as a Start action, mirroring compareService's status
+	// check (docs/ACCORDA.md §5.3).
+	desired := &state.DesiredState{
+		Commit: "abc",
+		Services: map[string]state.Service{
+			"api": {Image: "api:2"},
+		},
+	}
+	runtime := &state.RuntimeState{
+		Services: map[string]state.RuntimeService{
+			"api": {Status: "exited", Image: "api:2"},
+		},
+	}
+	actions := DriftActions(desired, nil, runtime)
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %d, want 1: %v", len(actions), actions)
+	}
+	if actions[0].Kind != ActionStart {
+		t.Errorf("kind = %q, want %q", actions[0].Kind, ActionStart)
+	}
+	if actions[0].Service != "api" {
+		t.Errorf("service = %q, want %q", actions[0].Service, "api")
+	}
+}
+
+func TestDriftActions_StoppedWithChangedImage_IsRecreate(t *testing.T) {
+	// A service that is both stopped and has a changed image must be
+	// recreated (not started), so the image change is not silently dropped.
+	// The image check must precede the status check.
+	desired := &state.DesiredState{
+		Commit: "abc",
+		Services: map[string]state.Service{
+			"api": {Image: "api:2"},
+		},
+	}
+	runtime := &state.RuntimeState{
+		Services: map[string]state.RuntimeService{
+			"api": {Status: "exited", Image: "api:1"},
+		},
+	}
+	actions := DriftActions(desired, nil, runtime)
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %d, want 1: %v", len(actions), actions)
+	}
+	if actions[0].Kind != ActionRecreate {
+		t.Errorf("kind = %q, want %q", actions[0].Kind, ActionRecreate)
+	}
+	if actions[0].From != "api:1" || actions[0].To != "api:2" {
+		t.Errorf("from/to = %q/%q, want api:1/api:2", actions[0].From, actions[0].To)
+	}
+}
+
 func TestDriftActions_NoopWhenConverged(t *testing.T) {
 	desired := &state.DesiredState{
 		Commit: "abc",
@@ -197,5 +253,72 @@ func TestDriftActions_NilSafe(t *testing.T) {
 	actions := DriftActions(nil, nil, nil)
 	if len(actions) != 0 {
 		t.Fatalf("actions len = %d, want 0 for nil states", len(actions))
+	}
+}
+
+func TestDriftActions_DeterministicOrder(t *testing.T) {
+	// Multiple services must produce actions in sorted service-name order so
+	// a plan is stable regardless of Go's randomized map iteration order
+	// (docs/DECISIONS.md #12). The raw slice order is asserted, not re-sorted.
+	desired := &state.DesiredState{
+		Commit: "abc",
+		Services: map[string]state.Service{
+			"zebra":  {Image: "zebra:1"},
+			"alpha":  {Image: "alpha:1"},
+			"middle": {Image: "middle:1"},
+		},
+	}
+	actions := DriftActions(desired, nil, &state.RuntimeState{})
+	if len(actions) != 3 {
+		t.Fatalf("actions len = %d, want 3: %v", len(actions), actions)
+	}
+	want := []string{"alpha", "middle", "zebra"}
+	for i, name := range want {
+		if actions[i].Service != name {
+			t.Errorf("actions[%d].Service = %q, want %q", i, actions[i].Service, name)
+		}
+	}
+}
+
+func TestPlan_Changed(t *testing.T) {
+	noop := New("dep_1", "production", "abc", time.Unix(0, 0))
+	noop.AddAction(NoopFor("api"))
+	if noop.Changed() {
+		t.Error("Changed() = true for a plan with only Noop actions")
+	}
+
+	empty := New("dep_1", "production", "abc", time.Unix(0, 0))
+	if empty.Changed() {
+		t.Error("Changed() = true for a plan with no actions")
+	}
+
+	changed := New("dep_1", "production", "abc", time.Unix(0, 0))
+	changed.AddAction(Action{Kind: ActionRecreate, Service: "api"})
+	if !changed.Changed() {
+		t.Error("Changed() = false for a plan with a Recreate action")
+	}
+
+	var nilPlan *Plan
+	if nilPlan.Changed() {
+		t.Error("Changed() = true for a nil plan")
+	}
+}
+
+func TestPlan_String(t *testing.T) {
+	p := New("dep_1", "production", "abc", time.Unix(0, 0))
+	p.AddAction(Action{Kind: ActionRecreate, Service: "api"}).
+		AddAction(NoopFor("redis"))
+
+	got := p.String()
+	if !strings.Contains(got, "api") || !strings.Contains(got, "CHANGED") {
+		t.Errorf("String() = %q, want it to mention api as CHANGED", got)
+	}
+	if !strings.Contains(got, "redis") || !strings.Contains(got, "UNCHANGED") {
+		t.Errorf("String() = %q, want it to mention redis as UNCHANGED", got)
+	}
+
+	var nilPlan *Plan
+	if got := nilPlan.String(); !strings.Contains(got, "<nil>") {
+		t.Errorf("String() on nil plan = %q, want a nil marker", got)
 	}
 }

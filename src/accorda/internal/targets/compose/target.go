@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 
@@ -37,9 +38,11 @@ var _ targets.Target = (*Target)(nil)
 //   - Current reads the runtime state of the project's containers and maps
 //     them back to Accorda service names via the Compose labels, returning a
 //     state.RuntimeState. It makes no changes.
+//   - Plan computes the desired-vs-deployed diff (docs/ACCORDA.md §9) by
+//     reading the runtime state and delegating to plan.DriftActions,
+//     producing a per-service CHANGED/UNCHANGED plan without applying it.
 //
-// Plan, Apply, and Health return targets.ErrNotImplemented until later
-// milestones.
+// Apply and Health return targets.ErrNotImplemented until later milestones.
 type Target struct {
 	// file is the Compose file path resolved from config.Target (File, or
 	// Path when File is empty).
@@ -181,10 +184,39 @@ func (t *Target) Current(ctx context.Context) (*state.RuntimeState, error) {
 }
 
 // Plan computes the deployment plan that reconciles desired state with the
-// target's current state. Not yet implemented (docs/ACCORDA.md §6 plan phase;
-// tracked by issue #10).
-func (t *Target) Plan(_ context.Context, _ *state.DesiredState) (*plan.Plan, error) {
-	return nil, targets.ErrNotImplemented
+// target's current state (docs/ACCORDA.md §6 plan phase, §9, §12). It reads
+// the runtime state via Current and delegates the desired-vs-deployed diff to
+// the target-agnostic plan.DriftActions helper, producing a per-service
+// CHANGED/UNCHANGED plan without applying anything.
+//
+// Plan is safe and idempotent: it makes no changes to the target and returns
+// the same action set for the same desired and runtime states. The plan's
+// identifying fields are populated from the desired state: Commit is the
+// desired commit, and Environment is a stand-in holding the repository
+// because DesiredState has no environment field yet (see the TODO below).
+// DeploymentID is empty because the Compose target does not yet assign
+// deployment identifiers (that is the reconcile loop's responsibility,
+// docs/ACCORDA.md §7). CreatedAt is wall-clock time, so two runs differ only
+// in that field; the action ordering is deterministic (docs/DECISIONS.md #12).
+func (t *Target) Plan(ctx context.Context, desired *state.DesiredState) (*plan.Plan, error) {
+	if t == nil {
+		return nil, errors.New("compose target: nil target")
+	}
+	if desired == nil {
+		return nil, errors.New("compose target: desired state is nil")
+	}
+	runtime, err := t.Current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// TODO: Environment is a stand-in for the repository until DesiredState
+	// carries an environment concept; the field is documented as "the target
+	// environment the plan applies to" (docs/ACCORDA.md §31).
+	p := plan.New("", desired.Repository, desired.Commit, time.Now())
+	for _, a := range plan.DriftActions(desired, nil, runtime) {
+		p.AddAction(a)
+	}
+	return p, nil
 }
 
 // Apply applies the given plan to the target. Not yet implemented

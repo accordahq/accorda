@@ -323,14 +323,40 @@ label into a `state.RuntimeState`. Health is part of runtime state
 runtime state would require a spec change that `docs/ACCORDA.md` does not
 currently authorize. The project name is derived from the Compose file's
 directory basename (matching Compose v2's heuristic) and normalized to match
-the label; `WithProjectName` overrides it for explicit config. `Plan`,
-`Apply`, and `Health` remain `ErrNotImplemented` until later milestones.
+the label; `WithProjectName` overrides it for explicit config. `Apply` and
+`Health` remain `ErrNotImplemented` until later milestones.
 
 **Consequence.** Runtime state is read back without shelling out to
 `docker compose ps`; the Docker SDK is the second adapter-specific runtime
 dependency (after compose-go for parsing). Tests use a fake `dockerClient` so
 no running daemon is required. The dependency is Apache-2.0 (permissive) and
 is recorded in the #14 license table.
+
+### 16. Compose plan generation delegates to plan.DriftActions
+
+**Context.** Issue #10 (§9, §12) requires the Compose target's `Plan` method
+to produce a per-service `CHANGED`/`UNCHANGED` desired-vs-deployed diff that
+is safe and idempotent. The diffing logic already exists as the
+target-agnostic `plan.DriftActions` helper (create, recreate, start, stop,
+remove, noop), which the spec's §12 abstraction expects every target to
+reuse rather than reimplement.
+
+**Decision.** `Target.Plan` reads the runtime state via `Current` and
+delegates the diff to `plan.DriftActions(desired, nil, runtime)`, wrapping
+the resulting actions in a `plan.Plan` whose identifying fields are populated
+from the desired state (`Environment` = repository, `Commit` = commit;
+`DeploymentID` is left empty because deployment identifiers are assigned by
+the reconcile loop, docs/ACCORDA.md §7). `DriftActions` now iterates service
+names in sorted order so the action slice is deterministic regardless of Go's
+randomized map iteration order, honoring the determinism contract
+(docs/DECISIONS.md #12) that plan hashing and signing depend on. `Plan`
+gains `Changed()` (true when any action is not a noop) and `String()` (a
+per-service `CHANGED`/`UNCHANGED` summary) for CLI output.
+
+**Consequence.** The Compose target's plan phase is implemented without
+duplicating diff logic; the same `DriftActions` helper will serve future
+targets. Plan output is deterministic and human-readable, ready for the
+`accorda plan` CLI command (issue #26) and eventual hashing/signing (§31).
 
 <!-- Add new decisions here. Format:
 ### N. Short title
