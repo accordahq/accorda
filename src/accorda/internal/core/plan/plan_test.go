@@ -127,6 +127,38 @@ func TestDriftActions_StartStoppedDeployedService(t *testing.T) {
 	}
 }
 
+func TestDriftActions_RecreateOnConfigChange(t *testing.T) {
+	// A service whose image is unchanged but whose configuration hash differs
+	// (e.g. command changed) must be recreated, not treated as a noop
+	// (docs/ACCORDA.md §10).
+	desired := &state.DesiredState{
+		Commit: "abc",
+		Services: map[string]state.Service{
+			"api": {Image: "api:1", Command: []string{"./api", "--port", "8080"}},
+		},
+	}
+	deployed := &state.DeployedState{
+		DeploymentID: "dep_1",
+		Commit:       "abc",
+		Services:     map[string]state.Service{"api": {Image: "api:1", Command: []string{"./api", "--port", "9090"}}},
+	}
+	runtime := &state.RuntimeState{
+		Services: map[string]state.RuntimeService{
+			"api": {Status: "running", Image: "api:1"},
+		},
+	}
+	actions := DriftActions(desired, deployed, runtime)
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %d, want 1: %v", len(actions), actions)
+	}
+	if actions[0].Kind != ActionRecreate {
+		t.Errorf("kind = %q, want %q", actions[0].Kind, ActionRecreate)
+	}
+	if actions[0].Service != "api" {
+		t.Errorf("service = %q, want %q", actions[0].Service, "api")
+	}
+}
+
 func TestDriftActions_RecreateOnImageChange(t *testing.T) {
 	desired := &state.DesiredState{
 		Commit: "abc",

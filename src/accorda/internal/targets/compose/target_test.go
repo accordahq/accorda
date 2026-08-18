@@ -399,7 +399,7 @@ func TestPlan_ComputesDesiredVsDeployedDiff(t *testing.T) {
 			"worker": {Image: "worker:1"},
 		},
 	}
-	p, err := tgt.Plan(context.Background(), desired)
+	p, err := tgt.Plan(context.Background(), desired, nil)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestPlan_Converged_IsUnchanged(t *testing.T) {
 		Commit:     "abc123",
 		Services:   map[string]state.Service{"api": {Image: "api:1"}},
 	}
-	p, err := tgt.Plan(context.Background(), desired)
+	p, err := tgt.Plan(context.Background(), desired, nil)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestPlan_NilDesired_IsError(t *testing.T) {
 	cli := &fakeDockerClient{}
 	tgt := newTarget(t, path, cli)
 
-	if _, err := tgt.Plan(context.Background(), nil); err == nil {
+	if _, err := tgt.Plan(context.Background(), nil, nil); err == nil {
 		t.Fatal("expected error for nil desired state, got nil")
 	}
 }

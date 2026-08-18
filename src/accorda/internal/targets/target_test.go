@@ -25,7 +25,7 @@ func TestStub_SatisfiesTarget(t *testing.T) {
 	if rs, err := tgt.Current(ctx); !errors.Is(err, ErrNotImplemented) || rs != nil {
 		t.Errorf("Current: rs=%v err=%v, want nil, ErrNotImplemented", rs, err)
 	}
-	if p, err := tgt.Plan(ctx, desired); !errors.Is(err, ErrNotImplemented) || p != nil {
+	if p, err := tgt.Plan(ctx, desired, nil); !errors.Is(err, ErrNotImplemented) || p != nil {
 		t.Errorf("Plan: p=%v err=%v, want nil, ErrNotImplemented", p, err)
 	}
 	if err := tgt.Apply(ctx, &plan.Plan{}); !errors.Is(err, ErrNotImplemented) {
