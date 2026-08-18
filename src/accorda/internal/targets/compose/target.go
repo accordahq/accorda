@@ -127,20 +127,21 @@ func (t *Target) Validate(ctx context.Context) error {
 // Current returns the runtime state of the Compose project's containers
 // (docs/ACCORDA.md §5.3). It lists all containers carrying the project's
 // com.docker.compose.project label (including stopped ones, so a manually
-// stopped service surfaces as drift rather than being hidden) and maps each
-// container's state and image back to Accorda service names via the
-// com.docker.compose.service label.
+// stopped service surfaces as drift rather than being hidden), inspects
+// each for its state and health, and maps the results back to Accorda
+// service names via the com.docker.compose.service label.
 //
 // Current makes no changes to the target. A service present in the desired
 // state but absent from the returned RuntimeState is drifted (stopped or
 // removed); a service present with a Status other than state.RunningStatus
 // is drifted (docs/ACCORDA.md §5.3, docs/DECISIONS.md #3).
 //
-// Current reads state from the single ContainerList response (Summary.State
-// and Summary.Image), so it issues exactly one Docker API call regardless of
-// fleet size. Health is not part of runtime state here: it is a distinct
-// concern (docs/ACCORDA.md §19) reported by the Health method, which is
-// tracked separately (issue #15).
+// Health is part of runtime state (docs/ACCORDA.md §5.3, issue #9), so
+// Current inspects each container to read its healthcheck status. This is an
+// N+1 pattern against the Docker API; it is accepted for the MVP because
+// ContainerList's Summary does not carry health, and moving health out of
+// runtime state would require a spec change that docs/ACCORDA.md does not
+// currently authorize.
 //
 // A service scaled to multiple replicas shares one service name; when the
 // replicas' runtime states disagree (for example one running and one
@@ -166,7 +167,11 @@ func (t *Target) Current(ctx context.Context) (*state.RuntimeState, error) {
 		if name == "" {
 			continue
 		}
-		rs := toRuntimeService(c)
+		inspected, err := t.docker.ContainerInspect(ctx, c.ID)
+		if err != nil {
+			return nil, fmt.Errorf("compose target: inspect %q: %w", name, err)
+		}
+		rs := toRuntimeService(inspected)
 		if prev, ok := services[name]; ok {
 			rs = mergeRuntime(prev, rs)
 		}
@@ -204,16 +209,27 @@ func serviceName(labels map[string]string) string {
 	return labels[composeServiceLabel]
 }
 
-// toRuntimeService maps a Docker container summary to Accorda's
+// toRuntimeService maps a Docker container inspect response to Accorda's
 // RuntimeService. The Status field uses Docker's ContainerState string
-// ("running", "exited", ...); the Image field is the image reference the
-// container is running. Health is not part of runtime state (docs/ACCORDA.md
-// §19) and is left empty here; it is reported by the Health method.
-func toRuntimeService(c container.Summary) state.RuntimeService {
-	return state.RuntimeService{
-		Status: string(c.State),
-		Image:  c.Image,
+// ("running", "exited", ...); the Health field uses the healthcheck status
+// ("healthy", "unhealthy", "starting") or "" when there is no healthcheck.
+func toRuntimeService(c container.InspectResponse) state.RuntimeService {
+	svc := state.RuntimeService{}
+	if c.ContainerJSONBase != nil {
+		svc.Image = c.ContainerJSONBase.Image
+		if c.ContainerJSONBase.State != nil {
+			svc.Status = string(c.ContainerJSONBase.State.Status)
+			if c.ContainerJSONBase.State.Health != nil {
+				h := string(c.ContainerJSONBase.State.Health.Status)
+				// "none" means no healthcheck; surface it as empty so callers
+				// can treat "" as "no health information".
+				if h != string(container.NoHealthcheck) {
+					svc.Health = h
+				}
+			}
+		}
 	}
+	return svc
 }
 
 // degradedStatus is the runtime status reported for a service whose replicas
@@ -223,12 +239,12 @@ const degradedStatus = "degraded"
 
 // mergeRuntime combines two RuntimeService values for the same service name
 // (multiple replicas). When the replicas agree, the merged value is that
-// shared state; when they disagree on status, the merged value reports
-// degradedStatus so per-replica drift is surfaced rather than silently
-// overwritten.
+// shared state; when they disagree on status or health, the merged value
+// reports degradedStatus so per-replica drift is surfaced rather than
+// silently overwritten.
 func mergeRuntime(a, b state.RuntimeService) state.RuntimeService {
-	if a.Status != b.Status {
-		return state.RuntimeService{Status: degradedStatus, Image: a.Image}
+	if a.Status != b.Status || a.Health != b.Health {
+		return state.RuntimeService{Status: degradedStatus, Health: "", Image: a.Image}
 	}
 	return a
 }

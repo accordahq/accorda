@@ -56,7 +56,7 @@ does not leak into core:
 | `gopkg.in/yaml.v3` | v3.0.1 | `internal/config` | YAML decoding of `accorda.yaml` with strict field validation (`KnownFields(true)`) and a custom `UnmarshalYAML` on `Secrets` for two-shape acceptance. |
 | `github.com/go-git/go-git/v6` | v6.0.0-alpha.5 | `internal/sources/git` | Pure-Go Git operations: clone (`PlainCloneContext`), fetch (`Remote.FetchContext`), checkout (`Worktree.Checkout`), commit metadata (`CommitObject`), file-at-commit reads (`Tree().File()`). Auth via `ssh.PublicKeys` / `http.BasicAuth`. Replaces the system `git` CLI. |
 | `github.com/compose-spec/compose-go/v2` | v2.14.0 | `internal/targets/compose` | Compose file parsing via `loader.LoadWithContext` into `types.Project`, then normalized into `state.Service`. Handles the full Compose schema (interpolation, extends, profiles, short/long forms). Replaces the hand-rolled parser. |
-| `github.com/docker/docker` | v28.5.2+incompatible | `internal/targets/compose` | Docker engine API client used by `Target.Current` to list the project's containers and map them to `state.RuntimeState` (container state + image). Reached through a local `dockerClient` seam so the SDK does not leak into core. |
+| `github.com/docker/docker` | v28.5.2+incompatible | `internal/targets/compose` | Docker engine API client used by `Target.Current` to list and inspect the project's containers and map them to `state.RuntimeState` (container state + health). Reached through a local `dockerClient` seam so the SDK does not leak into core. |
 
 All other entries in `go.mod` are indirect (transitive) dependencies of these
 five, pulled in automatically by `go mod tidy`. They are not imported by
@@ -305,25 +305,26 @@ New entries are appended below. Use the next available number.
 ### 15. Compose target reads runtime state via the Docker engine SDK
 
 **Context.** Issue #9 (§5.3) requires the Compose target to read per-service
-runtime state (container state) from the Docker engine/Compose API with no
-mutation. The driver needs to enumerate the project's containers and map them
-back to Accorda service names.
+runtime state (container state + health) from the Docker engine/Compose API
+with no mutation. The driver needs to enumerate the project's containers and
+map them back to Accorda service names and health states.
 
 **Decision.** `internal/targets/compose` adds the Docker engine SDK
 (`github.com/docker/docker`, `+incompatible`) as a direct dependency, confined
 to the adapter. The driver talks to the engine through a local `dockerClient`
-seam (a subset of the SDK APIClient: Ping, ContainerList) so core never
-imports the Docker SDK (docs/DECISIONS.md #3). `Target.Current` lists all
-containers carrying the `com.docker.compose.project` label matching the
-project name (including stopped ones, so drift is observable) and maps each
-container's state and image via the `com.docker.compose.service` label into a
-`state.RuntimeState`, in a single Docker API call (no per-container inspect).
-Health is a distinct concern (docs/ACCORDA.md §19) reported by the `Health`
-method, not part of runtime state. The project name is derived from the
-Compose file's directory basename (matching Compose v2's heuristic) and
-normalized to match the label; `WithProjectName` overrides it for explicit
-config. `Plan`, `Apply`, and `Health` remain `ErrNotImplemented` until later
-milestones.
+seam (a subset of the SDK APIClient: Ping, ContainerList, ContainerInspect)
+so core never imports the Docker SDK (docs/DECISIONS.md #3). `Target.Current`
+lists all containers carrying the `com.docker.compose.project` label matching
+the project name (including stopped ones, so drift is observable), inspects
+each for state and health, and maps them via the `com.docker.compose.service`
+label into a `state.RuntimeState`. Health is part of runtime state
+(docs/ACCORDA.md §5.3), so the per-container inspect is accepted for the MVP;
+`ContainerList`'s `Summary` does not carry health, and moving health out of
+runtime state would require a spec change that `docs/ACCORDA.md` does not
+currently authorize. The project name is derived from the Compose file's
+directory basename (matching Compose v2's heuristic) and normalized to match
+the label; `WithProjectName` overrides it for explicit config. `Plan`,
+`Apply`, and `Health` remain `ErrNotImplemented` until later milestones.
 
 **Consequence.** Runtime state is read back without shelling out to
 `docker compose ps`; the Docker SDK is the second adapter-specific runtime

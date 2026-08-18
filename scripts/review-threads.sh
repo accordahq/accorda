@@ -2,8 +2,8 @@
 # Inspect and resolve review threads on a GitHub pull request.
 #
 # Usage:
-#   scripts/resolve-review-threads.sh <pr-number>            # list unresolved threads
-#   scripts/resolve-review-threads.sh resolve <pr-number> <thread-id>...
+#   scripts/review-threads.sh <pr-number>            # list unresolved threads
+#   scripts/review-threads.sh resolve <pr-number> <thread-id>...
 #
 # The default (list) mode prints each unresolved thread's ID and a short
 # body snippet so you can decide which threads are actually addressed before
