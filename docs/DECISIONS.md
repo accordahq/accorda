@@ -392,3 +392,32 @@ action.
 reimplementing them, and the `docker compose` CLI dependency stays confined
 to the adapter (docs/DECISIONS.md #3). `Health` remains `ErrNotImplemented`
 until issue #15.
+
+### 18. Image pull policies select pull actions in Plan
+
+**Context.** Issue #12 (§9) requires the Compose target to support the four
+image pull policies — `changed`, `missing`, `always`, `never` — and to pull
+only the images each policy selects. The `changed` policy depends on knowing
+which services changed, which the plan phase already computes via
+`plan.DriftActions` (docs/DECISIONS.md #16).
+
+**Decision.** `Target` carries a `pullPolicy` field (default
+`config.PullChanged`), settable via `WithPullPolicy`; the reconcile loop
+supplies it from the project's `images.pull` setting. `Target.Plan` computes
+the drift actions, then prepends pull actions selected by `selectPulls`
+(`internal/targets/compose/pull.go`) before the drift actions so images are
+fetched before the services that depend on them are created or recreated.
+The policy semantics are: `changed` pulls only services whose drift action is
+create or recreate (a stopped service with an unchanged image already has its
+image locally); `missing` pulls only images not present in the engine's local
+image list (read via a new `ImageList` method on the `dockerClient` seam);
+`always` pulls every desired service's image; `never` pulls nothing. Pull
+actions are ordered by service name so the plan stays deterministic
+(docs/DECISIONS.md #12).
+
+**Consequence.** The pull policy is enforced at plan time, so `Apply` needs no
+policy awareness and simply executes the `pull` actions already in the plan.
+The `dockerClient` seam grows `ImageList` (still a subset of the Docker SDK
+APIClient, confined to the adapter). The `missing` policy is the only one
+that reads the engine's image list; the others are pure functions of the
+desired state and drift actions.

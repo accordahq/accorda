@@ -12,6 +12,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 
 	"accorda/internal/config"
 	"accorda/internal/core/plan"
@@ -20,14 +21,16 @@ import (
 )
 
 // fakeDockerClient is a test double for the dockerClient seam. It returns
-// canned responses for Ping, ContainerList, and ContainerInspect so the
-// Compose target can be exercised without a running Docker daemon.
+// canned responses for Ping, ContainerList, ContainerInspect, and ImageList
+// so the Compose target can be exercised without a running Docker daemon.
 type fakeDockerClient struct {
 	pingErr    error
 	containers []container.Summary
 	inspected  map[string]container.InspectResponse
 	inspectErr map[string]error
 	listErr    error
+	images     []image.Summary
+	imageErr   error
 	// lastOptions captures the full ListOptions passed to ContainerList so
 	// tests can assert the All flag (drift visibility) and the label filter.
 	lastOptions container.ListOptions
@@ -50,6 +53,13 @@ func (f *fakeDockerClient) ContainerInspect(_ context.Context, id string) (conta
 		return container.InspectResponse{}, err
 	}
 	return f.inspected[id], nil
+}
+
+func (f *fakeDockerClient) ImageList(_ context.Context, _ image.ListOptions) ([]image.Summary, error) {
+	if f.imageErr != nil {
+		return nil, f.imageErr
+	}
+	return f.images, nil
 }
 
 // fakeRunner is a test double for the composeRunner seam. It records every
