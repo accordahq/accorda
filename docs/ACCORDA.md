@@ -1,15 +1,13 @@
-Accorda
+# Accorda
 
 GitOps doesn’t require Kubernetes.
 
 Working product name: Accorda
 Status: Provisional name — final trademark/package/domain clearance required before commercial branding.
 
-⸻
+## 1. Project Intro
 
-1. Project Intro
-
-1.1 Vision
+### 1.1 Vision
 
 Accorda is a lightweight, provider-independent GitOps reconciliation system for deploying and continuously reconciling workloads from Git.
 
@@ -63,21 +61,19 @@ Reconciliation
  ↓
 Actual State
 
-⸻
-
-2. Product Philosophy
+## 2. Product Philosophy
 
 Accorda should not become:
 
-* a PaaS;
-* a VPS provisioning service;
-* a Terraform replacement;
-* a Kubernetes distribution;
-* a container registry;
-* a secret-management implementation;
-* a CI system;
-* a Docker UI;
-* another Kubernetes-only Argo CD clone.
+- a PaaS;
+- a VPS provisioning service;
+- a Terraform replacement;
+- a Kubernetes distribution;
+- a container registry;
+- a secret-management implementation;
+- a CI system;
+- a Docker UI;
+- another Kubernetes-only Argo CD clone.
 
 Accorda owns one primary responsibility:
 
@@ -100,9 +96,7 @@ Terraform / OpenTofu / Cloud
              ▼
          Workloads
 
-⸻
-
-3. Fundamental Architecture
+## 3. Fundamental Architecture
 
 Accorda Core must not fundamentally know about GitHub, Docker Compose, AWS, Hetzner, or any particular infrastructure provider.
 
@@ -167,9 +161,7 @@ Accorda Agent
 
 Cloud-provider-specific Kubernetes integrations should not be necessary.
 
-⸻
-
-4. Accorda OSS
+## 4. Accorda OSS
 
 Accorda OSS should be a genuinely useful standalone product.
 
@@ -185,13 +177,11 @@ The future Cloud proposition is:
 
 Understand, govern, and authorize deployments across your infrastructure.
 
-⸻
-
-5. Core Reconciliation Model
+## 5. Core Reconciliation Model
 
 Accorda should distinguish between three separate concepts.
 
-5.1 Desired State
+### 5.1 Desired State
 
 What Git currently declares.
 
@@ -201,14 +191,14 @@ Repository: acme/infra
 Branch: production
 Commit: a84fd21
 
-5.2 Deployed State
+### 5.2 Deployed State
 
 What Accorda successfully deployed.
 
 Deployed commit: a84fd21
 Deployment ID: dep_01K...
 
-5.3 Runtime State
+### 5.3 Runtime State
 
 What is actually running right now.
 
@@ -246,13 +236,11 @@ reconcile:
 
 Accorda can automatically restore the desired runtime.
 
-⸻
-
-6. Reconciliation Lifecycle
+## 6. Reconciliation Lifecycle
 
 A deployment should not be considered successful merely because:
 
-docker compose up -d
+`docker compose up -d`
 
 returned exit code 0.
 
@@ -305,14 +293,12 @@ This is much more informative than simply reporting:
 
 deployment failed
 
-⸻
-
-7. Deployment Receipts
+## 7. Deployment Receipts
 
 Every successful deployment should create a deployment receipt.
 
 Example:
-
+```json
 {
   "deployment_id": "dep_01K...",
   "repository": "acme/backend",
@@ -331,6 +317,7 @@ Example:
     }
   }
 }
+```
 
 The digest is important.
 
@@ -346,9 +333,7 @@ Accorda should therefore be capable of answering:
 
 Exactly which commit and container image digest was running on target X at time Y?
 
-⸻
-
-8. Docker Compose Target
+## 8. Docker Compose Target
 
 Docker Compose should be the first production-quality target.
 
@@ -372,14 +357,14 @@ reconcile:
 health:
   timeout: 120s
 
-⸻
-
-9. Image Pull Policies
+## 9. Image Pull Policies
 
 Accorda should support explicit image pull strategies.
 
+```yaml
 images:
   pull: changed
+```
 
 Possible values:
 
@@ -406,6 +391,7 @@ Accorda calculates which services changed and pulls only those required images.
 
 Example:
 
+```yaml
 services:
   api:
 -   image: ghcr.io/acme/api:1.8
@@ -414,11 +400,14 @@ services:
     image: redis:8
   postgres:
     image: postgres:17
+```
 
 Instead of effectively doing:
 
+```shell
 docker compose pull
 docker compose up -d
+```
 
 Accorda can determine that only api requires reconciliation:
 
@@ -428,14 +417,14 @@ postgres  UNCHANGED
 
 and perform the equivalent of:
 
+```shell
 docker compose pull api
 docker compose up -d api
+```
 
 where safe and semantically correct.
 
-⸻
-
-10. Service Hashing
+## 10. Service Hashing
 
 Accorda should eventually compare normalized service configuration rather than relying exclusively on textual Git diffs.
 
@@ -470,9 +459,7 @@ Deployed service hash
 
 This helps determine whether a service actually requires recreation.
 
-⸻
-
-11. CLI
+## 11. CLI
 
 The CLI should be a major part of the OSS experience.
 
@@ -566,9 +553,7 @@ api
 postgres
   unchanged
 
-⸻
-
-12. Core Abstractions
+## 12. Core Abstractions
 
 The architecture should be designed around interfaces from the beginning.
 
@@ -578,6 +563,7 @@ The purpose is to prevent GitHub/Docker-specific assumptions from leaking into C
 
 A conceptual target interface:
 
+```golang
 type Target interface {
     Validate(ctx context.Context) error
     Current(ctx context.Context) (*State, error)
@@ -585,9 +571,11 @@ type Target interface {
     Apply(ctx context.Context, plan *Plan) error
     Health(ctx context.Context) (*Health, error)
 }
+```
 
 Potential code organization:
 
+```text
 Accorda/
 ├── cmd/
 ├── internal/
@@ -618,10 +606,9 @@ Accorda/
 │       └── webhook/
 │
 └── docs/
+```
 
-⸻
-
-13. Git Abstraction
+## 13. Git Abstraction
 
 Generic Git should be the foundation.
 
@@ -629,17 +616,21 @@ GitHub must not be required.
 
 Example:
 
+```yaml
 source:
   type: git
   url: ssh://git@git.internal/acme/prod.git
   branch: production
   path: deploy/
+```
 
 Authentication:
 
+```yaml
 auth:
   type: ssh
   key: /etc/Accorda/git.key
+```
 
 Therefore this must work:
 
@@ -656,12 +647,11 @@ Docker Compose
 
 with zero SaaS dependency.
 
-⸻
-
-14. Git Provider Integrations
+## 14. Git Provider Integrations
 
 Provider integrations add optional capabilities on top of generic Git.
 
+```text
 Generic Git
 │
 ├── clone
@@ -685,12 +675,11 @@ Gitea / Forgejo
 ├── authentication
 ├── statuses
 └── webhooks
+```
 
 Git provider integrations should be enhancements, never fundamental dependencies.
 
-⸻
-
-15. Authentication
+## 15. Authentication
 
 Generic Git
 
@@ -741,9 +730,7 @@ short-lived installation token
 
 Long-lived personal access tokens should not be the preferred production mechanism.
 
-⸻
-
-16. Authorization
+## 16. Authorization
 
 Authorization should follow least privilege.
 
@@ -771,9 +758,7 @@ Provider permissions should remain modular.
 
 A user using generic Git should not need GitHub permissions at all.
 
-⸻
-
-17. Secrets and SOPS
+## 17. Secrets and SOPS
 
 SOPS support should arrive early—before mature Kubernetes support.
 
@@ -829,9 +814,7 @@ For initial implementation, prioritize:
 
 SOPS + age
 
-⸻
-
-18. Secret Handling Security
+## 18. Secret Handling Security
 
 Plaintext secrets should ideally never be written to persistent storage.
 
@@ -857,9 +840,7 @@ authorization credentials
 
 Accorda should have explicit secret-redaction utilities shared across the codebase.
 
-⸻
-
-19. Health Verification
+## 19. Health Verification
 
 Accorda should understand health as part of deployment success.
 
@@ -881,9 +862,7 @@ SYNCED
 
 These are not synonyms.
 
-⸻
-
-20. Rollback
+## 20. Rollback
 
 Rollback should use known previous deployment state.
 
@@ -907,9 +886,7 @@ Git sync         OUT_OF_SYNC
 
 Rollback events must be recorded in deployment history.
 
-⸻
-
-21. Events
+## 21. Events
 
 Core should expose generic events rather than provider-specific callbacks.
 
@@ -938,9 +915,7 @@ Discord
 ntfy
 Accorda Cloud
 
-⸻
-
-22. GitHub Deployment Reporting
+## 22. GitHub Deployment Reporting
 
 GitHub should be an optional high-quality integration.
 
@@ -974,9 +949,7 @@ Target: prod-eu-01
 
 Equivalent concepts should be implementable for other Git providers.
 
-⸻
-
-23. Distribution
+## 23. Distribution
 
 The OSS agent should be extremely easy to install.
 
@@ -1012,9 +985,7 @@ helm install Accorda ...
 
 should eventually install the agent.
 
-⸻
-
-24. Kubernetes Target
+## 24. Kubernetes Target
 
 Kubernetes should come after the Compose implementation proves the reconciliation engine.
 
@@ -1064,9 +1035,7 @@ The Kubernetes implementation initially exists primarily to prove:
 
 Accorda Core is truly target-independent.
 
-⸻
-
-25. Unified Project Format
+## 25. Unified Project Format
 
 Long-term, a Accorda project should ideally use the same concepts regardless of target.
 
@@ -1107,9 +1076,7 @@ target:
 
 could become possible without changing Core concepts.
 
-⸻
-
-26. Accorda Cloud
+## 26. Accorda Cloud
 
 Accorda Cloud should be an optional control plane, not a dependency for deployment.
 
@@ -1127,9 +1094,7 @@ Or more technically:
 OSS   = execution + reconciliation
 Cloud = visibility + governance + authorization
 
-⸻
-
-27. Cloud Architecture
+## 27. Cloud Architecture
 
 Git
  │
@@ -1159,9 +1124,7 @@ Accorda Agent
  ▼
 Compose / Kubernetes
 
-⸻
-
-28. Cloud Must Not Hold Infrastructure Credentials
+## 28. Cloud Must Not Hold Infrastructure Credentials
 
 This should become a major security property.
 
@@ -1207,9 +1170,7 @@ approval state
 timestamps
 target identity
 
-⸻
-
-29. Cloud Should Not Store Application Secrets
+## 29. Cloud Should Not Store Application Secrets
 
 A major architectural principle:
 
@@ -1242,9 +1203,7 @@ Docker credentials
 
 There may eventually be narrowly scoped exceptions for optional integrations, but the default architecture should avoid secret custody.
 
-⸻
-
-30. Outbound Agent Connectivity
+## 30. Outbound Agent Connectivity
 
 Cloud connectivity should ideally require no inbound port on production servers.
 
@@ -1281,9 +1240,7 @@ deployment continues
 
 For environments explicitly configured to require Cloud authorization, behavior should be configurable and documented.
 
-⸻
-
-31. Deployment Plans
+## 31. Deployment Plans
 
 The deployment plan should become a central object shared between OSS and Cloud.
 
@@ -1316,9 +1273,7 @@ approvals:
 
 This object should be deterministic enough that it can eventually be hashed and signed.
 
-⸻
-
-32. Signed Deployment Authorization
+## 32. Signed Deployment Authorization
 
 Cloud should not need the ability to remotely execute arbitrary shell commands.
 
@@ -1361,9 +1316,7 @@ Run arbitrary command X on production.
 
 This materially reduces the blast radius of a Cloud compromise.
 
-⸻
-
-33. Deployment Gates
+## 33. Deployment Gates
 
 Cloud should model governance through composable deployment gates.
 
@@ -1397,9 +1350,7 @@ gates:
   - type: webhook
     url: https://policy.example.com/check
 
-⸻
-
-34. Vulnerability Scanning
+## 34. Vulnerability Scanning
 
 Accorda should not reinvent vulnerability databases/scanners.
 
@@ -1439,9 +1390,7 @@ Critical   2
 Decision:
 BLOCKED
 
-⸻
-
-35. Vulnerability Exceptions
+## 35. Vulnerability Exceptions
 
 Organizations should eventually be able to accept known risk.
 
@@ -1465,9 +1414,7 @@ have a reason
 have an expiration
 be auditable
 
-⸻
-
-36. Approval System
+## 36. Approval System
 
 Approval requirements should be configurable per environment.
 
@@ -1504,9 +1451,7 @@ policies:
     require:
       group: security
 
-⸻
-
-37. Risk-Based Deployments
+## 37. Risk-Based Deployments
 
 Accorda Cloud can eventually assign deployment risk.
 
@@ -1531,9 +1476,7 @@ MANUAL APPROVAL REQUIRED
 
 The risk engine should remain transparent: users should be able to understand why a deployment was classified a certain way.
 
-⸻
-
-38. Fleet Visibility
+## 38. Fleet Visibility
 
 One of Cloud’s strongest commercial features should be answering:
 
@@ -1557,9 +1500,7 @@ Release a18fc2
 
 This provides value that becomes increasingly important as users move from one server to many.
 
-⸻
-
-39. Cloud Notifications
+## 39. Cloud Notifications
 
 Cloud can centralize notifications for events such as:
 
@@ -1583,9 +1524,7 @@ generic webhook
 Git providers
 PagerDuty-style incident systems
 
-⸻
-
-40. Audit
+## 40. Audit
 
 Commercial/enterprise customers will eventually want a durable audit trail.
 
@@ -1610,9 +1549,7 @@ Deployment healthy:
 
 Audit records should include policy decisions and exceptions.
 
-⸻
-
-41. Future Enterprise Features
+## 41. Future Enterprise Features
 
 Do not build these for MVP, but architecture should not preclude:
 
@@ -1631,9 +1568,7 @@ private networking options
 self-hosted Cloud/control plane
 custom policy integrations
 
-⸻
-
-42. OSS vs Cloud Boundary
+## 42. OSS vs Cloud Boundary
 
 Keep powerful deployment functionality OSS.
 
@@ -1684,9 +1619,7 @@ The principle:
 
 OSS lets you deploy anything yourself. Cloud helps you safely manage all those deployments together.
 
-⸻
-
-43. Potential Pricing Philosophy
+## 43. Potential Pricing Philosophy
 
 Do not charge per deployment.
 
@@ -1714,9 +1647,7 @@ rather than deployment count.
 
 Exact pricing should be decided only after observing actual user behavior.
 
-⸻
-
-44. Roadmap
+## 44. Roadmap
 
 Phase 0 — Architecture & Prototype
 
@@ -1738,9 +1669,7 @@ Dogfood immediately.
 
 Do not build Cloud.
 
-⸻
-
-45. Phase 1 — Docker Compose OSS MVP
+## 45. Phase 1 — Docker Compose OSS MVP
 
 Build the first genuinely usable product.
 
@@ -1784,9 +1713,7 @@ service hashes
 image digests
 deployment history
 
-⸻
-
-46. Phase 2 — Security & SOPS
+## 46. Phase 2 — Security & SOPS
 
 Add:
 
@@ -1801,9 +1728,7 @@ Goal:
 
 A production GitOps workflow should no longer require users to manually maintain .env files on servers.
 
-⸻
-
-47. Phase 3 — Reconciliation Hardening
+## 47. Phase 3 — Reconciliation Hardening
 
 Add:
 
@@ -1819,9 +1744,7 @@ idempotency
 
 This is where Accorda evolves from a deployment script into a reconciliation system.
 
-⸻
-
-48. Phase 4 — Provider Integrations
+## 48. Phase 4 — Provider Integrations
 
 Implement the provider abstraction properly.
 
@@ -1846,9 +1769,7 @@ Do not add providers simply to create a long compatibility list.
 
 Use them to prove that Core is provider-independent.
 
-⸻
-
-49. Phase 5 — Multi-Project / Multi-Target Compose
+## 49. Phase 5 — Multi-Project / Multi-Target Compose
 
 Support:
 
@@ -1868,9 +1789,7 @@ Accorda Agent
 
 This is an important step toward fleet concepts.
 
-⸻
-
-50. Phase 6 — Kubernetes Experimental Target
+## 50. Phase 6 — Kubernetes Experimental Target
 
 Implement only enough Kubernetes functionality to validate the target abstraction.
 
@@ -1886,9 +1805,7 @@ deployment receipts
 
 Do not immediately compete feature-for-feature with Flux or Argo CD.
 
-⸻
-
-51. Phase 7 — OSS v1.0
+## 51. Phase 7 — OSS v1.0
 
 Before calling OSS stable:
 
@@ -1907,9 +1824,7 @@ testing matrix
 
 At this point the product should be trustworthy enough that users can run it unattended.
 
-⸻
-
-52. Phase 8 — Accorda Cloud MVP
+## 52. Phase 8 — Accorda Cloud MVP
 
 Do not build a giant SaaS platform.
 
@@ -1944,9 +1859,7 @@ manual approvals
 signed authorization
 basic audit
 
-⸻
-
-53. Phase 9 — Team / Enterprise Cloud
+## 53. Phase 9 — Team / Enterprise Cloud
 
 After actual customer demand:
 
@@ -1961,9 +1874,7 @@ compliance features
 deployment windows
 enterprise support
 
-⸻
-
-54. Execution Strategy
+## 54. Execution Strategy
 
 The most important execution rule is:
 
@@ -1995,9 +1906,7 @@ Do not spend a year building theoretical abstractions before running the agent i
 
 Interfaces should be designed for extensibility, but implementation should remain narrow.
 
-⸻
-
-55. Testing Strategy
+## 55. Testing Strategy
 
 Testing should eventually cover several layers.
 
@@ -2073,9 +1982,7 @@ health
  ↓
 audit
 
-⸻
-
-56. Security Principles
+## 56. Security Principles
 
 Security should be treated as part of the architecture rather than a later feature.
 
@@ -2092,9 +1999,7 @@ Core principles:
 9. Deployment authorization should eventually be cryptographically verifiable.
 10. Every deployment should be attributable to an exact Git state.
 
-⸻
-
-57. Threat Model Areas to Document
+## 57. Threat Model Areas to Document
 
 Before stable release, explicitly document threats around:
 
@@ -2115,9 +2020,7 @@ secret leakage through logs
 
 The Docker socket in particular effectively gives extremely powerful access to the host and must be treated accordingly.
 
-⸻
-
-58. Marketing Positioning
+## 58. Marketing Positioning
 
 The strongest positioning discovered so far is:
 
@@ -2131,9 +2034,7 @@ This explains the project’s reason for existing much better than:
 
 Docker Compose Git watcher.
 
-⸻
-
-59. Core Marketing Story
+## 59. Core Marketing Story
 
 Homepage direction:
 
@@ -2157,9 +2058,7 @@ Potential supporting statement:
 
 Start with a VPS. Scale to Kubernetes. Keep the same GitOps workflow.
 
-⸻
-
-60. Accorda Brand Concept
+## 60. Accorda Brand Concept
 
 Accorda communicates movement toward Git-defined state in the same linguistic pattern as:
 
@@ -2183,9 +2082,7 @@ The primary slogan should nevertheless remain:
 
 GitOps doesn’t require Kubernetes.
 
-⸻
-
-61. README Positioning
+## 61. README Positioning
 
 A potential opening:
 
@@ -2196,18 +2093,16 @@ agent that keeps workloads synchronized with Git.
 Start with Docker Compose on a single VPS.
 Move to Kubernetes when you need it.
 Keep the same GitOps workflow.
-• Generic Git
-• Docker Compose
-• Kubernetes
-• SOPS
-• Drift detection
-• Health verification
-• Deployment history
-• No control plane required
+- Generic Git
+- Docker Compose
+- Kubernetes
+- SOPS
+- Drift detection
+- Health verification
+- Deployment history
+- No control plane required
 
-⸻
-
-62. Competitive Positioning
+## 62. Competitive Positioning
 
 Accorda should not market itself primarily as:
 
@@ -2250,9 +2145,7 @@ signed authorization
 
 rather than simply Git polling.
 
-⸻
-
-63. Open-Source Strategy
+## 63. Open-Source Strategy
 
 The repository should preferably begin as an independent public project rather than being hidden inside another product.
 
@@ -2274,72 +2167,44 @@ application organization
 
 and therefore forces authentication, authorization, repository access and deployment architecture to work like a genuine external product.
 
-⸻
+## 64. GitHub Organization Strategy
 
-64. GitHub Organization Strategy
+Accorda is stored at [Accord GitHub Org](https://github.com/accordahq/accorda), because:
 
-Initially, keeping the public repository under the founder’s personal GitHub account is reasonable.
+- multiple maintainers exist
+- multiple repositories appear
+- public GitHub App branding matters
+- website/docs become separate projects
+- contributors expect neutral ownership
+- commercial identity develops
 
-Benefits:
-
-personal portfolio visibility
-clear authorship
-less administration
-easy experimentation
-
-Example:
-
-github.com/<founder>/Accorda
-
-A dedicated organization becomes more useful when:
-
-multiple maintainers exist
-multiple repositories appear
-public GitHub App branding matters
-website/docs become separate projects
-contributors expect neutral ownership
-commercial identity develops
-
-At that point:
-
-github.com/Accorda-dev/
-    Accorda
-    website
-    examples
-
-may make sense.
-
-The exact organization/name should not be assumed available until checked.
-
-⸻
-
-65. Naming and Trademark Warning
+## 65. Naming and Trademark Warning
 
 Accorda should currently be treated as a working name, not a legally cleared trademark.
 
 Before investing materially in branding:
 
-GitHub exact-name search
-package registries
-container registries
-domain names
-search engines
-EU trademark databases
-German trademark database
-USPTO
-relevant international databases
-company registers where appropriate
-existing DevOps products
+- [x] GitHub exact-name search
+- [ ] package registries
+- [x] container registries
+- [ ] domain names
+- [ ] search engines
+- [ ] EU trademark databases
+- [ ] German trademark database
+- [ ] USPTO
+- [ ] relevant international databases
+- [ ] company registers where appropriate
+- [ ] existing DevOps products
 
 should be checked.
 
 A professional trademark search becomes worthwhile before:
 
-paid launch
-significant advertising
-company formation around the brand
-trademark filing
-major design expenditure
+- paid launch
+- significant advertising
+- company formation around the brand
+- trademark filing
+- major design expenditure
 
 Do not assume that availability of:
 
@@ -2351,9 +2216,7 @@ github.com/.../Accorda
 
 means the trademark is legally safe.
 
-⸻
-
-66. License
+## 66. License
 
 The exact OSS license needs a deliberate decision.
 
@@ -2365,14 +2228,14 @@ Examples include Apache-2.0-style licensing.
 
 Advantages:
 
-easy adoption
-easy enterprise use
-easy integrations
-strong OSS credibility
+- easy adoption
+- easy enterprise use
+- easy integrations
+- strong OSS credibility
 
 Potential disadvantage:
 
-A third party may commercially host/fork the software.
+- A third party may commercially host/fork the software.
 
 Copyleft
 
@@ -2388,108 +2251,85 @@ a permissive license may align well with adoption, but the decision should be ma
 
 Do not casually change licenses after significant outside contributions without understanding contributor rights.
 
-⸻
-
-67. Contributor Governance
+## 67. Contributor Governance
 
 Before accepting substantial external contributions, define:
 
-LICENSE
-CONTRIBUTING.md
-Code of Conduct if desired
-security reporting policy
-copyright policy
-release process
-maintainer responsibilities
+- [ ] LICENSE
+- [ ] CONTRIBUTING.md
+- [ ] Code of Conduct if desired
+- [ ] security reporting policy
+- [ ] copyright policy
+- [ ] release process
+- [ ] maintainer responsibilities
 
-Decide whether the project needs:
-
-DCO
-
-or:
-
-CLA
-
-before a large contributor community forms.
+Decide whether the project needs DCO or CLA before a large contributor community forms.
 
 Do not introduce a CLA merely because other projects have one; choose the contribution model intentionally.
 
-⸻
-
-68. Security Disclosure
+## 68. Security Disclosure
 
 Before significant adoption, publish:
 
-SECURITY.md
-
-containing:
-
-supported versions
-private vulnerability reporting method
-expected response process
-what information reporters should include
+- [ ] `SECURITY.md` containing:
+  - supported versions
+  - private vulnerability reporting method
+  - expected response process
+  - what information reporters should include
 
 Infrastructure software will eventually attract security research.
 
 Make responsible disclosure easy.
 
-⸻
-
-69. Legal / Business Disclaimer
+## 69. Legal / Business Disclaimer
 
 The legal and company-formation sections here are product-planning guidance, not jurisdiction-specific legal, tax, trademark, employment, or corporate advice.
 
 Before taking significant commercial steps, consult appropriate professionals in the jurisdiction where the business will operate.
 
-⸻
-
-70. When a Company Is Probably Not Necessary
+## 70. When a Company Is Probably Not Necessary
 
 During early experimentation, a separate company may not be worth creating immediately if the activity is essentially:
 
-open-source development
-prototype
-no revenue
-no employees
-no contracts
-no significant liabilities
+- open-source development
+- prototype
+- no revenue
+- no employees
+- no contracts
+- no significant liabilities
 
 It may be reasonable to validate whether anyone actually wants Accorda first.
 
 Do not create corporate complexity solely because the repository exists.
 
-⸻
-
-71. When Company Formation Becomes Worth Considering
+## 71. When Company Formation Becomes Worth Considering
 
 Reevaluate when one or more of these become real:
 
-Accorda Cloud accepts payments
-customers sign contracts
-business liabilities increase
-employees/contractors contribute
-multiple founders own the project
-external investment is considered
-enterprise customers require an entity
-commercial trademarks/IP become valuable
-meaningful recurring revenue exists
+- Accorda Cloud accepts payments
+- customers sign contracts
+- business liabilities increase
+- employees/contractors contribute
+- multiple founders own the project
+- external investment is considered
+- enterprise customers require an entity
+- commercial trademarks/IP become valuable
+- meaningful recurring revenue exists
 
 Cloud is likely the natural point where a legal entity becomes materially more important.
 
 The company could own:
 
-Accorda trademark
-Accorda Cloud
-domains
-commercial contracts
-Cloud infrastructure
-commercial IP
+- Accorda trademark
+- Accorda Cloud
+- domains
+- commercial contracts
+- Cloud infrastructure
+- commercial IP
 
 while the OSS repository remains publicly available under its chosen license.
 
-⸻
-
-72. Trademark Timing
+## 72. Trademark Timing
 
 Do not necessarily file trademarks before validating the name.
 
@@ -2497,17 +2337,15 @@ But do a basic clearance before becoming emotionally or financially attached to 
 
 A more serious trademark strategy becomes sensible before:
 
-Cloud launch
-paid marketing
-conference sponsorship
-significant customer acquisition
-international expansion
+- Cloud launch
+- paid marketing
+- conference sponsorship
+- significant customer acquisition
+- international expansion
 
 Trademark rights and filing rules vary by jurisdiction, so professional advice is appropriate when the brand acquires meaningful value.
 
-⸻
-
-73. Privacy and Cloud Legal Requirements
+## 73. Privacy and Cloud Legal Requirements
 
 The OSS agent can have a very small privacy footprint.
 
@@ -2515,71 +2353,67 @@ Cloud is different.
 
 Once Accorda Cloud receives data such as:
 
-user accounts
-email addresses
-organization membership
-repository metadata
-deployment metadata
-IP addresses
-audit records
-security scan information
+- user accounts
+- email addresses
+- organization membership
+- repository metadata
+- deployment metadata
+- IP addresses
+- audit records
+- security scan information
 
 privacy obligations become relevant.
 
 Before commercial Cloud launch, plan for:
 
-Privacy Policy
-Terms of Service
-Data Processing Agreement where needed
-subprocessor documentation
-data retention/deletion
-account deletion
-security incident process
-backup policy
-regional privacy requirements
+- Privacy Policy
+- Terms of Service
+- Data Processing Agreement where needed
+- subprocessor documentation
+- data retention/deletion
+- account deletion
+- security incident process
+- backup policy
+- regional privacy requirements
 
 European customers may create additional GDPR-related obligations.
 
 Professional legal review is appropriate before a serious commercial launch.
 
-⸻
-
-74. Security Claims and Marketing
+## 74. Security Claims and Marketing
 
 Avoid absolute statements such as:
 
-"Accorda Cloud cannot be hacked."
+> "Accorda Cloud cannot be hacked."
 
 Prefer technically precise claims:
 
-Accorda Cloud does not require your Docker socket, kubeconfig, SOPS private keys, or decrypted application secrets.
+> Accorda Cloud does not require your Docker socket, kubeconfig, SOPS private keys, or decrypted application secrets.
 
 That is both more defensible and more meaningful.
 
 Similarly:
 
-Agents establish outbound connections to Accorda Cloud; production hosts do not need to expose an inbound Accorda management port.
+> Agents establish outbound connections to Accorda Cloud; production hosts do not need to expose an inbound Accorda management port.
 
 Concrete architecture is better marketing than vague security adjectives.
 
-⸻
-
-75. Product Metrics
+## 75. Product Metrics
 
 During OSS development, don’t optimize for vanity metrics alone.
 
 Useful signals:
 
-active installations
-number of real targets
-repeat deployments
-upgrade retention
-GitHub stars
-external issues
-external contributors
-number of users running >1 target
-percentage using SOPS
-percentage using drift reconciliation
+- active installations
+- number of real targets
+- repeat deployments
+- upgrade retention
+- GitHub stars
+- external issues
+- external contributors
+- number of users running >1 target
+- percentage using SOPS
+- percentage using drift reconciliation
 
 The strongest Cloud signal is likely:
 
@@ -2587,9 +2421,7 @@ Users have enough targets that understanding and controlling deployments has bec
 
 That is the moment Cloud becomes valuable naturally.
 
-⸻
-
-76. Major Product Risks
+## 76. Major Product Risks
 
 Scope explosion
 
@@ -2597,11 +2429,11 @@ Going from Compose to Kubernetes to Cloud to security scanning can easily become
 
 Mitigation:
 
-Compose first
-dogfood
-generic core
-minimal Kubernetes
-Cloud only after OSS works
+- Compose first
+- dogfood
+- generic core
+- minimal Kubernetes
+- Cloud only after OSS works
 
 Competing with Flux/Argo CD
 
@@ -2609,10 +2441,10 @@ Do not attempt to win by recreating every Kubernetes feature.
 
 Win through:
 
-VPS-first GitOps
-target independence
-simple agent
-consistent workflow
+- VPS-first GitOps
+- target independence
+- simple agent
+- consistent workflow
 
 Competing with existing Compose tools
 
@@ -2620,12 +2452,12 @@ Git polling alone is insufficient differentiation.
 
 Accorda must build toward:
 
-real reconciliation
-drift detection
-deployment proof
-security model
-cross-target consistency
-governance
+- real reconciliation
+- drift detection
+- deployment proof
+- security model
+- cross-target consistency
+- governance
 
 Cloud becoming mandatory
 
@@ -2639,9 +2471,7 @@ Accorda touches extremely privileged systems.
 
 Treat security work as core engineering rather than polish.
 
-⸻
-
-77. North-Star Architecture
+## 77. North-Star Architecture
 
 The eventual system should look approximately like this:
 
@@ -2699,15 +2529,13 @@ The eventual system should look approximately like this:
                              ▼
                           Runtime
 
-⸻
-
-78. The Product in One Sentence
+## 78. The Product in One Sentence
 
 Accorda is a provider-agnostic GitOps reconciler that keeps workloads synchronized with Git—from Docker Compose on a single Linux server to Kubernetes clusters.
 
 The commercial extension:
 
-Accorda Cloud adds visibility, vulnerability intelligence, policies, approvals and auditable authorization without requiring access to your application secrets or infrastructure credentials.
+> Accorda Cloud adds visibility, vulnerability intelligence, policies, approvals and auditable authorization without requiring access to your application secrets or infrastructure credentials.
 
 And the core belief remains:
 
@@ -2715,9 +2543,7 @@ GitOps doesn’t require Kubernetes.
 
 That should guide both the architecture and the marketing.
 
-⸻
-
-79. Immediate Execution Plan
+## 79. Immediate Execution Plan
 
 The next engineering steps should stay intentionally small.
 
@@ -2837,9 +2663,7 @@ audit
 
 Then let actual users determine what comes next.
 
-⸻
-
-80. Final Product Principle
+## 80. Final Product Principle
 
 Whenever a new feature is proposed, ask:
 
