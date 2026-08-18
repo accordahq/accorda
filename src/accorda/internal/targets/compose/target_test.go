@@ -378,13 +378,31 @@ func TestComposeProjectName_FromFilePath(t *testing.T) {
 		want string
 	}{
 		{"/srv/app/compose.yaml", "app"},
-		{"compose.yaml", ""},
 		{"/home/user/My Service/compose.yaml", "myservice"},
+		{"/root/compose.yaml", "root"},
 	}
 	for _, c := range cases {
 		if got := composeProjectName(c.path); got != c.want {
 			t.Errorf("composeProjectName(%q) = %q, want %q", c.path, got, c.want)
 		}
+	}
+}
+
+func TestComposeProjectName_BareFilenameFallsBackToWorkingDir(t *testing.T) {
+	// The §8 example uses `target.file: compose.yaml` with no directory
+	// component. The derived project name must fall back to the working
+	// directory basename rather than empty, so Current() filters on a real
+	// project label instead of matching nothing.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	want := normalizeProjectName(filepath.Base(wd))
+	if got := composeProjectName("compose.yaml"); got != want {
+		t.Errorf("composeProjectName(%q) = %q, want %q", "compose.yaml", got, want)
+	}
+	if got := composeProjectName("compose.yaml"); got == "" {
+		t.Error("composeProjectName(compose.yaml) is empty, want working-dir basename")
 	}
 }
 
@@ -673,56 +691,5 @@ func TestToRuntimeService_NoHealthcheckFieldIsEmpty(t *testing.T) {
 	want := state.RuntimeService{Status: "running", Health: "", Image: "api:1"}
 	if got := toRuntimeService(inspect); !reflect.DeepEqual(got, want) {
 		t.Errorf("toRuntimeService = %+v, want %+v", got, want)
-	}
-}
-
-func TestBaseName(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"compose.yaml", "compose.yaml"},
-		{"/srv/app/compose.yaml", "compose.yaml"},
-		{"a/b/c", "c"},
-		{"C:\\Users\\me\\compose.yaml", "compose.yaml"},
-		{"no-path", "no-path"},
-		{"", ""},
-	}
-	for _, c := range cases {
-		if got := baseName(c.in); got != c.want {
-			t.Errorf("baseName(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-func TestTrimSlashes(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"/srv/app/", "/srv/app"},
-		{"compose.yaml", "compose.yaml"},
-		{"a/b\\", "a/b"},
-		{"", ""},
-	}
-	for _, c := range cases {
-		if got := trimSlashes(c.in); got != c.want {
-			t.Errorf("trimSlashes(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-func TestFileDir(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"/srv/app/compose.yaml", "app"},
-		{"compose.yaml", ""},
-		{"/home/user/My Service/compose.yaml", "myservice"},
-		{"", ""},
-		{"/root/compose.yaml", "root"},
-	}
-	for _, c := range cases {
-		if got := fileDir(c.in); got != c.want {
-			t.Errorf("fileDir(%q) = %q, want %q", c.in, got, c.want)
-		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
@@ -218,35 +219,15 @@ func toRuntimeService(c container.InspectResponse) state.RuntimeService {
 // composeProjectName derives the Compose project name from the Compose file
 // path, matching the directory-basename heuristic Compose v2 uses when no
 // explicit name is set: the base name of the file's directory, normalized.
+// The path is resolved to absolute first so a bare filename (e.g.
+// "compose.yaml", the §8 example) falls back to the working-directory
+// basename rather than producing an empty name.
 func composeProjectName(file string) string {
-	// Compose uses the directory containing the file, not the file name.
-	dir := fileDir(file)
-	return normalizeProjectName(dir)
-}
-
-// fileDir returns the directory name containing file, using its parent
-// directory's base name. For "compose.yaml" it is the working directory
-// basename; for "/srv/app/compose.yaml" it is "app".
-func fileDir(file string) string {
-	if file == "" {
-		return ""
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		abs = file
 	}
-	// Use the parent directory base name to match Compose's behavior.
-	dir := strings.TrimSuffix(file, baseName(file))
-	return normalizeProjectName(baseName(trimSlashes(dir)))
-}
-
-// baseName returns the last path element of s.
-func baseName(s string) string {
-	if i := strings.LastIndexAny(s, "/\\"); i >= 0 {
-		return s[i+1:]
-	}
-	return s
-}
-
-// trimSlashes removes trailing path separators.
-func trimSlashes(s string) string {
-	return strings.TrimRight(s, "/\\")
+	return normalizeProjectName(filepath.Base(filepath.Dir(abs)))
 }
 
 // normalizeProjectName lowercases s and keeps only [a-z0-9_-], matching the
