@@ -217,6 +217,17 @@ func compareService(
 		sc.Reasons = append(sc.Reasons, fmt.Sprintf(
 			"service %q: deployed env != desired env", name))
 		return sc
+	case dHas && pHas && dsvc.Hash() != psvc.Hash():
+		// The image and env match, but some other reconciliation-relevant
+		// field (command, ports, volumes, networks, labels, healthcheck, or
+		// depends_on) changed. The canonical hash comparison (docs/ACCORDA.md
+		// §10) catches these so a service is recreated when its definition
+		// changed even though its image reference did not.
+		sc.Result = ResultOutOfSync
+		sc.Reasons = append(sc.Reasons, fmt.Sprintf(
+			"service %q: deployed config hash %q != desired config hash %q",
+			name, psvc.Hash(), dsvc.Hash()))
+		return sc
 	}
 
 	// From here desired and deployed agree (both present with a matching

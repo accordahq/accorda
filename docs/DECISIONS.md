@@ -421,3 +421,31 @@ The `dockerClient` seam grows `ImageList` (still a subset of the Docker SDK
 APIClient, confined to the adapter). The `missing` policy is the only one
 that reads the engine's image list; the others are pure functions of the
 desired state and drift actions.
+
+### 19. Service hashing for recreate decisions
+
+**Context.** Issue #13 (§10) requires Accorda to compare normalized service
+configuration rather than relying exclusively on textual Git diffs, so it can
+decide whether a service actually requires recreation. The normalized service
+config (image, command, env, ports, volumes, networks, labels, healthcheck,
+depends_on) is already produced by the Compose parser (docs/DECISIONS.md #7)
+and its unordered collections are already sorted for determinism
+(docs/DECISIONS.md #12).
+
+**Decision.** `state.Service` gains a `Hash()` method that canonicalizes the
+reconciliation-relevant fields into a deterministic string and returns its
+SHA-256 hex digest. Unordered collections (env, labels, ports, volumes,
+networks, depends_on) are sorted at the canonicalization boundary so
+reordering-equivalent configs hash identically; ordered fields (command,
+healthcheck test) are preserved verbatim because their order is significant.
+`state.Compare` adds a final desired-vs-deployed check that compares the two
+hashes, so a service whose image and env match but whose command, ports,
+volumes, networks, labels, healthcheck, or depends_on changed is flagged
+OUT_OF_SYNC and recreated. The hash lives in `internal/core/state/hash.go`
+and uses only the standard library (`crypto/sha256`, `encoding/hex`).
+
+**Consequence.** Recreate decisions now cover the full normalized service
+definition, not just image and env. The hash is a pure function of the
+service value, so it is deterministic and testable without a target. Any new
+reconciliation-relevant field added to `state.Service` must be included in
+`canonical()` or it will be silently excluded from recreate decisions.
