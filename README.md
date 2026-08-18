@@ -2,7 +2,7 @@
 
 Accorda OSS is the open-source GitOps reconciliation project described in `docs/ACCORDA.md`.
 
-This repository intentionally stays focused on the OSS product and does not include hosted control-plane features. Architecture and design decisions are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+This repository intentionally stays focused on the OSS product and does not include hosted control-plane features. Architecture and design decisions are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md). Accorda is licensed under the Apache License, Version 2.0 (see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE)); third-party dependency licenses are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md); see [`docs/licensing.md`](docs/licensing.md) for the compliance workflow.
 
 ## Project status
 
@@ -59,9 +59,9 @@ The core abstractions defined in `docs/ACCORDA.md` §12 are implemented so that 
 
 ## Git source
 
-The generic Git source adapter (`internal/sources/git`, `docs/ACCORDA.md` §13) implements `sources.Source` and works against any Git server over SSH or HTTPS, including on-premises servers, with zero SaaS dependency and no GitHub-specific calls. It shells out to the system `git` command, which handles SSH agent and HTTPS credential transport via the user's environment.
+The generic Git source adapter (`internal/sources/git`, `docs/ACCORDA.md` §13) implements `sources.Source` and works against any Git server over SSH or HTTPS, including on-premises servers, with zero SaaS dependency and no GitHub-specific calls. It uses the [go-git](https://github.com/go-git/go-git) library for Git operations (clone, fetch, checkout, reading files at commits), so the system `git` CLI is not required at runtime. Auth is handled via go-git transport methods: SSH key auth, HTTPS token auth, or ambient (SSH agent / unauthenticated HTTPS).
 
-`git.New(config.Source, opts...)` constructs a source configured from `accorda.yaml`. `Validate` checks the configuration and that the `git` CLI is available without cloning. `Fetch` clones the repository into a local cache directory on first use, then fetches and checks out the configured branch on subsequent calls, returning the `Commit` (SHA, branch, authored time) that `HEAD` points to. `Desired` reads the Compose-style services file under the configured `source.path` and returns a `state.DesiredState` carrying the repository, branch, commit, and declared services.
+`git.New(config.Source, opts...)` constructs a source configured from `accorda.yaml`. `Validate` checks the source configuration without cloning. `Fetch` clones the repository into a local cache directory on first use (via go-git), then fetches and checks out the configured branch on subsequent calls, returning the `Commit` (SHA, branch, authored time) that `HEAD` points to. `Desired` reads the Compose-style services file under the configured `source.path` and returns a `state.DesiredState` carrying the repository, branch, commit, and declared services.
 
 Authentication follows §15 and is configured explicitly via `source.auth` in `accorda.yaml` (or `git.WithAuth` in code):
 
@@ -103,7 +103,7 @@ Provider integrations (`internal/providers`) and the remaining target drivers wi
 
 ## Compose target
 
-The Docker Compose target driver (`internal/targets/compose`, `docs/ACCORDA.md` §8) loads and normalizes a Compose file into Accorda's service model. The load/validate phase is implemented: `compose.LoadFile(path)` (or `compose.Parse(data)` for raw bytes) reads the `services:` map and normalizes each service into a `state.Service` with image, command, environment, ports, volumes, networks, labels, healthcheck, and dependencies. Required fields are validated: a service must declare an image, every port needs a container port, and every volume needs a target mount. Unknown service-level keys are rejected so configuration typos surface. The remainder of the Compose driver — reading runtime state, planning, applying, and health verification — builds on the structures produced here in later milestones.
+The Docker Compose target driver (`internal/targets/compose`, `docs/ACCORDA.md` §8) loads and normalizes a Compose file into Accorda's service model. The load/validate phase is implemented: `compose.LoadFile(path)` (or `compose.Parse(data)` for raw bytes) uses the [compose-go](https://github.com/compose-spec/compose-go) loader to parse the Compose file (handling the full Compose schema: interpolation, extends, short and long forms), then normalizes each service into a `state.Service` with image, command, environment, ports, volumes, networks, labels, healthcheck, and dependencies. Required fields are validated: a service must declare an image. The remainder of the Compose driver — reading runtime state, planning, applying, and health verification — builds on the structures produced here in later milestones.
 
 ```bash
 cd src/accorda

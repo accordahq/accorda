@@ -30,16 +30,34 @@ The spec is silent on *how* adapters are implemented (CLI vs library).
 
 **Decision.** Keep application code under `src/accorda/`; keep root-level
 documentation (`README.md`, `docs/`, `AGENTS.md`) outside the implementation
-tree. Keep dependencies minimal: currently `github.com/spf13/cobra` (CLI) and
-`gopkg.in/yaml.v3` (YAML). The git source shells out to the system `git` CLI
-and the Compose parser is hand-rolled over `yaml.v3` rather than embedding a
-Git library or the Docker SDK — an implementation choice, not a spec mandate.
+tree. Dependencies: `github.com/spf13/cobra` (CLI), `gopkg.in/yaml.v3`
+(YAML), `github.com/go-git/go-git/v6` (Git operations), and
+`github.com/compose-spec/compose-go/v2` (Compose parsing). Accorda delegates
+to these libraries rather than maintaining its own Git transport or Compose
+parser, so it stays focused on its own mission (reconciliation) and avoids
+hand-rolled code that would have to track upstream specs.
 
 **Consequence.** `go.mod` stays tiny and the adapters inherit the user's
 environment. Embedding `go-git` or the Docker SDK in an adapter later would
 not violate the spec, as long as Core stays provider-agnostic; any new
 dependency requires justification and must not leak provider-specific
 assumptions into core.
+
+### 1a. Direct dependencies and their usage
+
+Each direct dependency is confined to a single adapter or subsystem and
+does not leak into core:
+
+| Library | Version | Used by | Purpose |
+| --- | --- | --- | --- |
+| `github.com/spf13/cobra` | v1.10.2 | `cmd/accorda` | CLI command tree, flag parsing, help generation for the `accorda` binary (`init`, `status`, `diff`, `plan`, `sync`, `history`, `inspect`, `logs`, `doctor`, `version`). |
+| `gopkg.in/yaml.v3` | v3.0.1 | `internal/config` | YAML decoding of `accorda.yaml` with strict field validation (`KnownFields(true)`) and a custom `UnmarshalYAML` on `Secrets` for two-shape acceptance. |
+| `github.com/go-git/go-git/v6` | v6.0.0-alpha.5 | `internal/sources/git` | Pure-Go Git operations: clone (`PlainCloneContext`), fetch (`Remote.FetchContext`), checkout (`Worktree.Checkout`), commit metadata (`CommitObject`), file-at-commit reads (`Tree().File()`). Auth via `ssh.PublicKeys` / `http.BasicAuth`. Replaces the system `git` CLI. |
+| `github.com/compose-spec/compose-go/v2` | v2.14.0 | `internal/targets/compose` | Compose file parsing via `loader.LoadWithContext` into `types.Project`, then normalized into `state.Service`. Handles the full Compose schema (interpolation, extends, profiles, short/long forms). Replaces the hand-rolled parser. |
+
+All other entries in `go.mod` are indirect (transitive) dependencies of these
+four, pulled in automatically by `go mod tidy`. They are not imported by
+Accorda directly.
 
 ### 2. `docs/ACCORDA.md` is authoritative and immutable
 
@@ -108,43 +126,42 @@ normalized set (`Command`, `Ports`, `Volumes`, `Networks`, `Labels`,
 **Consequence.** Desired state is concrete and deployable. Build-only
 services are a known gap until a build-to-image resolution step exists.
 
-### 7. Dependency-free Compose parser
+### 7. Compose parsing via compose-go
 
-**Context.** The full Compose spec is large; Accorda only needs the subset
-reasons about for reconciliation. The spec does not mandate a parser
-implementation; this is an implementation choice.
+**Context.** The full Compose spec is large and evolving (interpolation,
+extends, profiles, short/long forms). Accorda only needs the subset it
+reasons about for reconciliation, but hand-rolling a parser means tracking
+the spec ourselves.
 
-**Decision.** `internal/targets/compose` parses the `services:` map and the
-per-service fields Accorda needs, using only `yaml.v3` and
-`internal/core/state`. No Docker SDK, no Compose spec library. Unknown
-**top-level** keys (e.g. `volumes:`, `networks:`) are tolerated; unknown
-**service-level** keys are rejected so typos surface. Short and long forms
-are normalized for ports, volumes, environment, command, networks, labels,
-depends_on, and healthcheck.
+**Decision.** `internal/targets/compose` uses the compose-go loader
+(`github.com/compose-spec/compose-go/v2/loader`) to parse Compose files into
+`types.Project`, then normalizes the subset of `types.ServiceConfig` Accorda
+models (image, command, environment, ports, volumes, networks, labels,
+healthcheck, depends_on) into `state.Service`. The loader handles YAML
+parsing, interpolation, extends, and normalization so Accorda does not
+maintain its own parser. Validation enforces that every service has an image.
 
-**Consequence.** The parser is small and reviewable; adding a Compose field
-is a localized change in `decode.go`. Unsupported fields fail loudly rather
-than silently. Adopting a Compose spec library later would not violate the
-spec, provided it stays confined to the `targets/compose` adapter.
+**Consequence.** Accorda gets full Compose spec compliance for free; adding
+a new field is a localized normalization in `parse.go`. The dependency is
+confined to the `targets/compose` adapter and does not leak into core.
 
-### 8. Git source shells out to system `git`
+### 8. Git source uses go-git
 
 **Context.** §13 requires generic Git over SSH or HTTPS with zero SaaS
-dependency. The spec does not mandate shelling out vs embedding a Git
-library; this is an implementation choice.
+dependency. The spec does not mandate a Git library; this is an
+implementation choice.
 
-**Decision.** `internal/sources/git` shells out to the system `git` command
-rather than embedding a Go Git library. It inherits the user's SSH agent and
-credential helpers. Fetch is scoped to the configured branch only.
-`Desired(ref)` reads the services file at a commit via
-`git show <sha>:<path>`; a missing file is an empty desired state, not an
-error.
+**Decision.** `internal/sources/git` uses `github.com/go-git/go-git/v6`
+instead of shelling out to the system `git` CLI. It clones, fetches, checks
+out, and reads files at commits via the go-git API. Auth is handled via
+go-git transport methods: `ssh.PublicKeys` for SSH key auth, `http.BasicAuth`
+for HTTPS token auth, and ambient (SSH agent / unauthenticated HTTPS) when
+no auth is configured. The `git` CLI is no longer a runtime dependency.
 
-**Consequence.** No Git library dependency; transport and credential handling
-come from the user's environment. Reading a commit on an unconfigured branch
-requires that ref to have been fetched separately. Embedding `go-git` later
-would not violate the spec, provided it stays confined to the `sources/git`
-adapter.
+**Consequence.** No system `git` dependency; typed commit/tree objects
+replace hand-parsed CLI output. Transport and credential handling come from
+go-git. The dependency is confined to the `sources/git` adapter and does
+not leak into core.
 
 ### 9. Secrets are never logged
 
@@ -218,6 +235,62 @@ reflects every service, making future hashing/auditing deterministic
 **Consequence.** Agents and contributors apply these rules during
 implementation and review; linters (SonarQube, gopls `unusedparams`) surface
 violations. See `AGENTS.md` for the enforcement workflow.
+
+### 14. Dependency licenses
+
+**Context.** Accorda OSS is Apache-2.0 (see `LICENSE`). The dependency tree
+must remain permissively licensed so the OSS binary can be distributed without
+copyleft obligations on the compiled binary.
+
+**Decision.** All direct and indirect dependencies are permissively
+licensed (Apache-2.0, MIT, BSD, ISC). The dependency tree does not include
+GPL, LGPL, or other copyleft licenses. A summary of direct dependencies:
+
+| Library | License |
+| --- | --- |
+| `github.com/spf13/cobra` | Apache-2.0 |
+| `gopkg.in/yaml.v3` | MIT + Apache-2.0 |
+| `github.com/go-git/go-git/v6` | Apache-2.0 |
+| `github.com/compose-spec/compose-go/v2` | Apache-2.0 |
+
+**`github.com/opencontainers/go-digest`** (indirect, pulled by compose-go)
+ships two license files: `LICENSE` (Apache-2.0) for the Go code, and
+`LICENSE.docs` (CC-BY-SA-4.0) for documentation material. The Creative
+Commons license applies only to non-code documentation in the module, not
+to the Go implementation or the compiled binary. The compiled binary is
+governed by the Apache-2.0 code license.
+
+Before adding a new dependency, verify its license is permissive and does not
+introduce copyleft obligations. If a dependency ships separate
+code/documentation licenses, confirm the code license governs the compiled
+binary. When preparing a release, inspect each dependency's license file
+and preserve applicable notices in a compliance file.
+
+**Repository layout for distribution:**
+
+```
+LICENSE                       # Apache License 2.0 for Accorda
+NOTICE                        # Accorda's NOTICE (Apache-2.0 §4(d))
+THIRD_PARTY_LICENSES.md        # Dependency licenses + copyright notices, grouped by license
+docs/licensing.md              # Developer/CI workflow for generating the inventory
+```
+
+`THIRD_PARTY_LICENSES.md` groups dependencies by license and includes the
+verbatim upstream license texts and component-specific copyright/NOTICE
+attributions. It is generated from the actual Go dependency graph (see
+`docs/licensing.md` for the commands), so a future dependency update cannot
+quietly introduce GPL/AGPL/MPL. A CI license allowlist (e.g. `go-licenses`
+or equivalent) should fail the build if a disallowed license appears.
+
+For Apache-2.0 dependencies, upstream `NOTICE` file content is propagated
+where present (Apache-2.0 §4(d) requires retaining relevant NOTICE
+attribution in derivative works). For MIT/BSD/ISC dependencies, component-
+specific copyright notices are preserved in `THIRD_PARTY_LICENSES.md`; their
+licenses do not apply to Accorda's own code.
+
+**Consequence.** Accorda OSS stays distributable under Apache-2.0 without
+copyleft concerns. The `NOTICE` and `THIRD_PARTY_LICENSES.md` files, plus a
+CI license allowlist, keep the project compliant as dependencies change.
 
 ---
 

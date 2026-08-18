@@ -5,24 +5,21 @@
 // over SSH or HTTPS, including on-premises servers, with zero SaaS
 // dependency and no GitHub-specific calls. Provider integrations
 // (internal/providers) add optional capabilities on top of generic Git; this
-// package only depends on the Git CLI and the shared sources.Source
-// contract.
+// package depends on go-git (github.com/go-git/go-git/v6) and the shared
+// sources.Source contract.
 //
-// The implementation shells out to the system `git` command rather than
-// embedding a Git library, so it inherits the user's Git transport, SSH
-// agent, and credential configuration. Authentication is supported via SSH
-// keys (GIT_SSH_COMMAND) and HTTPS credentials/tokens, matching §15.
+// The implementation uses the go-git library rather than shelling out to the
+// system `git` CLI, so `git` is not required at runtime. Authentication is
+// handled via go-git transport methods, matching §15:
 //
-// Explicit auth is configured via config.Auth on the source:
-//
-//   - auth.type=ssh sets GIT_SSH_COMMAND to "ssh -i <key> -o
-//     IdentitiesOnly=yes" so a specific key is used without relying on the
-//     SSH agent. The key material is never read or logged by Accorda.
-//   - auth.type=https embeds the token in the remote URL so git's HTTPS
-//     transport uses it directly. The token never appears on the command
-//     line or in error output (§18, §56).
-//   - An empty auth.type inherits the ambient Git environment (SSH agent,
-//     credential helpers), which is the default for local development.
+//   - auth.type=ssh reads the private key from the configured path and uses
+//     go-git's SSH transport (ssh.PublicKeys). The key material is held in
+//     memory and never logged by Accorda.
+//   - auth.type=https uses the token as HTTP basic auth (http.BasicAuth) for
+//     go-git's HTTPS transport. The token never appears in Source.URL or in
+//     error output (§18, §56).
+//   - An empty auth.type means "use the ambient environment": go-git uses
+//     SSH agent for ssh:// URLs and unauthenticated HTTPS for https:// URLs.
 //
 // Fetch scope: Fetch updates only refs/remotes/origin/<configured branch>.
 // Reading desired state at a commit on a different branch requires that ref
