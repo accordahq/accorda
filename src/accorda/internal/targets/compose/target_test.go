@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 
 	"accorda/internal/config"
 	"accorda/internal/core/state"
@@ -26,9 +26,9 @@ type fakeDockerClient struct {
 	inspected  map[string]container.InspectResponse
 	inspectErr map[string]error
 	listErr    error
-	// lastFilters captures the filter args passed to ContainerList so tests
-	// can assert the project label filter was applied.
-	lastFilters filters.Args
+	// lastOptions captures the full ListOptions passed to ContainerList so
+	// tests can assert the All flag (drift visibility) and the label filter.
+	lastOptions container.ListOptions
 }
 
 func (f *fakeDockerClient) Ping(_ context.Context) (types.Ping, error) {
@@ -36,7 +36,7 @@ func (f *fakeDockerClient) Ping(_ context.Context) (types.Ping, error) {
 }
 
 func (f *fakeDockerClient) ContainerList(_ context.Context, options container.ListOptions) ([]container.Summary, error) {
-	f.lastFilters = options.Filters
+	f.lastOptions = options
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -78,16 +78,8 @@ func TestNew_RequiresFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty file/path, got nil")
 	}
-	if !contains(err.Error(), "file or target.path is required") {
+	if !strings.Contains(err.Error(), "file or target.path is required") {
 		t.Errorf("err = %v, want one mentioning file or path required", err)
-	}
-}
-
-func TestNew_RejectsNonComposeType(t *testing.T) {
-	_, err := New(config.Target{Type: config.TargetKubernetes, File: "x.yaml"},
-		WithDockerClient(&fakeDockerClient{}))
-	if err == nil {
-		t.Fatal("expected error for non-compose target type, got nil")
 	}
 }
 
@@ -126,7 +118,7 @@ func TestValidate_PingFails_IsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when docker ping fails, got nil")
 	}
-	if !contains(err.Error(), "docker ping") {
+	if !strings.Contains(err.Error(), "docker ping") {
 		t.Errorf("err = %v, want one mentioning docker ping", err)
 	}
 }
@@ -186,9 +178,9 @@ func TestCurrent_MapsContainersToRuntimeState(t *testing.T) {
 	}
 
 	// The list filter must select the project's containers.
-	if got := cli.lastFilters.Get("label"); len(got) == 0 {
+	if got := cli.lastOptions.Filters.Get("label"); len(got) == 0 {
 		t.Error("ContainerList called with no label filter")
-	} else if !contains(got[0], composeProjectLabel) || !contains(got[0], project) {
+	} else if !strings.Contains(got[0], composeProjectLabel) || !strings.Contains(got[0], project) {
 		t.Errorf("label filter = %v, want one referencing %q for %q", got, composeProjectLabel, project)
 	}
 }
@@ -447,15 +439,290 @@ func TestToRuntimeService_StatusAndHealth(t *testing.T) {
 	}
 }
 
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
+func TestNew_UsesPathWhenFileEmpty(t *testing.T) {
+	// cfg.Path is the §25 fallback when cfg.File is empty.
+	path := writeComposeFile(t)
+	tgt, err := New(config.Target{Type: config.TargetCompose, Path: path},
+		WithDockerClient(&fakeDockerClient{}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if tgt.file != path {
+		t.Errorf("file = %q, want %q", tgt.file, path)
+	}
 }
 
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
+func TestNew_EmptyTypeAllowed(t *testing.T) {
+	// An empty target type is accepted (the config loader defaults it); the
+	// driver assumes compose.
+	path := writeComposeFile(t)
+	tgt, err := New(config.Target{File: path}, WithDockerClient(&fakeDockerClient{}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if tgt.file != path {
+		t.Errorf("file = %q, want %q", tgt.file, path)
+	}
+}
+
+func TestNew_RejectsNonComposeType(t *testing.T) {
+	cases := []string{config.TargetKubernetes, config.TargetHelm, "weird"}
+	for _, ty := range cases {
+		_, err := New(config.Target{Type: ty, File: "x.yaml"},
+			WithDockerClient(&fakeDockerClient{}))
+		if err == nil {
+			t.Errorf("type %q: expected error, got nil", ty)
 		}
 	}
-	return -1
+}
+
+func TestValidate_NilReceiver_IsError(t *testing.T) {
+	var tgt *Target
+	if err := tgt.Validate(context.Background()); err == nil {
+		t.Fatal("expected error for nil receiver, got nil")
+	}
+}
+
+func TestValidate_NilDockerClient_IsError(t *testing.T) {
+	path := writeComposeFile(t)
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(&fakeDockerClient{}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tgt.docker = nil
+	if err := tgt.Validate(context.Background()); err == nil {
+		t.Fatal("expected error for nil docker client, got nil")
+	}
+}
+
+func TestCurrent_NilReceiver_IsError(t *testing.T) {
+	var tgt *Target
+	if _, err := tgt.Current(context.Background()); err == nil {
+		t.Fatal("expected error for nil receiver, got nil")
+	}
+}
+
+func TestCurrent_NilDockerClient_IsError(t *testing.T) {
+	path := writeComposeFile(t)
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(&fakeDockerClient{}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tgt.docker = nil
+	if _, err := tgt.Current(context.Background()); err == nil {
+		t.Fatal("expected error for nil docker client, got nil")
+	}
+}
+
+func TestCurrent_ListIncludesStoppedContainers_AllTrue(t *testing.T) {
+	// The drift-visibility guarantee depends on ContainerList being called
+	// with All=true so stopped containers are returned (docs/ACCORDA.md §5.3).
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{}
+	tgt := newTarget(t, path, cli)
+
+	if _, err := tgt.Current(context.Background()); err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if !cli.lastOptions.All {
+		t.Errorf("ContainerList All = false, want true (stopped containers must be included)")
+	}
+}
+
+func TestCurrent_HealthStarting_Mapped(t *testing.T) {
+	path := writeComposeFile(t)
+	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			{ID: "c1", Labels: map[string]string{
+				composeProjectLabel: project, composeServiceLabel: "api"}},
+		},
+		inspected: map[string]container.InspectResponse{
+			"c1": {ContainerJSONBase: &container.ContainerJSONBase{
+				Image: "api:1",
+				State: &container.State{Status: "running", Health: &container.Health{Status: "starting"}},
+			}},
+		},
+	}
+	tgt := newTarget(t, path, cli)
+
+	rs, err := tgt.Current(context.Background())
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if got := rs.Services["api"].Health; got != "starting" {
+		t.Errorf("Health = %q, want starting", got)
+	}
+}
+
+func TestCurrent_OnlyProjectLabelContainersUsed(t *testing.T) {
+	// Containers are pre-filtered by the engine via the label filter; the
+	// returned set must include every listed container that carries the
+	// service label, and the inspect image is what surfaces.
+	path := writeComposeFile(t)
+	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			{ID: "c1", Labels: map[string]string{
+				composeProjectLabel: project, composeServiceLabel: "api"}},
+		},
+		inspected: map[string]container.InspectResponse{
+			"c1": {ContainerJSONBase: &container.ContainerJSONBase{
+				Image: "ghcr.io/acme/api:2.4.1",
+				State: &container.State{Status: "running"},
+			}},
+		},
+	}
+	tgt := newTarget(t, path, cli)
+
+	rs, err := tgt.Current(context.Background())
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if got := rs.Services["api"].Image; got != "ghcr.io/acme/api:2.4.1" {
+		t.Errorf("Image = %q, want ghcr.io/acme/api:2.4.1", got)
+	}
+}
+
+func TestWithProjectName_NormalizesOverride(t *testing.T) {
+	// WithProjectName must normalize so an override with uppercase/space
+	// matches the com.docker.compose.project label Compose applies.
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			{ID: "c1", Labels: map[string]string{
+				composeProjectLabel: "myapp", composeServiceLabel: "api"}},
+		},
+		inspected: map[string]container.InspectResponse{
+			"c1": {ContainerJSONBase: &container.ContainerJSONBase{
+				State: &container.State{Status: "running"},
+			}},
+		},
+	}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithProjectName("My App!"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if tgt.project != "myapp" {
+		t.Fatalf("project = %q, want myapp after normalization", tgt.project)
+	}
+	if _, err := tgt.Current(context.Background()); err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+}
+
+func TestProjectFilters_SelectsProjectLabel(t *testing.T) {
+	args := projectFilters("myapp")
+	values := args.Get("label")
+	if len(values) != 1 {
+		t.Fatalf("got %d label filters, want 1", len(values))
+	}
+	want := composeProjectLabel + "=myapp"
+	if values[0] != want {
+		t.Errorf("label = %q, want %q", values[0], want)
+	}
+}
+
+func TestProjectFilters_ProjectWithHyphens(t *testing.T) {
+	args := projectFilters("my-app_2")
+	values := args.Get("label")
+	if len(values) != 1 {
+		t.Fatalf("got %d label filters, want 1", len(values))
+	}
+	want := composeProjectLabel + "=my-app_2"
+	if values[0] != want {
+		t.Errorf("label = %q, want %q", values[0], want)
+	}
+}
+
+func TestServiceName_NilLabelsReturnsEmpty(t *testing.T) {
+	if got := serviceName(nil); got != "" {
+		t.Errorf("serviceName(nil) = %q, want empty", got)
+	}
+	if got := serviceName(map[string]string{}); got != "" {
+		t.Errorf("serviceName(empty) = %q, want empty", got)
+	}
+	if got := serviceName(map[string]string{composeServiceLabel: "api"}); got != "api" {
+		t.Errorf("serviceName = %q, want api", got)
+	}
+}
+
+func TestToRuntimeService_StartingHealth(t *testing.T) {
+	inspect := container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			Image: "api:1",
+			State: &container.State{Status: "running", Health: &container.Health{Status: "starting"}},
+		},
+	}
+	want := state.RuntimeService{Status: "running", Health: "starting", Image: "api:1"}
+	if got := toRuntimeService(inspect); !reflect.DeepEqual(got, want) {
+		t.Errorf("toRuntimeService = %+v, want %+v", got, want)
+	}
+}
+
+func TestToRuntimeService_NoHealthcheckFieldIsEmpty(t *testing.T) {
+	inspect := container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			Image: "api:1",
+			State: &container.State{Status: "running", Health: &container.Health{Status: container.NoHealthcheck}},
+		},
+	}
+	want := state.RuntimeService{Status: "running", Health: "", Image: "api:1"}
+	if got := toRuntimeService(inspect); !reflect.DeepEqual(got, want) {
+		t.Errorf("toRuntimeService = %+v, want %+v", got, want)
+	}
+}
+
+func TestBaseName(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"compose.yaml", "compose.yaml"},
+		{"/srv/app/compose.yaml", "compose.yaml"},
+		{"a/b/c", "c"},
+		{"C:\\Users\\me\\compose.yaml", "compose.yaml"},
+		{"no-path", "no-path"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := baseName(c.in); got != c.want {
+			t.Errorf("baseName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestTrimSlashes(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"/srv/app/", "/srv/app"},
+		{"compose.yaml", "compose.yaml"},
+		{"a/b\\", "a/b"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := trimSlashes(c.in); got != c.want {
+			t.Errorf("trimSlashes(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestFileDir(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"/srv/app/compose.yaml", "app"},
+		{"compose.yaml", ""},
+		{"/home/user/My Service/compose.yaml", "myservice"},
+		{"", ""},
+		{"/root/compose.yaml", "root"},
+	}
+	for _, c := range cases {
+		if got := fileDir(c.in); got != c.want {
+			t.Errorf("fileDir(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
 }
