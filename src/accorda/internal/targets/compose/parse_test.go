@@ -1,0 +1,507 @@
+package compose
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"accorda/internal/core/state"
+)
+
+const fullCompose = `services:
+  api:
+    image: ghcr.io/acme/api:2.4.1
+    command: ["./api", "--port", "8080"]
+    environment:
+      LOG_LEVEL: warning
+      DEBUG: "true"
+    ports:
+      - "8080:8080"
+      - target: 9090
+        published: 9090
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - /etc/api:/etc/api:ro
+      - type: volume
+        source: data
+        target: /data
+    networks:
+      - frontend
+    labels:
+      app: api
+      tier: web
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    depends_on:
+      - postgres
+  postgres:
+    image: postgres:17
+    environment:
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_USER
+    volumes:
+      - /var/lib/postgresql/data
+    networks:
+      backend: {}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 30s
+
+networks:
+  frontend: {}
+  backend: {}
+
+volumes:
+  data: {}
+`
+
+func TestParse_FullExample(t *testing.T) {
+	services, err := Parse([]byte(fullCompose))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(services) != 2 {
+		t.Fatalf("got %d services, want 2: %+v", len(services), services)
+	}
+	t.Run("api", func(t *testing.T) { assertAPIService(t, services["api"]) })
+	t.Run("postgres", func(t *testing.T) { assertPostgresService(t, services["postgres"]) })
+}
+
+// assertAPIService checks the normalized fields of the `api` service.
+func assertAPIService(t *testing.T, api state.Service) {
+	t.Helper()
+	if api.Image != "ghcr.io/acme/api:2.4.1" {
+		t.Errorf("api.Image = %q, want ghcr.io/acme/api:2.4.1", api.Image)
+	}
+	wantCmd := []string{"./api", "--port", "8080"}
+	if !reflect.DeepEqual(api.Command, wantCmd) {
+		t.Errorf("api.Command = %v, want %v", api.Command, wantCmd)
+	}
+	assertEnv(t, "api", api.Env, map[string]string{"LOG_LEVEL": "warning", "DEBUG": "true"})
+	assertAPIPorts(t, api.Ports)
+	assertAPIVolumes(t, api.Volumes)
+	if !reflect.DeepEqual(sortedStrings(api.Networks), []string{"frontend"}) {
+		t.Errorf("api.Networks = %v, want [frontend]", api.Networks)
+	}
+	assertLabels(t, "api", api.Labels, map[string]string{"app": "api", "tier": "web"})
+	assertAPIHealthcheck(t, api.Healthcheck)
+	if !reflect.DeepEqual(sortedStrings(api.DependsOn), []string{"postgres"}) {
+		t.Errorf("api.DependsOn = %v, want [postgres]", api.DependsOn)
+	}
+}
+
+// assertPostgresService checks the normalized fields of the `postgres` service.
+func assertPostgresService(t *testing.T, pg state.Service) {
+	t.Helper()
+	if pg.Env["POSTGRES_PASSWORD"] != "secret" {
+		t.Errorf("postgres.Env[POSTGRES_PASSWORD] = %q, want secret", pg.Env["POSTGRES_PASSWORD"])
+	}
+	if _, ok := pg.Env["POSTGRES_USER"]; !ok {
+		t.Errorf("postgres.Env missing POSTGRES_USER, got %+v", pg.Env)
+	}
+	if len(pg.Volumes) != 1 || pg.Volumes[0].Target != "/var/lib/postgresql/data" {
+		t.Errorf("postgres.Volumes = %+v, want anonymous target /var/lib/postgresql/data", pg.Volumes)
+	}
+	if !reflect.DeepEqual(sortedStrings(pg.Networks), []string{"backend"}) {
+		t.Errorf("postgres.Networks = %v, want [backend]", pg.Networks)
+	}
+	if pg.Healthcheck.Test[0] != "CMD-SHELL" || pg.Healthcheck.Test[1] != "pg_isready" {
+		t.Errorf("postgres.Healthcheck.Test = %v, want [CMD-SHELL pg_isready]", pg.Healthcheck.Test)
+	}
+	if pg.Healthcheck.Interval != 30*time.Second {
+		t.Errorf("postgres.Healthcheck.Interval = %v, want 30s", pg.Healthcheck.Interval)
+	}
+}
+
+// assertEnv checks that env matches want for the named service.
+func assertEnv(t *testing.T, name string, env, want map[string]string) {
+	t.Helper()
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("%s.Env[%s] = %q, want %q", name, k, env[k], v)
+		}
+	}
+	if len(env) != len(want) {
+		t.Errorf("%s.Env = %v, want %v", name, env, want)
+	}
+}
+
+// assertAPIPorts checks the two normalized port entries for `api`.
+func assertAPIPorts(t *testing.T, ports []state.Port) {
+	t.Helper()
+	if len(ports) != 2 {
+		t.Fatalf("api.Ports = %v, want 2 entries", ports)
+	}
+	wantP0 := state.Port{Host: "8080", Container: "8080", Protocol: "tcp"}
+	if ports[0] != wantP0 {
+		t.Errorf("api.Ports[0] = %+v, want %+v", ports[0], wantP0)
+	}
+	wantP1 := state.Port{HostIP: "127.0.0.1", Host: "9090", Container: "9090", Protocol: "tcp"}
+	if ports[1] != wantP1 {
+		t.Errorf("api.Ports[1] = %+v, want %+v", ports[1], wantP1)
+	}
+}
+
+// assertAPIVolumes checks the two normalized volume entries for `api`.
+func assertAPIVolumes(t *testing.T, vols []state.Volume) {
+	t.Helper()
+	if len(vols) != 2 {
+		t.Fatalf("api.Volumes = %v, want 2 entries", vols)
+	}
+	wantV0 := state.Volume{Type: "bind", Source: "/etc/api", Target: "/etc/api", ReadOnly: true}
+	if vols[0] != wantV0 {
+		t.Errorf("api.Volumes[0] = %+v, want %+v", vols[0], wantV0)
+	}
+	wantV1 := state.Volume{Type: "volume", Source: "data", Target: "/data"}
+	if vols[1] != wantV1 {
+		t.Errorf("api.Volumes[1] = %+v, want %+v", vols[1], wantV1)
+	}
+}
+
+// assertLabels checks that labels matches want for the named service.
+func assertLabels(t *testing.T, name string, labels, want map[string]string) {
+	t.Helper()
+	for k, v := range want {
+		if labels[k] != v {
+			t.Errorf("%s.Labels[%s] = %q, want %q", name, k, labels[k], v)
+		}
+	}
+	if len(labels) != len(want) {
+		t.Errorf("%s.Labels = %v, want %v", name, labels, want)
+	}
+}
+
+// assertAPIHealthcheck checks the normalized healthcheck for `api`.
+func assertAPIHealthcheck(t *testing.T, hc state.Healthcheck) {
+	t.Helper()
+	wantHC := state.Healthcheck{
+		Test:     []string{"CMD", "curl", "-f", "http://localhost:8080/health"},
+		Interval: 5 * time.Second,
+		Timeout:  2 * time.Second,
+		Retries:  10,
+	}
+	if !reflect.DeepEqual(hc.Test, wantHC.Test) ||
+		hc.Interval != wantHC.Interval ||
+		hc.Timeout != wantHC.Timeout ||
+		hc.Retries != wantHC.Retries {
+		t.Errorf("api.Healthcheck = %+v, want %+v", hc, wantHC)
+	}
+}
+
+func TestParse_CommandShellForm(t *testing.T) {
+	data := []byte(`services:
+  api:
+    image: api:1
+    command: ./api --port 8080
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// compose-go splits the shell-form command into tokens.
+	cmd := services["api"].Command
+	if len(cmd) == 0 {
+		t.Fatal("Command is empty, want shell-form tokens")
+	}
+	if cmd[0] != "./api" {
+		t.Errorf("Command[0] = %q, want ./api", cmd[0])
+	}
+}
+
+func TestParse_HealthcheckScalarTest(t *testing.T) {
+	data := []byte(`services:
+  api:
+    image: api:1
+    healthcheck:
+      test: curl -f http://localhost:8080/health
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{"CMD-SHELL", "curl -f http://localhost:8080/health"}
+	if got := services["api"].Healthcheck.Test; !reflect.DeepEqual(got, want) {
+		t.Errorf("healthcheck test = %v, want %v", got, want)
+	}
+}
+
+func TestParse_NoServicesKey(t *testing.T) {
+	services, err := Parse([]byte(`version: "3"
+networks:
+  frontend: {}
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(services) != 0 {
+		t.Errorf("got %d services, want 0", len(services))
+	}
+}
+
+func TestParse_MissingImage_IsError(t *testing.T) {
+	data := []byte(`services:
+  api:
+    command: ["./api"]
+`)
+	_, err := Parse(data)
+	if err == nil {
+		t.Fatal("expected error for service without image, got nil")
+	}
+	// compose-go rejects a service that has neither image nor build before
+	// Accorda's own validation runs.
+	if !strings.Contains(err.Error(), "image") {
+		t.Errorf("unexpected error: %v, want one mentioning image", err)
+	}
+}
+
+func TestParse_BuildWithoutImage_IsError(t *testing.T) {
+	data := []byte(`services:
+  api:
+    build: .
+`)
+	_, err := Parse(data)
+	if err == nil {
+		t.Fatal("expected error for build-only service, got nil")
+	}
+	// A build-only service passes compose-go (which allows build), so Accorda's
+	// own image-required check in validateService fires.
+	if !strings.Contains(err.Error(), `service "api": image is required`) {
+		t.Errorf("unexpected error: %v, want one mentioning image is required", err)
+	}
+}
+
+func TestParse_PortWithoutContainer_IsError(t *testing.T) {
+	data := []byte(`services:
+  api:
+    image: api:1
+    ports:
+      - published: "8080"
+`)
+	_, err := Parse(data)
+	if err == nil {
+		t.Fatal("expected error for port without container, got nil")
+	}
+	// compose-go rejects a port without a target before Accorda's own
+	// validation runs.
+	if !strings.Contains(err.Error(), "target port") {
+		t.Errorf("unexpected error: %v, want one mentioning missing target port", err)
+	}
+}
+
+func TestParse_VolumeWithoutTarget_IsError(t *testing.T) {
+	data := []byte(`services:
+  api:
+    image: api:1
+    volumes:
+      - type: volume
+        source: data
+`)
+	_, err := Parse(data)
+	if err == nil {
+		t.Fatal("expected error for volume without target, got nil")
+	}
+	// compose-go rejects a volume without a mount target before Accorda's own
+	// validation runs.
+	if !strings.Contains(err.Error(), "mount target") {
+		t.Errorf("unexpected error: %v, want one mentioning missing mount target", err)
+	}
+}
+
+func TestParse_PortsStringForms(t *testing.T) {
+	cases := []struct {
+		in   string
+		want state.Port
+	}{
+		{"8080", state.Port{Container: "8080", Protocol: "tcp"}},
+		{"8080:8080", state.Port{Host: "8080", Container: "8080", Protocol: "tcp"}},
+		{"127.0.0.1:8080:8080", state.Port{HostIP: "127.0.0.1", Host: "8080", Container: "8080", Protocol: "tcp"}},
+		{"8080/udp", state.Port{Container: "8080", Protocol: "udp"}},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			data := []byte("services:\n  api:\n    image: api:1\n    ports:\n      - \"" + c.in + "\"\n")
+			services, err := Parse(data)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := services["api"].Ports[0]; got != c.want {
+				t.Errorf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestParse_EnvironmentMappingNullValue(t *testing.T) {
+	data := []byte(`services:
+  api:
+    image: api:1
+    environment:
+      UNSET_VAR:
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if v, ok := services["api"].Env["UNSET_VAR"]; !ok || v != "" {
+		t.Errorf("Env[UNSET_VAR] = %q (ok=%v), want empty string present", v, ok)
+	}
+}
+
+func TestParse_LabelsListForm(t *testing.T) {
+	data := []byte(`services:
+  api:
+    image: api:1
+    labels:
+      - app=api
+      - tier=web
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if services["api"].Labels["app"] != "api" || services["api"].Labels["tier"] != "web" {
+		t.Errorf("labels = %v", services["api"].Labels)
+	}
+}
+
+func TestParse_DependsOnMappingForm(t *testing.T) {
+	data := []byte(`services:
+  api:
+    image: api:1
+    depends_on:
+      postgres:
+        condition: service_healthy
+  postgres:
+    image: postgres:17
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// Assert the raw slice order (sorted by normalizeDependsOn), not a
+	// test-side re-sort, so the determinism contract is actually exercised.
+	want := []string{"postgres"}
+	if got := services["api"].DependsOn; !reflect.DeepEqual(got, want) {
+		t.Errorf("depends_on = %v, want %v", got, want)
+	}
+}
+
+func TestParse_DependsOnMultiple_IsSorted(t *testing.T) {
+	// With two depends_on entries the normalizer must return a stable,
+	// sorted order regardless of Go's randomized map iteration. The input
+	// deliberately declares the names in non-sorted order.
+	data := []byte(`services:
+  api:
+    image: api:1
+    depends_on:
+      worker:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+  postgres:
+    image: postgres:17
+  worker:
+    image: worker:1
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{"postgres", "worker"}
+	if got := services["api"].DependsOn; !reflect.DeepEqual(got, want) {
+		t.Errorf("depends_on = %v, want sorted %v", got, want)
+	}
+}
+
+func TestParse_NetworksMultiple_IsSorted(t *testing.T) {
+	// With two networks the normalizer must return a stable, sorted order
+	// regardless of Go's randomized map iteration. The input deliberately
+	// declares the names in non-sorted order.
+	data := []byte(`services:
+  api:
+    image: api:1
+    networks:
+      web: {}
+      backend: {}
+networks:
+  web: {}
+  backend: {}
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{"backend", "web"}
+	if got := services["api"].Networks; !reflect.DeepEqual(got, want) {
+		t.Errorf("networks = %v, want sorted %v", got, want)
+	}
+}
+
+func TestParse_NetworksMultiple_DeterministicAcrossRuns(t *testing.T) {
+	// Guard against map-iteration nondeterminism: the normalized networks
+	// slice must be identical across many parses of the same input.
+	data := []byte(`services:
+  api:
+    image: api:1
+    networks:
+      web: {}
+      backend: {}
+      internal: {}
+networks:
+  web: {}
+  backend: {}
+  internal: {}
+`)
+	first, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		svc, err := Parse(data)
+		if err != nil {
+			t.Fatalf("Parse run %d: %v", i, err)
+		}
+		if !reflect.DeepEqual(first["api"].Networks, svc["api"].Networks) {
+			t.Fatalf("run %d: networks = %v, want stable %v", i, svc["api"].Networks, first["api"].Networks)
+		}
+	}
+}
+
+func TestLoadFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(path, []byte(fullCompose), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	services, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if services["api"].Image != "ghcr.io/acme/api:2.4.1" {
+		t.Errorf("api.Image = %q", services["api"].Image)
+	}
+}
+
+func TestLoadFile_Missing(t *testing.T) {
+	_, err := LoadFile("/nonexistent/compose.yaml")
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
+// sortedStrings returns a sorted copy of s so map-order-independent
+// comparisons are deterministic.
+func sortedStrings(s []string) []string {
+	out := make([]string, len(s))
+	copy(out, s)
+	sort.Strings(out)
+	return out
+}

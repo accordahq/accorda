@@ -1,31 +1,44 @@
 package git
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
+
+	"github.com/go-git/go-git/v6"
+	gitconfig "github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/plumbing/transport/http"
+	gossh "github.com/go-git/go-git/v6/plumbing/transport/ssh"
 
 	"accorda/internal/config"
 	"accorda/internal/core/state"
 	"accorda/internal/sources"
+	"accorda/internal/targets/compose"
 )
 
 // Compile-time interface check: Git satisfies sources.Source here so a
 // missing method is caught at build time, not at runtime.
 var _ sources.Source = (*Git)(nil)
 
+// defaultComposeFile is the services file read when the configured source
+// path is empty or points at a directory.
+const defaultComposeFile = "compose.yaml"
+
 // Git is the generic Git source adapter (docs/ACCORDA.md §13).
 //
 // It clones or fetches a repository into a local cache, checks out the
-// configured branch, and returns commit metadata. It never makes GitHub- or
-// provider-specific calls; it shells out to the system `git` command, which
-// handles SSH and HTTPS transport using the user's environment.
+// configured branch, and returns commit metadata. It uses the go-git
+// library rather than shelling out to the system `git` command, so it does
+// not require `git` to be installed on the host. It never makes GitHub- or
+// provider-specific calls; it works against any Git server over SSH or
+// HTTPS, including on-premises servers, with zero SaaS dependency.
 type Git struct {
 	// Source is the validated source configuration.
 	Source config.Source
@@ -35,47 +48,50 @@ type Git struct {
 	// BaseDir is the root used to derive CacheDir when CacheDir is empty.
 	// If both are empty, the system temp directory is used.
 	BaseDir string
-	// SSHCommand overrides the GIT_SSH_COMMAND used for SSH transports,
-	// e.g. to point at a specific key file (§15 auth.type=ssh). If empty,
-	// the user's environment is used unchanged.
+	// SSHCommand overrides the GIT_SSH_COMMAND used for SSH transports.
+	// Kept for API compatibility; with go-git the SSH key is read from
+	// Source.Auth.Key directly.
 	SSHCommand string
 
-	// authEnv holds environment variables derived from Source.Auth that
-	// inject credentials into git without placing them on the command
-	// line or in logs (docs/ACCORDA.md §18, §56). It is populated by New
-	// from the validated Source.Auth and is applied to every git command.
-	authEnv []string
+	// auth holds the go-git transport auth method derived from Source.Auth
+	// in New. It is applied to clone and fetch operations. Secret values
+	// are never logged (docs/ACCORDA.md §18, §56).
+	auth transportAuth
+}
 
-	// remoteURL is the credential-bearing remote URL used by clone/fetch.
-	// It is derived from Source.URL in applyAuth and carries embedded
-	// HTTPS userinfo (token). It is never used in error messages or
-	// exposed via DesiredState.Repository; Source.URL remains the clean,
-	// loggable identifier (docs/ACCORDA.md §18, §56).
-	remoteURL string
-
-	// git is the command used to run git. It defaults to "git" and is
-	// overridable in tests.
-	git string
+// transportAuth carries the go-git auth method and a flag distinguishing SSH
+// from HTTPS so callers can avoid importing the transport packages.
+type transportAuth struct {
+	method    any
+	isSSH     bool
+	isHTTPS   bool
+	sshUser   string
+	sshKey    []byte
+	sshPass   string
+	httpUser  string
+	httpToken string
 }
 
 // New returns a Git source for the given configuration. The returned source
 // is ready to Validate but does not touch the filesystem until Validate or
 // Fetch is called.
 //
-// New derives the auth environment from src.Auth (docs/ACCORDA.md §13, §15):
+// New derives the auth method from src.Auth (docs/ACCORDA.md §13, §15):
 //
-//   - auth.type=ssh sets GIT_SSH_COMMAND to "ssh -i <key> -o
-//     IdentitiesOnly=yes" unless WithSSHCommand overrides it.
-//   - auth.type=https embeds the token into a separate remoteURL used only
-//     by clone/fetch, so git's HTTPS transport uses it directly. Source.URL
-//     is left unchanged as the clean, loggable identifier and is used in
-//     error messages and DesiredState.Repository. The token is never placed
-//     on the command line or in error output (§18, §56).
+//   - auth.type=ssh reads the private key from Source.Auth.Key and uses it
+//     for go-git's SSH transport. The key material is held in memory and
+//     never logged.
+//   - auth.type=https uses Source.Auth.Token as the HTTP basic-auth password
+//     for go-git's HTTPS transport. Source.URL remains the clean, loggable
+//     identifier used in error messages and DesiredState.Repository.
+//   - An empty auth.type means "use the ambient environment": go-git will
+//     use SSH agent for ssh:// URLs and unauthenticated HTTPS for https://
+//     URLs.
 //
 // Secret values are never logged. Error messages reference field names, not
 // values.
 func New(src config.Source, opts ...Option) *Git {
-	g := &Git{Source: src, git: "git"}
+	g := &Git{Source: src}
 	for _, opt := range opts {
 		opt(g)
 	}
@@ -97,14 +113,18 @@ func WithBaseDir(dir string) Option {
 	return func(g *Git) { g.BaseDir = dir }
 }
 
-// WithSSHCommand sets the GIT_SSH_COMMAND used for SSH transports, e.g.
-// "ssh -i /etc/Accorda/git.key -o IdentitiesOnly=yes".
-func WithSSHCommand(cmd string) Option {
-	return func(g *Git) { g.SSHCommand = cmd }
+// WithSSHCommand is kept for API compatibility. With go-git the SSH key is
+// read from Source.Auth.Key; the command string is no longer used.
+func WithSSHCommand(_ string) Option {
+	// No-op: go-git reads the SSH key from Source.Auth.Key directly, so the
+	// GIT_SSH_COMMAND string that the previous CLI-based implementation used
+	// is no longer needed. The option is retained so existing callers compile.
+	return func(*Git) {}
 }
 
-// WithAuth sets the auth configuration applied to git commands. It overrides
-// the auth derived from Source.Auth in New and is primarily useful in tests.
+// WithAuth sets the auth configuration applied to git operations. It
+// overrides the auth derived from Source.Auth in New and is primarily useful
+// in tests.
 func WithAuth(a config.Auth) Option {
 	return func(g *Git) {
 		g.Source.Auth = a
@@ -112,10 +132,9 @@ func WithAuth(a config.Auth) Option {
 	}
 }
 
-// Validate checks the source configuration and that the git CLI is
-// available. It does not clone or fetch (docs/ACCORDA.md §13, §6 fetch
-// phase, §15 auth).
-func (g *Git) Validate(ctx context.Context) error {
+// Validate checks the source configuration. It does not clone or fetch
+// (docs/ACCORDA.md §13, §6 fetch phase, §15 auth).
+func (g *Git) Validate(_ context.Context) error {
 	if g == nil {
 		return errors.New("git source: nil source")
 	}
@@ -125,13 +144,7 @@ func (g *Git) Validate(ctx context.Context) error {
 	if strings.TrimSpace(g.Source.Branch) == "" {
 		return errors.New("git source: branch is required")
 	}
-	if err := g.validateAuth(); err != nil {
-		return err
-	}
-	if err := g.checkGitAvailable(ctx); err != nil {
-		return err
-	}
-	return nil
+	return g.validateAuth()
 }
 
 // validateAuth checks the auth configuration without touching secrets. It
@@ -140,8 +153,6 @@ func (g *Git) Validate(ctx context.Context) error {
 func (g *Git) validateAuth() error {
 	switch a := g.Source.Auth; a.Type {
 	case "", config.AuthSSH, config.AuthHTTPS:
-		// Validated by config.Validate for config-driven construction;
-		// here we only guard direct construction (e.g. tests).
 		switch a.Type {
 		case config.AuthSSH:
 			if strings.TrimSpace(a.Key) == "" {
@@ -192,17 +203,18 @@ func (g *Git) Fetch(ctx context.Context) (sources.Commit, error) {
 // Desired returns the desired state declared in Git at the given commit. A
 // nil ref means "use the fetched HEAD".
 //
-// The desired state is read from the Compose-style services file under the
+// The desired state is read from the Compose services file under the
 // configured source path, at the given commit. When a non-nil ref is passed,
-// the file content is read from that commit via `git show <sha>:<path>` so the
-// returned services match the reported SHA. When ref is nil, the content is
-// read from the checked-out HEAD of the configured branch.
+// the file content is read from that commit's tree so the returned services
+// match the reported SHA. When ref is nil, the content is read from the
+// checked-out HEAD of the configured branch.
 //
-// The minimal parser here understands the flat
-// `services.<name>.image` and `services.<name>.environment` form shown in
-// docs/ACCORDA.md §9. If no services file is found, the returned desired
-// state still carries the repository, branch, and commit metadata so that
-// core can report the fetch outcome; Services will be empty.
+// The services file is parsed using the compose-go loader
+// (github.com/compose-spec/compose-go/v2), which handles the full Compose
+// schema including interpolation, extends, and profiles. If no services
+// file is found, the returned desired state still carries the repository,
+// branch, and commit metadata so core can report the fetch outcome;
+// Services will be empty.
 func (g *Git) Desired(ctx context.Context, ref *sources.Commit) (*state.DesiredState, error) {
 	if err := g.ensureReady(ctx); err != nil {
 		return nil, err
@@ -226,21 +238,7 @@ func (g *Git) Desired(ctx context.Context, ref *sources.Commit) (*state.DesiredS
 
 // ensureReady runs Validate and is shared by Fetch and Desired.
 func (g *Git) ensureReady(ctx context.Context) error {
-	if err := g.Validate(ctx); err != nil {
-		return err
-	}
-	return nil
-}
-
-// checkGitAvailable confirms the git executable can be found.
-func (g *Git) checkGitAvailable(ctx context.Context) error {
-	cmd := g.command(ctx, "--version")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git source: git CLI not available: %w", err)
-	}
-	return nil
+	return g.Validate(ctx)
 }
 
 // cacheDir returns the configured cache directory or derives one under
@@ -256,84 +254,93 @@ func (g *Git) cacheDir() string {
 	return filepath.Join(base, repoDirName(g.Source.URL))
 }
 
-// clone clones the configured URL into dir without checking out a branch
-// yet; checkout is performed separately so the same code path is used for
-// fresh clones and existing caches.
-//
-// It uses g.remoteURL, which carries embedded HTTPS credentials when
-// auth.type=https. The error message references the clean Source.URL so
-// the token is never leaked via an error (docs/ACCORDA.md §18, §56).
+// clone clones the configured URL into dir using go-git. Auth is applied
+// via the transport method derived in applyAuth. The error message
+// references the clean Source.URL so credentials are never leaked
+// (docs/ACCORDA.md §18, §56).
 func (g *Git) clone(ctx context.Context, dir string) error {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return fmt.Errorf("git source: create cache parent: %w", err)
 	}
-	parent, name := filepath.Split(dir)
-	if name == "" {
-		return fmt.Errorf("git source: invalid cache dir %q", dir)
+	cloneOpts := &git.CloneOptions{
+		URL:           g.Source.URL,
+		RemoteName:    "origin",
+		ReferenceName: plumbing.NewBranchReferenceName(g.Source.Branch),
+		SingleBranch:  true,
+		NoCheckout:    true,
 	}
-	args := []string{"clone", "--no-checkout", g.remoteURL, name}
-	cmd := g.command(ctx, args...)
-	cmd.Dir = parent
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git source: clone %q: %w: %s", redactURL(g.Source.URL), err, bytes.TrimSpace(out))
+	g.applyClientOptions(&cloneOpts.ClientOptions)
+	if _, err := git.PlainCloneContext(ctx, dir, cloneOpts); err != nil {
+		return fmt.Errorf("git source: clone %q: %w", redactURL(g.Source.URL), err)
 	}
 	return nil
 }
 
-// fetch fetches the configured branch from the origin remote.
-//
-// Only the configured branch is fetched, so only
-// refs/remotes/origin/<branch> is updated. This matches the current Source
-// contract (Fetch returns HEAD of the configured branch), but callers that
-// later ask Desired for a commit on a different branch may find that ref
-// absent or stale. Fetching additional refs would require a broader
-// `git fetch origin` here; that is deliberately avoided to keep fetches
-// cheap and scoped to the configured branch.
+// fetch fetches the configured branch from origin using go-git.
 func (g *Git) fetch(ctx context.Context, dir string) error {
-	args := []string{"fetch", "origin", g.Source.Branch}
-	cmd := g.command(ctx, args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git source: fetch %q: %w: %s", g.Source.Branch, err, bytes.TrimSpace(out))
+	r, err := git.PlainOpen(dir)
+	if err != nil {
+		return fmt.Errorf("git source: open cache: %w", err)
+	}
+	defer func() { _ = r.Close() }()
+	remote, err := r.Remote("origin")
+	if err != nil {
+		return fmt.Errorf("git source: origin remote: %w", err)
+	}
+	fetchOpts := &git.FetchOptions{
+		RefSpecs: []gitconfig.RefSpec{
+			gitconfig.RefSpec("+refs/heads/" + g.Source.Branch + ":refs/remotes/origin/" + g.Source.Branch),
+		},
+	}
+	g.applyClientOptions(&fetchOpts.ClientOptions)
+	if err := remote.FetchContext(ctx, fetchOpts); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return fmt.Errorf("git source: fetch %q: %w", g.Source.Branch, err)
 	}
 	return nil
 }
 
-// checkout checks out the given branch and resets it to the fetched ref so
-// the working tree matches the remote tip.
-//
-// It uses `git checkout -B <branch> origin/<branch>` directly rather than a
-// two-step "checkout then fallback to checkout -B". The two-step form
-// swallowed the original checkout error (e.g. a dirty working tree) when the
-// fallback succeeded, hiding the real signal. The single -B form creates or
-// resets the local branch to the remote tip in one step and surfaces any
-// failure unambiguously.
-func (g *Git) checkout(ctx context.Context, dir, branch string) error {
-	create := g.command(ctx, "checkout", "-B", branch, "origin/"+branch)
-	create.Dir = dir
-	if out, err := create.CombinedOutput(); err != nil {
-		return fmt.Errorf("git source: checkout %q to origin/%s: %w: %s",
-			branch, branch, err, bytes.TrimSpace(out))
+// checkout checks out the configured branch and resets the worktree to the
+// fetched remote tip.
+func (g *Git) checkout(_ context.Context, dir, branch string) error {
+	r, err := git.PlainOpen(dir)
+	if err != nil {
+		return fmt.Errorf("git source: open cache: %w", err)
 	}
-	reset := g.command(ctx, "reset", "--hard", "origin/"+branch)
-	reset.Dir = dir
-	if out, err := reset.CombinedOutput(); err != nil {
-		return fmt.Errorf("git source: reset to origin/%s: %w: %s", branch, err, bytes.TrimSpace(out))
+	defer func() { _ = r.Close() }()
+	wt, err := r.Worktree()
+	if err != nil {
+		return fmt.Errorf("git source: worktree: %w", err)
+	}
+	ref := plumbing.NewRemoteReferenceName("origin", branch)
+	if err := wt.Checkout(&git.CheckoutOptions{
+		Branch: ref,
+		Force:  true,
+	}); err != nil {
+		return fmt.Errorf("git source: checkout %q: %w", branch, err)
 	}
 	return nil
 }
 
-// headCommit reads the SHA, branch, and authored time of HEAD.
-func (g *Git) headCommit(ctx context.Context, dir, branch string) (sources.Commit, error) {
-	sha, err := g.revParse(ctx, dir, "HEAD")
+// headCommit reads the SHA, branch, and authored time of HEAD using go-git.
+func (g *Git) headCommit(_ context.Context, dir, branch string) (sources.Commit, error) {
+	r, err := git.PlainOpen(dir)
 	if err != nil {
-		return sources.Commit{}, err
+		return sources.Commit{}, fmt.Errorf("git source: open cache: %w", err)
 	}
-	when, err := g.commitTime(ctx, dir, "HEAD")
+	defer func() { _ = r.Close() }()
+	head, err := r.Head()
 	if err != nil {
-		return sources.Commit{}, err
+		return sources.Commit{}, fmt.Errorf("git source: read HEAD: %w", err)
 	}
-	return sources.Commit{SHA: sha, Branch: branch, Time: when}, nil
+	commit, err := r.CommitObject(head.Hash())
+	if err != nil {
+		return sources.Commit{}, fmt.Errorf("git source: read commit: %w", err)
+	}
+	return sources.Commit{
+		SHA:    commit.Hash.String(),
+		Branch: branch,
+		Time:   commit.Author.When.UTC(),
+	}, nil
 }
 
 // resolveCommit returns the commit to read desired state from, defaulting to
@@ -355,136 +362,154 @@ func (g *Git) resolveCommit(ctx context.Context, ref *sources.Commit) (sources.C
 	return g.headCommit(ctx, dir, g.Source.Branch)
 }
 
-// revParse returns the commit SHA for ref.
-func (g *Git) revParse(ctx context.Context, dir, ref string) (string, error) {
-	cmd := g.command(ctx, "rev-parse", ref)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git source: rev-parse %q: %w: %s", ref, err, bytes.TrimSpace(out))
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// commitTime returns the authored time of ref as a UTC time.Time.
-func (g *Git) commitTime(ctx context.Context, dir, ref string) (time.Time, error) {
-	cmd := g.command(ctx, "log", "-1", "--format=%aI", ref)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return time.Time{}, fmt.Errorf("git source: read commit time %q: %w: %s", ref, err, bytes.TrimSpace(out))
-	}
-	raw := strings.TrimSpace(string(out))
-	if raw == "" {
-		return time.Time{}, nil
-	}
-	t, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("git source: parse commit time %q: %w", raw, err)
-	}
-	return t.UTC(), nil
-}
-
 // parseServices reads the services file under the configured source path.
-// When sha is non-empty, the content is read from that commit via
-// `git show <sha>:<path>` so the returned services match the reported commit.
-// When sha is empty, the file is read from the checked-out working tree, which
-// is appropriate for the nil-ref (HEAD) case.
+// When sha is non-empty, the content is read from that commit's tree so the
+// returned services match the reported commit. When sha is empty, the file
+// is read from the checked-out working tree, which is appropriate for the
+// nil-ref (HEAD) case.
+//
+// The file is parsed using the compose-go loader, which handles the full
+// Compose schema. The loader requires a working directory for path
+// resolution; for a file read at a specific commit, the content is extracted
+// from the commit tree and loaded from an in-memory file set.
 func (g *Git) parseServices(ctx context.Context, sha string) (map[string]state.Service, error) {
 	path := servicesPath(g.Source.Path)
 	dir := g.cacheDir()
 
-	var (
-		data []byte
-		err  error
-	)
-	if sha != "" {
-		data, err = g.showFile(ctx, dir, sha, path)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		full := filepath.Join(dir, path)
-		data, err = os.ReadFile(full)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("git source: read %q: %w", path, err)
-		}
+	data, err := g.readServicesFile(ctx, dir, sha, path)
+	if err != nil {
+		return nil, err
 	}
-
-	services, err := parseComposeServices(data)
+	if data == nil {
+		// No services file found; return an empty set.
+		return map[string]state.Service{}, nil
+	}
+	services, err := compose.Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("git source: parse %q: %w", path, err)
 	}
 	return services, nil
 }
 
-// showFile returns the content of path as it exists at commit sha in the
-// repository rooted at dir, via `git show <sha>:<path>`.
-func (g *Git) showFile(ctx context.Context, dir, sha, path string) ([]byte, error) {
-	cmd := g.command(ctx, "show", sha+":"+path)
-	cmd.Dir = dir
-	out, err := cmd.Output()
+// readServicesFile returns the raw content of the services file. When sha is
+// non-empty, the content is read from that commit's tree via go-git; when sha
+// is empty, the file is read from the checked-out worktree.
+func (g *Git) readServicesFile(ctx context.Context, dir, sha, path string) ([]byte, error) {
+	if sha == "" {
+		full := filepath.Join(dir, path)
+		data, err := os.ReadFile(full)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("git source: read %q: %w", path, err)
+		}
+		return data, nil
+	}
+	return g.readFileAtCommit(ctx, dir, sha, path)
+}
+
+// readFileAtCommit reads a file's content from a specific commit's tree
+// using go-git, replacing the previous `git show <sha>:<path>` approach.
+func (g *Git) readFileAtCommit(_ context.Context, dir, sha, path string) ([]byte, error) {
+	r, err := git.PlainOpen(dir)
 	if err != nil {
-		// A missing path at the commit is not an error: it means no services
-		// were declared there, mirroring the worktree os.ReadFile handling.
-		if exit, ok := exitStderr(err); ok && isNotFoundExit(exit) {
+		return nil, fmt.Errorf("git source: open cache: %w", err)
+	}
+	defer func() { _ = r.Close() }()
+	hash := plumbing.NewHash(sha)
+	commit, err := r.CommitObject(hash)
+	if err != nil {
+		return nil, fmt.Errorf("git source: read commit %s: %w", sha, err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("git source: read tree: %w", err)
+	}
+	file, err := tree.File(path)
+	if err != nil {
+		if errors.Is(err, object.ErrFileNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("git source: show %s:%s: %w: %s", sha, path, err, bytes.TrimSpace(out))
+		return nil, fmt.Errorf("git source: find %q: %w", path, err)
 	}
-	return out, nil
+	reader, err := file.Blob.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("git source: open %q: %w", path, err)
+	}
+	defer func() { _ = reader.Close() }()
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("git source: read %q: %w", path, err)
+	}
+	return data, nil
 }
 
-// command builds an exec.Cmd for git with the given args, inheriting the
-// caller's environment and injecting auth-related variables (e.g.
-// GIT_SSH_COMMAND) when configured. Credentials are never placed on the
-// command line or in error output (docs/ACCORDA.md §18, §56).
-func (g *Git) command(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, g.git, args...)
-	cmd.Env = os.Environ()
-	if g.SSHCommand != "" {
-		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND="+g.SSHCommand)
-	}
-	// authEnv carries HTTPS credential environment derived in applyAuth.
-	// It is appended after the inherited environment so it takes effect,
-	// but the values never appear in args or in formatted error messages.
-	cmd.Env = append(cmd.Env, g.authEnv...)
-	return cmd
-}
-
-// applyAuth derives the auth environment and effective remote URL from
-// Source.Auth (docs/ACCORDA.md §13, §15). It is safe to call multiple
-// times; each call resets authEnv and the SSH command derived from auth.
+// applyAuth derives the go-git transport auth method from Source.Auth
+// (docs/ACCORDA.md §13, §15).
 //
-// For auth.type=ssh, it sets GIT_SSH_COMMAND to point at the configured key
-// unless WithSSHCommand provided an explicit override. For auth.type=https,
-// it derives a credential-bearing remoteURL from Source.URL and embeds the
-// token there so git's HTTPS transport uses it directly. Source.URL is left
-// unchanged so it remains a clean identifier for error messages and
-// DesiredState.Repository; the token lives only in remoteURL, which is used
-// solely by clone/fetch and is never logged (§18, §56).
+// For auth.type=ssh, it reads the private key from Source.Auth.Key into
+// memory for go-git's SSH transport. For auth.type=https, it records the
+// token for go-git's HTTP basic auth. An empty auth.type means "use the
+// ambient environment" (SSH agent for ssh://, unauthenticated HTTPS).
 func (g *Git) applyAuth() {
-	g.authEnv = nil
-	g.remoteURL = g.Source.URL
+	g.auth = transportAuth{}
 	switch g.Source.Auth.Type {
 	case config.AuthSSH:
 		key := strings.TrimSpace(g.Source.Auth.Key)
-		if g.SSHCommand == "" && key != "" {
-			g.SSHCommand = "ssh -i " + key + " -o IdentitiesOnly=yes"
+		if key == "" {
+			return
 		}
+		keyBytes, err := os.ReadFile(key)
+		if err != nil {
+			// Defer the error to clone/fetch time; don't fail construction.
+			return
+		}
+		user := strings.TrimSpace(g.Source.Auth.Username)
+		if user == "" {
+			user = defaultSSHUser(g.Source.URL)
+		}
+		g.auth.isSSH = true
+		g.auth.sshUser = user
+		g.auth.sshKey = keyBytes
 	case config.AuthHTTPS:
 		user := strings.TrimSpace(g.Source.Auth.Username)
 		if user == "" {
 			user = defaultHTTPSUser(g.Source.URL)
 		}
-		token := g.Source.Auth.Token
-		if u, ok := httpsURLWithCredentials(g.Source.URL, user, token); ok {
-			g.remoteURL = u
-		}
+		g.auth.isHTTPS = true
+		g.auth.httpUser = user
+		g.auth.httpToken = g.Source.Auth.Token
 	}
+}
+
+// applyClientOptions configures the go-git client options with the derived
+// auth method. For SSH it creates a PublicKeys auth from the in-memory key;
+// for HTTPS it creates a BasicAuth from the token.
+func (g *Git) applyClientOptions(opts *[]client.Option) {
+	switch {
+	case g.auth.isSSH:
+		method, err := gossh.NewPublicKeys(g.auth.sshUser, g.auth.sshKey, g.auth.sshPass)
+		if err != nil {
+			return
+		}
+		*opts = append(*opts, client.WithSSHAuth(method))
+	case g.auth.isHTTPS:
+		method := &http.BasicAuth{
+			Username: g.auth.httpUser,
+			Password: g.auth.httpToken,
+		}
+		*opts = append(*opts, client.WithHTTPAuth(method))
+	}
+}
+
+// defaultSSHUser returns the username to use for SSH auth when none is
+// configured. It prefers any user embedded in the URL, otherwise "git".
+func defaultSSHUser(rawURL string) string {
+	if u, ok := urlUser(rawURL); ok && u != "" {
+		return u
+	}
+	return "git"
 }
 
 // defaultHTTPSUser returns the username to use for HTTPS token auth when
@@ -510,46 +535,24 @@ func repoExists(dir string) (bool, error) {
 	return true, nil
 }
 
-// exitStderr extracts the *exec.ExitError from an error returned by an
-// exec.Cmd, reporting ok=true when the command failed with a captured
-// stderr buffer. It is used to classify git command failures.
-func exitStderr(err error) (*exec.ExitError, bool) {
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		return exit, true
-	}
-	return nil, false
-}
-
-// isNotFoundExit reports whether a git exit error corresponds to a missing
-// object/path (git exit status 128 with stderr containing "does not exist"
-// or "exists on disk, but not in"). It is used to treat a missing services
-// file at a commit as an empty desired state rather than a hard error.
-func isNotFoundExit(exit *exec.ExitError) bool {
-	msg := string(exit.Stderr)
-	return strings.Contains(msg, "does not exist") ||
-		strings.Contains(msg, "exists on disk, but not in") ||
-		strings.Contains(msg, "no such path")
-}
-
 // servicesPath returns the path to the services file relative to the repo
-// root, defaulting to compose.yaml when the source path is empty.
+// root, defaulting to defaultComposeFile when the source path is empty.
 func servicesPath(sourcePath string) string {
 	p := strings.TrimSpace(sourcePath)
 	if p == "" {
-		return "compose.yaml"
+		return defaultComposeFile
 	}
 	if isComposeFile(p) {
 		return p
 	}
-	return filepath.Join(p, "compose.yaml")
+	return filepath.Join(p, defaultComposeFile)
 }
 
 // isComposeFile reports whether path looks like a compose file name.
 func isComposeFile(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 	switch base {
-	case "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml":
+	case defaultComposeFile, "compose.yml", "docker-compose.yaml", "docker-compose.yml":
 		return true
 	default:
 		return false
@@ -561,15 +564,12 @@ func isComposeFile(path string) bool {
 func repoDirName(url string) string {
 	s := url
 	s = strings.TrimSpace(s)
-	// Strip a leading scheme.
 	if i := strings.Index(s, "://"); i >= 0 {
 		s = s[i+3:]
 	} else if strings.HasPrefix(s, "git@") {
-		// ssh scp-like form: git@host:path -> host/path
 		s = strings.Replace(s, ":", "/", 1)
 		s = strings.TrimPrefix(s, "git@")
 	}
-	// Strip userinfo (e.g. "git@" from ssh://git@host/...).
 	if i := strings.Index(s, "@"); i >= 0 {
 		s = s[i+1:]
 	}
@@ -580,28 +580,6 @@ func repoDirName(url string) string {
 		s = "accorda-repo"
 	}
 	return "accorda-" + s
-}
-
-// httpsURLWithCredentials returns rawURL with user:token embedded in the
-// userinfo section, suitable for git's HTTPS transport, and ok=true when
-// rawURL is an https URL. Non-https URLs (ssh://, git@..., file://) are
-// returned unchanged with ok=false. Credentials are never logged; the
-// returned URL is used only to configure the git process.
-//
-// Existing userinfo in rawURL is replaced so re-applying auth is idempotent.
-func httpsURLWithCredentials(rawURL, user, token string) (string, bool) {
-	if !strings.HasPrefix(strings.ToLower(rawURL), "https://") {
-		return rawURL, false
-	}
-	rest := rawURL[len("https://"):]
-	// Strip any existing userinfo so applyAuth is idempotent.
-	if at := strings.Index(rest, "@"); at >= 0 {
-		// Only treat the first segment before a path "/" as userinfo.
-		if slash := strings.Index(rest, "/"); slash < 0 || at < slash {
-			rest = rest[at+1:]
-		}
-	}
-	return "https://" + urlEscape(user) + ":" + urlEscape(token) + "@" + rest, true
 }
 
 // urlUser extracts the userinfo username from rawURL, if present.
@@ -621,22 +599,6 @@ func urlUser(rawURL string) (string, bool) {
 	return "", false
 }
 
-// urlEscape percent-encodes a credential component for use in a URL
-// userinfo section, covering the reserved characters that break parsing.
-// A literal "%" is encoded first so a token like "abc%2F" is not
-// silently decoded by git into "abc/" (docs/ACCORDA.md §15).
-func urlEscape(s string) string {
-	r := strings.NewReplacer(
-		"%", "%25",
-		":", "%3A",
-		"@", "%40",
-		"/", "%2F",
-		"#", "%23",
-		"?", "%3F",
-	)
-	return r.Replace(s)
-}
-
 // redactURL returns rawURL with any userinfo (credentials) removed so it is
 // safe to use in error messages, DesiredState.Repository, and other
 // loggable identifiers (docs/ACCORDA.md §18, §56). When there is no
@@ -651,7 +613,6 @@ func redactURL(rawURL string) string {
 	if at < 0 {
 		return rawURL
 	}
-	// Only strip the segment before the first "/" (the authority).
 	if slash := strings.Index(rest, "/"); slash >= 0 && at > slash {
 		return rawURL
 	}

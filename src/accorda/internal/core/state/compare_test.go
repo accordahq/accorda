@@ -186,19 +186,24 @@ func TestCompare_OrphanRuntimeService_IsDrifted(t *testing.T) {
 }
 
 func TestCompare_OutOfSyncTakesPrecedenceOverDrifted(t *testing.T) {
-	// One service is out of sync (not deployed), another is drifted
-	// (stopped at runtime). The aggregate must be OUT_OF_SYNC because a
-	// pending deploy supersedes drift repair.
+	// One service is out of sync (desired but not deployed), another is
+	// drifted (deployed but stopped at runtime). The aggregate must be
+	// OUT_OF_SYNC because a pending deploy supersedes drift repair.
 	cmp := Compare(
 		desired("a84fd21", map[string]Service{"api": svc("api:1"), "worker": svc("worker:1")}),
-		deployed("dep_1", "a84fd21", map[string]Service{"api": svc("api:1")}),
-		runtime(map[string]RuntimeService{"api": rsvc("api:1", "running")}),
+		deployed("dep_1", "a84fd21", map[string]Service{"worker": svc("worker:1")}),
+		runtime(map[string]RuntimeService{"worker": {Status: "stopped", Image: "worker:1"}}),
 	)
 	if cmp.Result != ResultOutOfSync {
 		t.Fatalf("Result = %s, want %s", cmp.Result, ResultOutOfSync)
 	}
-	if got := cmp.Services["worker"].Result; got != ResultOutOfSync {
-		t.Fatalf("worker: %s, want %s", got, ResultOutOfSync)
+	// api is out of sync (desired but not deployed).
+	if got := cmp.Services["api"].Result; got != ResultOutOfSync {
+		t.Fatalf("api: %s, want %s", got, ResultOutOfSync)
+	}
+	// worker is drifted (deployed and matched, but stopped at runtime).
+	if got := cmp.Services["worker"].Result; got != ResultDrifted {
+		t.Fatalf("worker: %s, want %s", got, ResultDrifted)
 	}
 }
 

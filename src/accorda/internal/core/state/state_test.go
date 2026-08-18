@@ -13,8 +13,19 @@ func TestDesiredState_Clone_IsDeepCopy(t *testing.T) {
 		CommitTime: time.Unix(1700000000, 0),
 		Services: map[string]Service{
 			"api": {
-				Image: "ghcr.io/acme/api:2.4.1",
-				Env:   map[string]string{"LOG_LEVEL": "info"},
+				Image:    "ghcr.io/acme/api:2.4.1",
+				Command:  []string{"./api", "--port", "8080"},
+				Env:      map[string]string{"LOG_LEVEL": "info"},
+				Ports:    []Port{{Host: "8080", Container: "8080", Protocol: "tcp"}},
+				Volumes:  []Volume{{Type: "bind", Source: "/etc/api", Target: "/etc/api", ReadOnly: true}},
+				Networks: []string{"frontend"},
+				Labels:   map[string]string{"app": "api"},
+				Healthcheck: Healthcheck{
+					Test:     []string{"CMD", "curl"},
+					Interval: 5 * time.Second,
+					Retries:  10,
+				},
+				DependsOn: []string{"postgres"},
 			},
 		},
 	}
@@ -25,6 +36,14 @@ func TestDesiredState_Clone_IsDeepCopy(t *testing.T) {
 	api := clone.Services["api"]
 	api.Image = "ghcr.io/acme/api:9.9.9"
 	api.Env["LOG_LEVEL"] = "debug"
+	api.Command[0] = "mutated"
+	api.Ports[0].Host = "9999"
+	api.Volumes[0].Target = "/mutated"
+	api.Networks[0] = "mutated"
+	api.Labels["app"] = "mutated"
+	api.Healthcheck.Test[0] = "mutated"
+	api.Healthcheck.Retries = 99
+	api.DependsOn[0] = "mutated"
 	clone.Services["api"] = api
 	clone.Services["worker"] = Service{Image: "ghcr.io/acme/worker:1.0"}
 
@@ -33,6 +52,30 @@ func TestDesiredState_Clone_IsDeepCopy(t *testing.T) {
 	}
 	if got := original.Services["api"].Env["LOG_LEVEL"]; got != "info" {
 		t.Errorf("original env mutated by clone: got %q, want %q", got, "info")
+	}
+	if got := original.Services["api"].Command[0]; got != "./api" {
+		t.Errorf("original command mutated by clone: got %q, want ./api", got)
+	}
+	if got := original.Services["api"].Ports[0].Host; got != "8080" {
+		t.Errorf("original port mutated by clone: got %q, want 8080", got)
+	}
+	if got := original.Services["api"].Volumes[0].Target; got != "/etc/api" {
+		t.Errorf("original volume mutated by clone: got %q, want /etc/api", got)
+	}
+	if got := original.Services["api"].Networks[0]; got != "frontend" {
+		t.Errorf("original network mutated by clone: got %q, want frontend", got)
+	}
+	if got := original.Services["api"].Labels["app"]; got != "api" {
+		t.Errorf("original label mutated by clone: got %q, want api", got)
+	}
+	if got := original.Services["api"].Healthcheck.Test[0]; got != "CMD" {
+		t.Errorf("original healthcheck mutated by clone: got %q, want CMD", got)
+	}
+	if got := original.Services["api"].Healthcheck.Retries; got != 10 {
+		t.Errorf("original healthcheck retries mutated by clone: got %d, want 10", got)
+	}
+	if got := original.Services["api"].DependsOn[0]; got != "postgres" {
+		t.Errorf("original depends_on mutated by clone: got %q, want postgres", got)
 	}
 	if _, ok := original.Services["worker"]; ok {
 		t.Errorf("original gained service from clone: %v", original.Services)
