@@ -40,6 +40,12 @@ type Git struct {
 	// the user's environment is used unchanged.
 	SSHCommand string
 
+	// authEnv holds environment variables derived from Source.Auth that
+	// inject credentials into git without placing them on the command
+	// line or in logs (docs/ACCORDA.md §18, §56). It is populated by New
+	// from the validated Source.Auth and is applied to every git command.
+	authEnv []string
+
 	// git is the command used to run git. It defaults to "git" and is
 	// overridable in tests.
 	git string
@@ -48,11 +54,23 @@ type Git struct {
 // New returns a Git source for the given configuration. The returned source
 // is ready to Validate but does not touch the filesystem until Validate or
 // Fetch is called.
+//
+// New derives the auth environment from src.Auth (docs/ACCORDA.md §13, §15):
+//
+//   - auth.type=ssh sets GIT_SSH_COMMAND to "ssh -i <key> -o
+//     IdentitiesOnly=yes" unless WithSSHCommand overrides it.
+//   - auth.type=https records the token in the process environment only; it
+//     is never placed on the command line. The remote URL is rewritten to
+//     embed the credentials so git's HTTPS transport uses them directly.
+//
+// Secret values are never logged. Error messages reference field names, not
+// values.
 func New(src config.Source, opts ...Option) *Git {
 	g := &Git{Source: src, git: "git"}
 	for _, opt := range opts {
 		opt(g)
 	}
+	g.applyAuth()
 	return g
 }
 
@@ -76,9 +94,18 @@ func WithSSHCommand(cmd string) Option {
 	return func(g *Git) { g.SSHCommand = cmd }
 }
 
+// WithAuth sets the auth configuration applied to git commands. It overrides
+// the auth derived from Source.Auth in New and is primarily useful in tests.
+func WithAuth(a config.Auth) Option {
+	return func(g *Git) {
+		g.Source.Auth = a
+		g.applyAuth()
+	}
+}
+
 // Validate checks the source configuration and that the git CLI is
 // available. It does not clone or fetch (docs/ACCORDA.md §13, §6 fetch
-// phase).
+// phase, §15 auth).
 func (g *Git) Validate(ctx context.Context) error {
 	if g == nil {
 		return errors.New("git source: nil source")
@@ -89,8 +116,36 @@ func (g *Git) Validate(ctx context.Context) error {
 	if strings.TrimSpace(g.Source.Branch) == "" {
 		return errors.New("git source: branch is required")
 	}
+	if err := g.validateAuth(); err != nil {
+		return err
+	}
 	if err := g.checkGitAvailable(ctx); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateAuth checks the auth configuration without touching secrets. It
+// reports field-oriented errors and never includes token or key values
+// (docs/ACCORDA.md §18, §56).
+func (g *Git) validateAuth() error {
+	switch a := g.Source.Auth; a.Type {
+	case "", config.AuthSSH, config.AuthHTTPS:
+		// Validated by config.Validate for config-driven construction;
+		// here we only guard direct construction (e.g. tests).
+		switch a.Type {
+		case config.AuthSSH:
+			if strings.TrimSpace(a.Key) == "" {
+				return errors.New("git source: auth.key is required when auth.type is \"ssh\"")
+			}
+		case config.AuthHTTPS:
+			if strings.TrimSpace(a.Token) == "" {
+				return errors.New("git source: auth.token is required when auth.type is \"https\"")
+			}
+		}
+	default:
+		return fmt.Errorf("git source: auth.type %q is not supported (want %q or %q)",
+			a.Type, config.AuthSSH, config.AuthHTTPS)
 	}
 	return nil
 }
@@ -371,14 +426,59 @@ func (g *Git) showFile(ctx context.Context, dir, sha, path string) ([]byte, erro
 }
 
 // command builds an exec.Cmd for git with the given args, inheriting the
-// caller's environment and injecting GIT_SSH_COMMAND when configured.
+// caller's environment and injecting auth-related variables (e.g.
+// GIT_SSH_COMMAND) when configured. Credentials are never placed on the
+// command line or in error output (docs/ACCORDA.md §18, §56).
 func (g *Git) command(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, g.git, args...)
 	cmd.Env = os.Environ()
 	if g.SSHCommand != "" {
 		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND="+g.SSHCommand)
 	}
+	// authEnv carries HTTPS credential environment derived in applyAuth.
+	// It is appended after the inherited environment so it takes effect,
+	// but the values never appear in args or in formatted error messages.
+	cmd.Env = append(cmd.Env, g.authEnv...)
 	return cmd
+}
+
+// applyAuth derives the auth environment and effective remote URL from
+// Source.Auth (docs/ACCORDA.md §13, §15). It is safe to call multiple
+// times; each call resets authEnv and the SSH command derived from auth.
+//
+// For auth.type=ssh, it sets GIT_SSH_COMMAND to point at the configured key
+// unless WithSSHCommand provided an explicit override. For auth.type=https,
+// it embeds the token into the remote URL so git's HTTPS transport uses it
+// directly; the credentials live only in the in-memory URL string and the
+// process environment passed to git, never in logs.
+func (g *Git) applyAuth() {
+	g.authEnv = nil
+	switch g.Source.Auth.Type {
+	case config.AuthSSH:
+		key := strings.TrimSpace(g.Source.Auth.Key)
+		if g.SSHCommand == "" && key != "" {
+			g.SSHCommand = "ssh -i " + key + " -o IdentitiesOnly=yes"
+		}
+	case config.AuthHTTPS:
+		user := strings.TrimSpace(g.Source.Auth.Username)
+		if user == "" {
+			user = defaultHTTPSUser(g.Source.URL)
+		}
+		token := g.Source.Auth.Token
+		if u, ok := httpsURLWithCredentials(g.Source.URL, user, token); ok {
+			g.Source.URL = u
+		}
+	}
+}
+
+// defaultHTTPSUser returns the username to use for HTTPS token auth when
+// none is configured. It prefers any user embedded in the URL, otherwise
+// "oauth2", the conventional username for token-based Git HTTPS auth.
+func defaultHTTPSUser(rawURL string) string {
+	if u, ok := urlUser(rawURL); ok && u != "" {
+		return u
+	}
+	return "oauth2"
 }
 
 // repoExists reports whether dir looks like an existing Git repository.
@@ -464,4 +564,56 @@ func repoDirName(url string) string {
 		s = "accorda-repo"
 	}
 	return "accorda-" + s
+}
+
+// httpsURLWithCredentials returns rawURL with user:token embedded in the
+// userinfo section, suitable for git's HTTPS transport, and ok=true when
+// rawURL is an https URL. Non-https URLs (ssh://, git@..., file://) are
+// returned unchanged with ok=false. Credentials are never logged; the
+// returned URL is used only to configure the git process.
+//
+// Existing userinfo in rawURL is replaced so re-applying auth is idempotent.
+func httpsURLWithCredentials(rawURL, user, token string) (string, bool) {
+	if !strings.HasPrefix(strings.ToLower(rawURL), "https://") {
+		return rawURL, false
+	}
+	rest := rawURL[len("https://"):]
+	// Strip any existing userinfo so applyAuth is idempotent.
+	if at := strings.Index(rest, "@"); at >= 0 {
+		// Only treat the first segment before a path "/" as userinfo.
+		if slash := strings.Index(rest, "/"); slash < 0 || at < slash {
+			rest = rest[at+1:]
+		}
+	}
+	return "https://" + urlEscape(user) + ":" + urlEscape(token) + "@" + rest, true
+}
+
+// urlUser extracts the userinfo username from rawURL, if present.
+func urlUser(rawURL string) (string, bool) {
+	if i := strings.Index(rawURL, "://"); i >= 0 {
+		rest := rawURL[i+3:]
+		if at := strings.Index(rest, "@"); at >= 0 {
+			if slash := strings.Index(rest, "/"); slash < 0 || at < slash {
+				userinfo := rest[:at]
+				if c := strings.Index(userinfo, ":"); c >= 0 {
+					userinfo = userinfo[:c]
+				}
+				return userinfo, userinfo != ""
+			}
+		}
+	}
+	return "", false
+}
+
+// urlEscape percent-encodes a credential component for use in a URL
+// userinfo section, covering the reserved characters that break parsing.
+func urlEscape(s string) string {
+	r := strings.NewReplacer(
+		":", "%3A",
+		"@", "%40",
+		"/", "%2F",
+		"#", "%23",
+		"?", "%3F",
+	)
+	return r.Replace(s)
 }
