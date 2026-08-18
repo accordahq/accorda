@@ -626,11 +626,28 @@ func TestServiceName_NilLabelsReturnsEmpty(t *testing.T) {
 }
 
 func TestMergeRuntime_DisagreeIsDegraded(t *testing.T) {
-	a := state.RuntimeService{Status: "running", Health: "healthy", Image: "api:1"}
-	b := state.RuntimeService{Status: "exited", Health: "", Image: "api:1"}
-	want := state.RuntimeService{Status: degradedStatus, Health: "", Image: "api:1"}
-	if got := mergeRuntime(a, b); !reflect.DeepEqual(got, want) {
-		t.Errorf("mergeRuntime = %+v, want %+v", got, want)
+	cases := []struct {
+		name string
+		a, b state.RuntimeService
+	}{
+		{
+			name: "status disagreement",
+			a:    state.RuntimeService{Status: "running", Health: "healthy", Image: "api:1"},
+			b:    state.RuntimeService{Status: "exited", Health: "", Image: "api:1"},
+		},
+		{
+			name: "health disagreement",
+			a:    state.RuntimeService{Status: "running", Health: "healthy", Image: "api:1"},
+			b:    state.RuntimeService{Status: "running", Health: "unhealthy", Image: "api:1"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			want := state.RuntimeService{Status: degradedStatus, Health: "", Image: "api:1"}
+			if got := mergeRuntime(c.a, c.b); !reflect.DeepEqual(got, want) {
+				t.Errorf("mergeRuntime = %+v, want %+v", got, want)
+			}
+		})
 	}
 }
 
