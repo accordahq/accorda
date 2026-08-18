@@ -16,11 +16,12 @@
 // state.RuntimeState (docs/ACCORDA.md §5.3). The Plan phase computes the
 // desired-vs-deployed diff (docs/ACCORDA.md §9) by delegating to
 // plan.DriftActions, producing a per-service CHANGED/UNCHANGED plan without
-// applying it. The Apply phase executes a plan by running the equivalent of
-// `docker compose up -d` scoped to the changed services (docs/ACCORDA.md §9),
-// delegating to a composeRunner seam so the `docker compose` CLI stays
-// confined to this adapter. The Docker engine is reached through the Docker
-// SDK (github.com/docker/docker), confined to this adapter via a dockerClient
-// seam so core never imports it (docs/DECISIONS.md #3). Health remains
-// stubbed until a later milestone.
+// applying it, and prepends pull actions according to the image pull policy
+// (docs/ACCORDA.md §9: changed, missing, always, never). The Apply phase
+// executes a plan by running the equivalent of `docker compose up -d` scoped
+// to the changed services (docs/ACCORDA.md §9), delegating to a composeRunner
+// seam so the `docker compose` CLI stays confined to this adapter. The Docker
+// engine is reached through the Docker SDK (github.com/docker/docker),
+// confined to this adapter via a dockerClient seam so core never imports it
+// (docs/DECISIONS.md #3). Health remains stubbed until a later milestone.
 package compose

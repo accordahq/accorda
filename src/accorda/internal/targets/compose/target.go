@@ -61,6 +61,9 @@ type Target struct {
 	// runner executes `docker compose` subcommands for Apply. It is injected
 	// so tests can substitute a fake without a `docker compose` binary.
 	runner composeRunner
+	// pullPolicy selects which images to pull before deployment
+	// (docs/ACCORDA.md §9). It defaults to config.PullChanged.
+	pullPolicy string
 }
 
 // Option configures a Compose Target.
@@ -78,6 +81,17 @@ func WithDockerClient(c dockerClient) Option {
 // cliRunner that shells out to `docker compose`.
 func WithRunner(r composeRunner) Option {
 	return func(t *Target) { t.runner = r }
+}
+
+// WithPullPolicy sets the image pull policy the target uses to decide which
+// images to pull before deployment (docs/ACCORDA.md §9). It accepts one of
+// config.PullChanged, config.PullMissing, config.PullAlways, or
+// config.PullNever. It is primarily intended for tests and for callers that
+// construct a Target directly from a config.Target without a full
+// config.Project; the reconcile loop supplies the policy from the project's
+// images.pull setting.
+func WithPullPolicy(policy string) Option {
+	return func(t *Target) { t.pullPolicy = policy }
 }
 
 // New constructs a Compose Target from an Accorda project's target
@@ -101,7 +115,7 @@ func New(cfg config.Target, opts ...Option) (*Target, error) {
 	if file == "" {
 		return nil, errors.New("compose target: target.file or target.path is required")
 	}
-	t := &Target{file: file, project: composeProjectName(file)}
+	t := &Target{file: file, project: composeProjectName(file), pullPolicy: config.PullChanged}
 	for _, opt := range opts {
 		opt(t)
 	}
@@ -204,7 +218,10 @@ func (t *Target) Current(ctx context.Context) (*state.RuntimeState, error) {
 // target's current state (docs/ACCORDA.md §6 plan phase, §9, §12). It reads
 // the runtime state via Current and delegates the desired-vs-deployed diff to
 // the target-agnostic plan.DriftActions helper, producing a per-service
-// CHANGED/UNCHANGED plan without applying anything.
+// CHANGED/UNCHANGED plan without applying anything. It then prepends pull
+// actions according to the target's image pull policy (docs/ACCORDA.md §9):
+// changed pulls only changed services' images, missing pulls only images not
+// already local, always pulls every image, and never pulls nothing.
 //
 // Plan is safe and idempotent: it makes no changes to the target and returns
 // the same action set for the same desired and runtime states. The plan's
@@ -230,7 +247,19 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState) (*plan.P
 	// carries an environment concept; the field is documented as "the target
 	// environment the plan applies to" (docs/ACCORDA.md §31).
 	p := plan.New("", desired.Repository, desired.Commit, time.Now())
-	for _, a := range plan.DriftActions(desired, nil, runtime) {
+	drift := plan.DriftActions(desired, nil, runtime)
+	// Inject pull actions according to the image pull policy
+	// (docs/ACCORDA.md §9). Pulls are added before the drift actions so
+	// images are fetched before the services that depend on them are created
+	// or recreated.
+	pulls, err := t.selectPulls(ctx, desired, drift)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range pulls {
+		p.AddAction(a)
+	}
+	for _, a := range drift {
 		p.AddAction(a)
 	}
 	return p, nil
