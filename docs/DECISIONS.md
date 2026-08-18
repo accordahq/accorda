@@ -31,11 +31,13 @@ The spec is silent on *how* adapters are implemented (CLI vs library).
 **Decision.** Keep application code under `src/accorda/`; keep root-level
 documentation (`README.md`, `docs/`, `AGENTS.md`) outside the implementation
 tree. Dependencies: `github.com/spf13/cobra` (CLI), `gopkg.in/yaml.v3`
-(YAML), `github.com/go-git/go-git/v6` (Git operations), and
-`github.com/compose-spec/compose-go/v2` (Compose parsing). Accorda delegates
-to these libraries rather than maintaining its own Git transport or Compose
-parser, so it stays focused on its own mission (reconciliation) and avoids
-hand-rolled code that would have to track upstream specs.
+(YAML), `github.com/go-git/go-git/v6` (Git operations),
+`github.com/compose-spec/compose-go/v2` (Compose parsing), and
+`github.com/docker/docker` (Docker engine API for the Compose target's
+runtime-state reader). Accorda delegates to these libraries rather than
+maintaining its own Git transport or Compose parser, so it stays focused on
+its own mission (reconciliation) and avoids hand-rolled code that would have
+to track upstream specs.
 
 **Consequence.** `go.mod` stays tiny and the adapters inherit the user's
 environment. Embedding `go-git` or the Docker SDK in an adapter later would
@@ -54,9 +56,10 @@ does not leak into core:
 | `gopkg.in/yaml.v3` | v3.0.1 | `internal/config` | YAML decoding of `accorda.yaml` with strict field validation (`KnownFields(true)`) and a custom `UnmarshalYAML` on `Secrets` for two-shape acceptance. |
 | `github.com/go-git/go-git/v6` | v6.0.0-alpha.5 | `internal/sources/git` | Pure-Go Git operations: clone (`PlainCloneContext`), fetch (`Remote.FetchContext`), checkout (`Worktree.Checkout`), commit metadata (`CommitObject`), file-at-commit reads (`Tree().File()`). Auth via `ssh.PublicKeys` / `http.BasicAuth`. Replaces the system `git` CLI. |
 | `github.com/compose-spec/compose-go/v2` | v2.14.0 | `internal/targets/compose` | Compose file parsing via `loader.LoadWithContext` into `types.Project`, then normalized into `state.Service`. Handles the full Compose schema (interpolation, extends, profiles, short/long forms). Replaces the hand-rolled parser. |
+| `github.com/docker/docker` | v28.5.2+incompatible | `internal/targets/compose` | Docker engine API client used by `Target.Current` to list and inspect the project's containers and map them to `state.RuntimeState` (container state + health). Reached through a local `dockerClient` seam so the SDK does not leak into core. |
 
 All other entries in `go.mod` are indirect (transitive) dependencies of these
-four, pulled in automatically by `go mod tidy`. They are not imported by
+five, pulled in automatically by `go mod tidy`. They are not imported by
 Accorda directly.
 
 ### 2. `docs/ACCORDA.md` is authoritative and immutable
@@ -252,6 +255,7 @@ GPL, LGPL, or other copyleft licenses. A summary of direct dependencies:
 | `gopkg.in/yaml.v3` | MIT + Apache-2.0 |
 | `github.com/go-git/go-git/v6` | Apache-2.0 |
 | `github.com/compose-spec/compose-go/v2` | Apache-2.0 |
+| `github.com/docker/docker` | Apache-2.0 |
 
 **`github.com/opencontainers/go-digest`** (indirect, pulled by compose-go)
 ships two license files: `LICENSE` (Apache-2.0) for the Go code, and
@@ -297,6 +301,36 @@ CI license allowlist, keep the project compliant as dependencies change.
 ## Decision log (continued)
 
 New entries are appended below. Use the next available number.
+
+### 15. Compose target reads runtime state via the Docker engine SDK
+
+**Context.** Issue #9 (§5.3) requires the Compose target to read per-service
+runtime state (container state + health) from the Docker engine/Compose API
+with no mutation. The driver needs to enumerate the project's containers and
+map them back to Accorda service names and health states.
+
+**Decision.** `internal/targets/compose` adds the Docker engine SDK
+(`github.com/docker/docker`, `+incompatible`) as a direct dependency, confined
+to the adapter. The driver talks to the engine through a local `dockerClient`
+seam (a subset of the SDK APIClient: Ping, ContainerList, ContainerInspect)
+so core never imports the Docker SDK (docs/DECISIONS.md #3). `Target.Current`
+lists all containers carrying the `com.docker.compose.project` label matching
+the project name (including stopped ones, so drift is observable), inspects
+each for state and health, and maps them via the `com.docker.compose.service`
+label into a `state.RuntimeState`. Health is part of runtime state
+(docs/ACCORDA.md §5.3), so the per-container inspect is accepted for the MVP;
+`ContainerList`'s `Summary` does not carry health, and moving health out of
+runtime state would require a spec change that `docs/ACCORDA.md` does not
+currently authorize. The project name is derived from the Compose file's
+directory basename (matching Compose v2's heuristic) and normalized to match
+the label; `WithProjectName` overrides it for explicit config. `Plan`,
+`Apply`, and `Health` remain `ErrNotImplemented` until later milestones.
+
+**Consequence.** Runtime state is read back without shelling out to
+`docker compose ps`; the Docker SDK is the second adapter-specific runtime
+dependency (after compose-go for parsing). Tests use a fake `dockerClient` so
+no running daemon is required. The dependency is Apache-2.0 (permissive) and
+is recorded in the #14 license table.
 
 <!-- Add new decisions here. Format:
 ### N. Short title

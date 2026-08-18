@@ -47,9 +47,10 @@ done | grep -v '^ $' | sort -u
 ```
 
 When the reconcile commands are wired up to import the git source and
-compose target packages, the full dependency set (go-git, compose-go, etc.)
-will appear in the `./cmd/accorda` output. Until then, use `./...` to capture
-library dependencies that are not yet reachable from the CLI stubs.
+compose target packages, the full dependency set (go-git, compose-go, the
+Docker engine SDK, etc.) will appear in the `./cmd/accorda` output. Until
+then, use `./...` to capture library dependencies that are not yet
+reachable from the CLI stubs.
 
 ## Updating THIRD_PARTY_LICENSES.md
 
@@ -85,3 +86,10 @@ following dependencies ship `NOTICE` files that have been incorporated into
 
 When a new Apache-2.0 dependency is added, check its `NOTICE` file and
 propagate any required attribution.
+
+The following dependencies currently ship `NOTICE` files whose attribution
+has been incorporated into `THIRD_PARTY_LICENSES.md`:
+
+- `github.com/compose-spec/compose-go/v2`
+- `github.com/docker/docker` (the Docker engine SDK; its NOTICE also credits
+  `github.com/creack/pty` under the MIT License)

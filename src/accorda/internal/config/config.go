@@ -250,11 +250,36 @@ func applyDefaults(p *Project) {
 }
 
 // Validate reports the first concrete configuration error, with a field-oriented
-// message suitable for surfacing to the user.
+// message suitable for surfacing to the user. It delegates each section to a
+// focused helper so the top-level function stays small and each rule is easy
+// to reason about in isolation.
 func Validate(p *Project) error {
 	if p == nil {
 		return errors.New("config: project is nil")
 	}
+	if err := validateVersion(p); err != nil {
+		return err
+	}
+	if err := validateSource(p); err != nil {
+		return err
+	}
+	if err := validateTarget(p); err != nil {
+		return err
+	}
+	if err := validateImages(p); err != nil {
+		return err
+	}
+	if err := validateReconcile(p); err != nil {
+		return err
+	}
+	if err := validateHealthSync(p); err != nil {
+		return err
+	}
+	return validateSecrets(p)
+}
+
+// validateVersion checks the schema version and environment fields.
+func validateVersion(p *Project) error {
 	if p.Version == 0 {
 		return errors.New("config: version is required")
 	}
@@ -264,8 +289,12 @@ func Validate(p *Project) error {
 	if strings.TrimSpace(p.Environment) == "" {
 		return errors.New("config: environment is required")
 	}
+	return nil
+}
 
-	// Source
+// validateSource checks the Git source fields and delegates auth to
+// validateSourceAuth.
+func validateSource(p *Project) error {
 	if p.Source.Type == "" {
 		return errors.New("config: source.type is required")
 	}
@@ -278,9 +307,13 @@ func Validate(p *Project) error {
 	if strings.TrimSpace(p.Source.Branch) == "" {
 		return errors.New("config: source.branch is required")
 	}
+	return validateSourceAuth(p)
+}
 
-	// Source auth (docs/ACCORDA.md §13, §15). An empty auth.type means
-	// "use the ambient Git environment" and is always valid.
+// validateSourceAuth checks the source auth configuration
+// (docs/ACCORDA.md §13, §15). An empty auth.type means "use the ambient Git
+// environment" and is always valid.
+func validateSourceAuth(p *Project) error {
 	switch p.Source.Auth.Type {
 	case "":
 		// No explicit auth; inherit the user's environment.
@@ -296,8 +329,11 @@ func Validate(p *Project) error {
 		return fmt.Errorf("config: source.auth.type %q is not supported (want %q or %q)",
 			p.Source.Auth.Type, AuthSSH, AuthHTTPS)
 	}
+	return nil
+}
 
-	// Target
+// validateTarget checks the deployment target type and its required fields.
+func validateTarget(p *Project) error {
 	if p.Target.Type == "" {
 		return errors.New("config: target.type is required")
 	}
@@ -315,43 +351,51 @@ func Validate(p *Project) error {
 	default:
 		return fmt.Errorf("config: target.type %q is not supported", p.Target.Type)
 	}
+	return nil
+}
 
-	// Images
+// validateImages checks the image pull policy (docs/ACCORDA.md §9).
+func validateImages(p *Project) error {
 	switch p.Images.Pull {
 	case PullChanged, PullMissing, PullAlways, PullNever:
+		return nil
 	default:
 		return fmt.Errorf("config: images.pull %q is not valid (want one of %s)", p.Images.Pull,
 			strings.Join([]string{PullChanged, PullMissing, PullAlways, PullNever}, ", "))
 	}
+}
 
-	// Reconcile
+// validateReconcile checks the drift repair policy (docs/ACCORDA.md §5, §47).
+func validateReconcile(p *Project) error {
 	switch p.Reconcile.Drift {
 	case DriftRepair, DriftReport, DriftDisabled:
+		return nil
 	default:
 		return fmt.Errorf("config: reconcile.drift %q is not valid (want one of %s)", p.Reconcile.Drift,
 			strings.Join([]string{DriftRepair, DriftReport, DriftDisabled}, ", "))
 	}
+}
 
-	// Health
+// validateHealthSync checks the health timeout and sync interval are
+// non-negative.
+func validateHealthSync(p *Project) error {
 	if p.Health.Timeout < 0 {
 		return errors.New("config: health.timeout must be non-negative")
 	}
-
-	// Sync
 	if p.Sync.Interval < 0 {
 		return errors.New("config: sync.interval must be non-negative")
 	}
+	return nil
+}
 
-	// Secrets: either the list form (files) or the provider form is
-	// accepted; the two are structurally distinct YAML shapes, so they
-	// cannot both appear in one document.
-	if len(p.Secrets.Files) > 0 {
-		for i, f := range p.Secrets.Files {
-			if strings.TrimSpace(f) == "" {
-				return fmt.Errorf("config: secrets.files[%d] is empty", i)
-			}
+// validateSecrets checks the secrets list form. The list form (files) and the
+// provider form are structurally distinct YAML shapes, so they cannot both
+// appear in one document; only the list form needs per-entry validation.
+func validateSecrets(p *Project) error {
+	for i, f := range p.Secrets.Files {
+		if strings.TrimSpace(f) == "" {
+			return fmt.Errorf("config: secrets.files[%d] is empty", i)
 		}
 	}
-
 	return nil
 }

@@ -11,14 +11,31 @@ components incorporated into Accorda builds.
 The following components are licensed under the Apache License, Version 2.0:
 
 - github.com/compose-spec/compose-go/v2 v2.14.0
+- github.com/containerd/errdefs v1.0.0
+- github.com/containerd/errdefs/pkg v0.3.0
+- github.com/containerd/log v0.1.0
 - github.com/distribution/reference v0.5.0
+- github.com/docker/docker v28.5.2+incompatible
 - github.com/docker/go-connections v0.4.0
 - github.com/docker/go-units v0.5.0
 - github.com/go-git/go-billy/v6 v6.0.0-alpha.2
 - github.com/go-git/go-git/v6 v6.0.0-alpha.5
+- github.com/go-logr/logr v1.4.4
+- github.com/go-logr/stdr v1.2.2
+- github.com/inconshreveable/mousetrap v1.1.0
+- github.com/moby/docker-image-spec v1.3.1
+- github.com/moby/sys/atomicwriter v0.1.0
+- github.com/moby/term v0.5.2
+- github.com/opencontainers/image-spec v1.1.1
 - github.com/pjbgf/sha1cd v0.6.0
 - github.com/santhosh-tekuri/jsonschema/v6 v6.0.1
 - github.com/spf13/cobra v1.10.2
+- go.opentelemetry.io/auto/sdk v1.2.1
+- go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0
+- go.opentelemetry.io/otel v1.45.0
+- go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.45.0
+- go.opentelemetry.io/otel/metric v1.45.0
+- go.opentelemetry.io/otel/trace v1.45.0
 
 The Apache License, Version 2.0 text is available at
 https://www.apache.org/licenses/LICENSE-2.0 and is reproduced in `LICENSE`.
@@ -33,6 +50,18 @@ files where required.
 ```text
 The Compose Specification
 Copyright 2020 The Compose Specification Authors
+```
+
+**github.com/docker/docker v28.5.2+incompatible:**
+
+```text
+Docker
+Copyright 2012-2017 Docker, Inc.
+
+This product includes software developed at Docker, Inc. (https://www.docker.com).
+
+This product contains software (https://github.com/creack/pty) developed
+by Keith Rarick, licensed under the MIT License.
 ```
 
 ## BSD-3-Clause components
@@ -235,7 +264,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/crypto v0.54.0, golang.org/x/net v0.57.0, golang.org/x/sync v0.22.0, golang.org/x/sys v0.47.0, golang.org/x/text v0.40.0
+### golang.org/x/crypto v0.54.0, golang.org/x/net v0.57.0, golang.org/x/sync v0.22.0, golang.org/x/sys v0.47.0, golang.org/x/text v0.40.0, golang.org/x/time v0.15.0
 
 These modules share the same upstream license text:
 
@@ -274,6 +303,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 The following components are licensed under the BSD 2-Clause License:
 
 - github.com/emirpasic/gods v1.18.1
+- github.com/pkg/errors v0.9.1
 
 The BSD 2-Clause License text is reproduced below:
 
@@ -327,10 +357,14 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 The following components are licensed under the MIT License:
 
+- github.com/Microsoft/go-winio v0.6.2
+- github.com/cespare/xxhash/v2 v2.3.0
+- github.com/felixge/httpsnoop v1.1.0
 - github.com/go-viper/mapstructure/v2 v2.4.0
 - github.com/kevinburke/ssh_config v1.6.0
 - github.com/klauspost/cpuid/v2 v2.3.0
 - github.com/mattn/go-shellwords v1.0.12
+- github.com/morikuni/aec v1.1.0
 - github.com/sergi/go-diff v1.4.0
 - github.com/sirupsen/logrus v1.9.3
 
@@ -360,6 +394,15 @@ THE SOFTWARE.
 
 ### Component-specific copyright notices
 
+**github.com/Microsoft/go-winio v0.6.2:**
+Copyright (c) 2015 Microsoft
+
+**github.com/cespare/xxhash/v2 v2.3.0:**
+Copyright (c) 2016 Caleb Spare
+
+**github.com/felixge/httpsnoop v1.1.0:**
+Copyright (c) 2016 Felix Geisendörfer (felix@debuggable.com)
+
 **github.com/go-viper/mapstructure/v2 v2.4.0:**
 Copyright (c) 2013 Mitchell Hashimoto
 
@@ -372,11 +415,17 @@ Copyright (c) 2015 Klaus Post
 **github.com/mattn/go-shellwords v1.0.12:**
 Copyright (c) 2014 Yasuhiro Matsumoto
 
+**github.com/morikuni/aec v1.1.0:**
+Copyright (c) 2016 Taihei Morikuni
+
 **github.com/sergi/go-diff v1.4.0:**
 Copyright (c) 2012-2016 The go-diff Authors. All rights reserved.
 
 **github.com/sirupsen/logrus v1.9.3:**
 Copyright (c) 2014 Simon Eskildsen
+
+**github.com/pkg/errors v0.9.1:**
+Copyright (c) 2015, Dave Cheney <dave@cheney.net>
 
 ## MIT and Apache-2.0 components
 
