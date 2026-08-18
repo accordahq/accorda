@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -37,20 +38,31 @@ func LoadFile(path string) (map[string]state.Service, error) {
 // Parse decodes a Docker Compose document from raw YAML bytes and normalizes
 // it into Accorda's service model. It uses the compose-go loader
 // (github.com/compose-spec/compose-go/v2), which handles the full Compose
-// schema including interpolation, extends, profiles, short and long forms
-// for all fields. Accorda's model is a subset of the Compose schema: image,
-// command, environment, ports, volumes, networks, labels, healthcheck, and
-// depends_on. Validation enforces that every service has an image.
+// schema including extends, profiles, and short and long forms for all
+// fields. Accorda's model is a subset of the Compose schema: image, command,
+// environment, ports, volumes, networks, labels, healthcheck, and depends_on.
+// Validation enforces that every service has an image.
 //
 // Parse is the pure entry point for in-memory bytes; LoadFile wraps it for
 // file-path-based loading. The compose-go loader handles YAML parsing,
-// interpolation, extends, and normalization so Accorda does not maintain
-// its own parser.
+// extends, and normalization so Accorda does not maintain its own parser.
+//
+// Compose variable interpolation (${VAR}) is intentionally skipped (see
+// ParseWithContext); Accorda controls its own substitution to keep the
+// desired state free of ambient environment values (docs/ACCORDA.md §18/§56).
 func Parse(data []byte) (map[string]state.Service, error) {
 	return ParseWithContext(context.Background(), data)
 }
 
 // ParseWithContext is like Parse but accepts a context for cancellation.
+//
+// Interpolation is skipped (o.SkipInterpolation = true) so ${VAR} references
+// are left unresolved rather than substituted from the ambient environment.
+// Accorda reasons about the desired state as declared in Git, and embedding
+// local environment values into the desired state would leak host-specific
+// configuration and violate the secret-handling rules (docs/ACCORDA.md §18/§56).
+// Compose's own validation is skipped because Accorda applies its own,
+// image-centric validation in validateService.
 func ParseWithContext(ctx context.Context, data []byte) (map[string]state.Service, error) {
 	project, err := composeloader.LoadWithContext(ctx, types.ConfigDetails{
 		ConfigFiles: []types.ConfigFile{{Content: data}},
@@ -90,7 +102,7 @@ func normalizeService(name string, sc types.ServiceConfig) (state.Service, error
 		DependsOn:   normalizeDependsOn(sc.DependsOn),
 	}
 	if err := validateService(name, svc); err != nil {
-		return svc, err
+		return state.Service{}, err
 	}
 	return svc, nil
 }
@@ -181,7 +193,10 @@ func normalizeVolumes(vols []types.ServiceVolumeConfig) []state.Volume {
 }
 
 // normalizeNetworks converts the compose-go networks map to a slice of
-// network names.
+// network names. The result is sorted so a service's networks are stable
+// regardless of Go's randomized map iteration order; downstream consumers
+// (plan hashing, desired/deployed diff) depend on deterministic ordering
+// (docs/DECISIONS.md #12).
 func normalizeNetworks(networks map[string]*types.ServiceNetworkConfig) []string {
 	if len(networks) == 0 {
 		return nil
@@ -190,6 +205,7 @@ func normalizeNetworks(networks map[string]*types.ServiceNetworkConfig) []string
 	for name := range networks {
 		out = append(out, name)
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -223,7 +239,10 @@ func normalizeHealthcheck(hc *types.HealthCheckConfig) state.Healthcheck {
 }
 
 // normalizeDependsOn converts the compose-go DependsOnConfig map to a slice
-// of service names.
+// of service names. The result is sorted so a service's dependencies are
+// stable regardless of Go's randomized map iteration order; downstream
+// consumers (plan hashing, desired/deployed diff) depend on deterministic
+// ordering (docs/DECISIONS.md #12).
 func normalizeDependsOn(deps types.DependsOnConfig) []string {
 	if len(deps) == 0 {
 		return nil
@@ -232,6 +251,7 @@ func normalizeDependsOn(deps types.DependsOnConfig) []string {
 	for name := range deps {
 		out = append(out, name)
 	}
+	sort.Strings(out)
 	return out
 }
 

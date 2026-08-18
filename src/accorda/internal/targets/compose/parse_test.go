@@ -386,9 +386,92 @@ func TestParse_DependsOnMappingForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
+	// Assert the raw slice order (sorted by normalizeDependsOn), not a
+	// test-side re-sort, so the determinism contract is actually exercised.
 	want := []string{"postgres"}
-	if got := sortedStrings(services["api"].DependsOn); !reflect.DeepEqual(got, want) {
+	if got := services["api"].DependsOn; !reflect.DeepEqual(got, want) {
 		t.Errorf("depends_on = %v, want %v", got, want)
+	}
+}
+
+func TestParse_DependsOnMultiple_IsSorted(t *testing.T) {
+	// With two depends_on entries the normalizer must return a stable,
+	// sorted order regardless of Go's randomized map iteration. The input
+	// deliberately declares the names in non-sorted order.
+	data := []byte(`services:
+  api:
+    image: api:1
+    depends_on:
+      worker:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+  postgres:
+    image: postgres:17
+  worker:
+    image: worker:1
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{"postgres", "worker"}
+	if got := services["api"].DependsOn; !reflect.DeepEqual(got, want) {
+		t.Errorf("depends_on = %v, want sorted %v", got, want)
+	}
+}
+
+func TestParse_NetworksMultiple_IsSorted(t *testing.T) {
+	// With two networks the normalizer must return a stable, sorted order
+	// regardless of Go's randomized map iteration. The input deliberately
+	// declares the names in non-sorted order.
+	data := []byte(`services:
+  api:
+    image: api:1
+    networks:
+      web: {}
+      backend: {}
+networks:
+  web: {}
+  backend: {}
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{"backend", "web"}
+	if got := services["api"].Networks; !reflect.DeepEqual(got, want) {
+		t.Errorf("networks = %v, want sorted %v", got, want)
+	}
+}
+
+func TestParse_NetworksMultiple_DeterministicAcrossRuns(t *testing.T) {
+	// Guard against map-iteration nondeterminism: the normalized networks
+	// slice must be identical across many parses of the same input.
+	data := []byte(`services:
+  api:
+    image: api:1
+    networks:
+      web: {}
+      backend: {}
+      internal: {}
+networks:
+  web: {}
+  backend: {}
+  internal: {}
+`)
+	first, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		svc, err := Parse(data)
+		if err != nil {
+			t.Fatalf("Parse run %d: %v", i, err)
+		}
+		if !reflect.DeepEqual(first["api"].Networks, svc["api"].Networks) {
+			t.Fatalf("run %d: networks = %v, want stable %v", i, svc["api"].Networks, first["api"].Networks)
+		}
 	}
 }
 
