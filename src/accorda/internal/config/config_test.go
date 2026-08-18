@@ -326,3 +326,139 @@ func TestValidate_Nil(t *testing.T) {
 		t.Fatal("Validate(nil): expected error, got nil")
 	}
 }
+
+func TestParse_AuthSSH(t *testing.T) {
+	src := `version: 1
+environment: production
+source:
+  url: git@git.internal:acme/infra.git
+  branch: main
+  auth:
+    type: ssh
+    key: /etc/Accorda/git.key
+target:
+  type: compose
+  file: compose.yaml
+`
+	p, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: unexpected error: %v", err)
+	}
+	if p.Source.Auth.Type != AuthSSH {
+		t.Errorf("Auth.Type = %q, want %q", p.Source.Auth.Type, AuthSSH)
+	}
+	if p.Source.Auth.Key != "/etc/Accorda/git.key" {
+		t.Errorf("Auth.Key = %q, want /etc/Accorda/git.key", p.Source.Auth.Key)
+	}
+}
+
+func TestParse_AuthHTTPS(t *testing.T) {
+	src := `version: 1
+environment: production
+source:
+  url: https://git.internal/acme/infra.git
+  branch: main
+  auth:
+    type: https
+    token: ghp_secrettoken
+    username: x-access-token
+target:
+  type: compose
+  file: compose.yaml
+`
+	p, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: unexpected error: %v", err)
+	}
+	if p.Source.Auth.Type != AuthHTTPS {
+		t.Errorf("Auth.Type = %q, want %q", p.Source.Auth.Type, AuthHTTPS)
+	}
+	if p.Source.Auth.Token != "ghp_secrettoken" {
+		t.Errorf("Auth.Token = %q, want ghp_secrettoken", p.Source.Auth.Token)
+	}
+	if p.Source.Auth.Username != "x-access-token" {
+		t.Errorf("Auth.Username = %q, want x-access-token", p.Source.Auth.Username)
+	}
+}
+
+func TestValidate_AuthErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "ssh without key",
+			yaml: `version: 1
+environment: production
+source:
+  url: https://git.internal/acme/infra.git
+  branch: main
+  auth:
+    type: ssh
+target:
+  type: compose
+  file: compose.yaml
+`,
+			want: "source.auth.key is required",
+		},
+		{
+			name: "https without token",
+			yaml: `version: 1
+environment: production
+source:
+  url: https://git.internal/acme/infra.git
+  branch: main
+  auth:
+    type: https
+target:
+  type: compose
+  file: compose.yaml
+`,
+			want: "source.auth.token is required",
+		},
+		{
+			name: "unsupported auth type",
+			yaml: `version: 1
+environment: production
+source:
+  url: https://git.internal/acme/infra.git
+  branch: main
+  auth:
+    type: basic
+target:
+  type: compose
+  file: compose.yaml
+`,
+			want: `source.auth.type "basic" is not supported`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Parse([]byte(c.yaml))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", c.want)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, c.want)
+			}
+		})
+	}
+}
+
+func TestParse_AuthEmptyIsValid(t *testing.T) {
+	// An absent auth section is valid and means "use ambient environment".
+	src := `version: 1
+environment: production
+source:
+  url: https://git.internal/acme/infra.git
+  branch: main
+target:
+  type: compose
+  file: compose.yaml
+`
+	_, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: unexpected error for absent auth: %v", err)
+	}
+}

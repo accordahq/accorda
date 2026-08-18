@@ -32,6 +32,12 @@ const (
 	DriftDisabled = "disabled"
 )
 
+// Valid Git source auth types (docs/ACCORDA.md §13, §15).
+const (
+	AuthSSH   = "ssh"
+	AuthHTTPS = "https"
+)
+
 // Valid target types (docs/ACCORDA.md §8, §24, §25).
 const (
 	TargetCompose    = "compose"
@@ -63,6 +69,37 @@ type Source struct {
 	URL    string `yaml:"url"`
 	Branch string `yaml:"branch"`
 	Path   string `yaml:"path"`
+	Auth   Auth   `yaml:"auth"`
+}
+
+// Auth describes how the Git source authenticates to its remote
+// (docs/ACCORDA.md §13, §15). The Type selects the interpretation of the
+// remaining fields:
+//
+//   - ssh:   Auth.Key is a filesystem path to a private key. It is surfaced
+//     to Git via GIT_SSH_COMMAND; the key material is never read or logged
+//     by Accorda.
+//   - https: Auth.Token is a personal access token or installation token
+//     embedded in the remote URL (or supplied via the Git credential
+//     helper environment). Auth.Username is optional and defaults to the
+//     user embedded in the URL or "oauth2" for token auth.
+//
+// When Type is empty, the Git source inherits the user's environment (SSH
+// agent, Git credential helpers), which remains the default for local
+// development. Secret fields are never logged (docs/ACCORDA.md §18, §56).
+type Auth struct {
+	// Type is "ssh" or "https" (docs/ACCORDA.md §15). Empty means "use the
+	// ambient Git environment" and is the default.
+	Type string `yaml:"type"`
+	// Key is the path to an SSH private key used when Type == "ssh", e.g.
+	// "/etc/Accorda/git.key".
+	Key string `yaml:"key"`
+	// Username is the HTTPS username. For token auth this is often
+	// "oauth2" or "x-access-token"; it defaults accordingly.
+	Username string `yaml:"username"`
+	// Token is the HTTPS credential/token. It is treated as a secret and
+	// must never be logged.
+	Token string `yaml:"token"`
 }
 
 // Target describes the deployment target (docs/ACCORDA.md §8, §24, §25).
@@ -240,6 +277,24 @@ func Validate(p *Project) error {
 	}
 	if strings.TrimSpace(p.Source.Branch) == "" {
 		return errors.New("config: source.branch is required")
+	}
+
+	// Source auth (docs/ACCORDA.md §13, §15). An empty auth.type means
+	// "use the ambient Git environment" and is always valid.
+	switch p.Source.Auth.Type {
+	case "":
+		// No explicit auth; inherit the user's environment.
+	case AuthSSH:
+		if strings.TrimSpace(p.Source.Auth.Key) == "" {
+			return errors.New("config: source.auth.key is required when auth.type is \"ssh\"")
+		}
+	case AuthHTTPS:
+		if strings.TrimSpace(p.Source.Auth.Token) == "" {
+			return errors.New("config: source.auth.token is required when auth.type is \"https\"")
+		}
+	default:
+		return fmt.Errorf("config: source.auth.type %q is not supported (want %q or %q)",
+			p.Source.Auth.Type, AuthSSH, AuthHTTPS)
 	}
 
 	// Target
