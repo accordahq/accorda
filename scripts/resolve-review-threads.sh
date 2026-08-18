@@ -2,7 +2,7 @@
 # Resolve all unresolved review threads on a GitHub pull request.
 #
 # Usage:
-#   scripts/resolve-review-threads.sh <owner> <repo> <pr-number>
+#   scripts/resolve-review-threads.sh <pr-number>
 #
 # Requires the GitHub CLI (gh) authenticated against the repository. The
 # script lists unresolved review threads (id + isResolved only, via --jq to
@@ -12,14 +12,15 @@
 # fails to resolve.
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "usage: $0 <owner> <repo> <pr-number>" >&2
+owner=accordahq
+repo=accorda
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <pr-number>" >&2
   exit 2
 fi
 
-owner=$1
-repo=$2
-pr=$3
+pr=$1
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "error: gh (GitHub CLI) is required" >&2

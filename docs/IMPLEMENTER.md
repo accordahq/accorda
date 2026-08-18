@@ -144,7 +144,7 @@ Use the bundled script to list and resolve unresolved threads in one step
 (it fetches only thread IDs via `--jq`, so output stays small):
 
 ```bash
-scripts/resolve-review-threads.sh <owner> <repo> <pr-number>
+scripts/resolve-review-threads.sh <pr-number>
 ```
 
 The script resolves every unresolved thread and prints each resolved ID. If
