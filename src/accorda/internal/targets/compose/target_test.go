@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -49,6 +50,19 @@ func (f *fakeDockerClient) ContainerInspect(_ context.Context, id string) (conta
 		return container.InspectResponse{}, err
 	}
 	return f.inspected[id], nil
+}
+
+// fakeRunner is a test double for the composeRunner seam. It records every
+// invocation so tests can assert the exact `docker compose` subcommands
+// Apply issued, and returns a canned error to exercise the failure path.
+type fakeRunner struct {
+	calls [][]string
+	err   error
+}
+
+func (f *fakeRunner) Run(_ context.Context, args ...string) error {
+	f.calls = append(f.calls, args)
+	return f.err
 }
 
 // writeComposeFile writes a minimal valid Compose file in a temp dir and
@@ -339,14 +353,11 @@ func TestCurrent_ScaledReplicasAgree_IsSingleEntry(t *testing.T) {
 	}
 }
 
-func TestPlan_Apply_Health_NotImplemented(t *testing.T) {
+func TestHealth_NotImplemented(t *testing.T) {
 	path := writeComposeFile(t)
 	cli := &fakeDockerClient{}
 	tgt := newTarget(t, path, cli)
 
-	if err := tgt.Apply(context.Background(), nil); !errors.Is(err, targets.ErrNotImplemented) {
-		t.Errorf("Apply err = %v, want ErrNotImplemented", err)
-	}
 	if _, err := tgt.Health(context.Background()); !errors.Is(err, targets.ErrNotImplemented) {
 		t.Errorf("Health err = %v, want ErrNotImplemented", err)
 	}
@@ -452,6 +463,133 @@ func TestPlan_NilDesired_IsError(t *testing.T) {
 
 	if _, err := tgt.Plan(context.Background(), nil); err == nil {
 		t.Fatal("expected error for nil desired state, got nil")
+	}
+}
+
+func TestApply_MapsActionsToComposeCommands(t *testing.T) {
+	// Each non-noop action kind must map to the expected `docker compose`
+	// subcommand scoped to the changed service; noop actions are skipped.
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{}
+	runner := &fakeRunner{}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	p := plan.New("", "acme/infra", "abc123", time.Now())
+	p.AddAction(plan.Action{Kind: plan.ActionCreate, Service: "api"})
+	p.AddAction(plan.Action{Kind: plan.ActionRecreate, Service: "worker"})
+	p.AddAction(plan.Action{Kind: plan.ActionStart, Service: "db"})
+	p.AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan"})
+	p.AddAction(plan.Action{Kind: plan.ActionPull, Service: "api"})
+	p.AddAction(plan.Action{Kind: plan.ActionStop, Service: "legacy"})
+	p.AddAction(plan.Action{Kind: plan.ActionNoop, Service: "postgres"})
+
+	if err := tgt.Apply(context.Background(), p); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	want := [][]string{
+		{"up", "-d", "api"},
+		{"up", "-d", "worker"},
+		{"up", "-d", "db"},
+		{"up", "-d", "--remove-orphans"},
+		{"pull", "api"},
+		{"stop", "legacy"},
+	}
+	if len(runner.calls) != len(want) {
+		t.Fatalf("got %d runner calls, want %d: %v", len(runner.calls), len(want), runner.calls)
+	}
+	for i, w := range want {
+		if !reflect.DeepEqual(runner.calls[i], w) {
+			t.Errorf("call[%d] = %v, want %v", i, runner.calls[i], w)
+		}
+	}
+}
+
+func TestApply_NoopOnly_DoesNothing(t *testing.T) {
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{}
+	runner := &fakeRunner{}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	p := plan.New("", "acme/infra", "abc123", time.Now())
+	p.AddAction(plan.Action{Kind: plan.ActionNoop, Service: "api"})
+
+	if err := tgt.Apply(context.Background(), p); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("got %d runner calls, want 0: %v", len(runner.calls), runner.calls)
+	}
+}
+
+func TestApply_MultipleOrphans_SingleRemoveOrphansCall(t *testing.T) {
+	// A plan with N orphans must issue `up -d --remove-orphans` exactly
+	// once, not once per orphan, since a single invocation removes all of
+	// them.
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{}
+	runner := &fakeRunner{}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	p := plan.New("", "acme/infra", "abc123", time.Now())
+	p.AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan-a"})
+	p.AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan-b"})
+	p.AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan-c"})
+
+	if err := tgt.Apply(context.Background(), p); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	want := [][]string{{"up", "-d", "--remove-orphans"}}
+	if len(runner.calls) != len(want) {
+		t.Fatalf("got %d runner calls, want %d: %v", len(runner.calls), len(want), runner.calls)
+	}
+	if !reflect.DeepEqual(runner.calls[0], want[0]) {
+		t.Errorf("call[0] = %v, want %v", runner.calls[0], want[0])
+	}
+}
+
+func TestApply_RunnerFails_IsError(t *testing.T) {
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{}
+	runner := &fakeRunner{err: errors.New("up boom")}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	p := plan.New("", "acme/infra", "abc123", time.Now())
+	p.AddAction(plan.Action{Kind: plan.ActionCreate, Service: "api"})
+
+	err = tgt.Apply(context.Background(), p)
+	if err == nil {
+		t.Fatal("expected error when runner fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "api") {
+		t.Errorf("err = %v, want one naming the failing service", err)
+	}
+}
+
+func TestApply_NilPlan_IsError(t *testing.T) {
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{}
+	tgt := newTarget(t, path, cli)
+
+	if err := tgt.Apply(context.Background(), nil); err == nil {
+		t.Fatal("expected error for nil plan, got nil")
 	}
 }
 

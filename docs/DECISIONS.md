@@ -364,3 +364,31 @@ targets. Plan output is deterministic and human-readable, ready for the
 **Decision.** ...
 **Consequence.** ...
 -->
+
+### 17. Compose Apply shells out to `docker compose` via a runner seam
+
+**Context.** Issue #11 (§9) requires `Target.Apply` to run the equivalent of
+`docker compose up -d` scoped to only the changed services, handling errors
+and partial failures. Driving recreation through the Docker engine SDK would
+mean reimplementing Compose's container, network, and volume creation logic,
+which the spec explicitly frames as "the equivalent of `docker compose up
+-d`" rather than a mandate to reimplement Compose.
+
+**Decision.** `Target.Apply` maps each plan action to a `docker compose`
+subcommand and delegates execution to a local `composeRunner` seam
+(`Run(ctx, args...)`), whose production implementation (`cliRunner`) shells
+out to the `docker compose` CLI scoped with `-f <file> -p <project>`. The
+The mapping is: create/recreate/start → `up -d <service>`; remove → `up -d
+--remove-orphans`; pull → `pull <service>`; stop → `stop <service>`; noop →
+skipped. Orphans are removed via `--remove-orphans` rather than `rm
+<service>` because the orphan's service name is no longer defined in the
+Compose file, so `rm` would fail with "no such service".
+The runner is injected via `WithRunner` so tests substitute a fake without a
+`docker compose` binary or daemon, mirroring the `dockerClient` seam used by
+`Current`. Partial failures return an error naming the failing service and
+action.
+
+**Consequence.** Apply inherits Compose's recreation semantics without
+reimplementing them, and the `docker compose` CLI dependency stays confined
+to the adapter (docs/DECISIONS.md #3). `Health` remains `ErrNotImplemented`
+until issue #15.
