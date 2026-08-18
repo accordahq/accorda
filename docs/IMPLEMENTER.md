@@ -136,6 +136,10 @@ When a reviewer leaves comments on the pull request, resolve them:
   commits to the same branch.
 - Reply to the review thread summarizing what changed so the reviewer can
   re-review without re-reading the whole diff.
+- Mark each addressed thread as resolved (e.g. `gh api graphql` with the
+  `resolveReviewThread` mutation, or the GitHub UI). Replying with a comment
+  does not resolve a thread; resolution is a separate action, and leaving
+  threads unresolved blocks the reviewer from seeing the PR as addressed.
 
 ## Completion and handoff
 
