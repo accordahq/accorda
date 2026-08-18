@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,8 +251,14 @@ func TestParse_MissingImage_IsError(t *testing.T) {
   api:
     command: ["./api"]
 `)
-	if _, err := Parse(data); err == nil {
+	_, err := Parse(data)
+	if err == nil {
 		t.Fatal("expected error for service without image, got nil")
+	}
+	// compose-go rejects a service that has neither image nor build before
+	// Accorda's own validation runs.
+	if !strings.Contains(err.Error(), "image") {
+		t.Errorf("unexpected error: %v, want one mentioning image", err)
 	}
 }
 
@@ -260,8 +267,14 @@ func TestParse_BuildWithoutImage_IsError(t *testing.T) {
   api:
     build: .
 `)
-	if _, err := Parse(data); err == nil {
+	_, err := Parse(data)
+	if err == nil {
 		t.Fatal("expected error for build-only service, got nil")
+	}
+	// A build-only service passes compose-go (which allows build), so Accorda's
+	// own image-required check in validateService fires.
+	if !strings.Contains(err.Error(), `service "api": image is required`) {
+		t.Errorf("unexpected error: %v, want one mentioning image is required", err)
 	}
 }
 
@@ -272,8 +285,14 @@ func TestParse_PortWithoutContainer_IsError(t *testing.T) {
     ports:
       - published: "8080"
 `)
-	if _, err := Parse(data); err == nil {
+	_, err := Parse(data)
+	if err == nil {
 		t.Fatal("expected error for port without container, got nil")
+	}
+	// compose-go rejects a port without a target before Accorda's own
+	// validation runs.
+	if !strings.Contains(err.Error(), "target port") {
+		t.Errorf("unexpected error: %v, want one mentioning missing target port", err)
 	}
 }
 
@@ -285,8 +304,14 @@ func TestParse_VolumeWithoutTarget_IsError(t *testing.T) {
       - type: volume
         source: data
 `)
-	if _, err := Parse(data); err == nil {
+	_, err := Parse(data)
+	if err == nil {
 		t.Fatal("expected error for volume without target, got nil")
+	}
+	// compose-go rejects a volume without a mount target before Accorda's own
+	// validation runs.
+	if !strings.Contains(err.Error(), "mount target") {
+		t.Errorf("unexpected error: %v, want one mentioning missing mount target", err)
 	}
 }
 
