@@ -6,6 +6,8 @@ Guidelines for AI agents working in this repository.
 
 Accorda OSS is a Go project for GitOps reconciliation. The repository is intentionally scoped to the open-source product described in `docs/ACCORDA.md` and should stay aligned with that source of truth.
 
+Architecture and design decisions are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md). Read it before making non-trivial changes, and append a decision entry when a change introduces or alters a durable design choice. `docs/ACCORDA.md` remains the authoritative product spec and must not be modified.
+
 ## Shared instructions
 
 Before performing repository work, read and follow `.github/copilot-instructions.md`.
@@ -60,7 +62,30 @@ When searching, reviewing, or inspecting the codebase, use ripgrep (`rg`) or the
 
 ## Architecture
 
-Accorda OSS should stay centered on a small Go module and a clear source tree, with the product definition remaining in `docs/ACCORDA.md`.
+Accorda OSS should stay centered on a small Go module and a clear source tree, with the product definition remaining in `docs/ACCORDA.md`. Core (`internal/core/*`) is target- and source-agnostic and interacts with adapters through the `Target` and `Source` interfaces; concrete drivers live under `internal/targets/*` and `internal/sources/*`. See [`docs/DECISIONS.md`](docs/DECISIONS.md) for the durable decisions and their rationale.
+
+## Code quality rules
+
+All new and changed code must follow these rules. Linters (SonarQube, gopls) surface violations; agents fix them before requesting review.
+
+### DRY (Don't Repeat Yourself)
+
+- Do not duplicate string or numeric literals. Extract a named constant (e.g. `defaultComposeFile`, `httpsScheme`) when the same literal appears three or more times.
+- Do not copy-paste logic or helpers. Extract a shared function and call it.
+- Prefer table-driven tests over repeated assertion blocks.
+
+### SOLID
+
+- Keep package boundaries aligned to single responsibilities (core vs adapters vs CLI).
+- Depend on interfaces, not concrete providers: core never imports a target or source driver.
+- Extend behavior by adding a new implementation, not by modifying existing contracts.
+- Keep interfaces small and focused (e.g. `Target` has five methods, `Source` has three).
+
+### Cognitive complexity
+
+- Keep functions and test functions below 15 cognitive complexity (SonarQube `go:S3776`).
+- If a function exceeds 15, refactor before committing: split into helpers, use table-driven cases, or extract sub-tests.
+- Prefer early returns and small switches over deep nesting.
 
 ## Workspace
 
@@ -85,6 +110,9 @@ The current Go project layout is intentionally simple and source-focused:
 - Keep the module under `src/accorda/` unless the task explicitly requires a different structure.
 - Use `gofmt` and the standard Go toolchain for formatting and validation.
 - Prefer focused tests for behavior changes and keep the validation path narrow and relevant.
+- Follow the Code quality rules (DRY, SOLID, cognitive complexity) above.
+- Add a `doc.go` per package describing its responsibility and citing the spec sections it implements.
+- Guard interfaces with compile-time checks (`var _ Interface = (*Stub)(nil)`).
 
 ### Configuration and implementation
 

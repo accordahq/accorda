@@ -62,8 +62,13 @@ func TestParse_FullExample(t *testing.T) {
 	if len(services) != 2 {
 		t.Fatalf("got %d services, want 2: %+v", len(services), services)
 	}
+	t.Run("api", func(t *testing.T) { assertAPIService(t, services["api"]) })
+	t.Run("postgres", func(t *testing.T) { assertPostgresService(t, services["postgres"]) })
+}
 
-	api := services["api"]
+// assertAPIService checks the normalized fields of the `api` service.
+func assertAPIService(t *testing.T, api state.Service) {
+	t.Helper()
 	if api.Image != "ghcr.io/acme/api:2.4.1" {
 		t.Errorf("api.Image = %q, want ghcr.io/acme/api:2.4.1", api.Image)
 	}
@@ -71,54 +76,22 @@ func TestParse_FullExample(t *testing.T) {
 	if !reflect.DeepEqual(api.Command, wantCmd) {
 		t.Errorf("api.Command = %v, want %v", api.Command, wantCmd)
 	}
-	if api.Env["LOG_LEVEL"] != "warning" {
-		t.Errorf("api.Env[LOG_LEVEL] = %q, want warning", api.Env["LOG_LEVEL"])
-	}
-	if api.Env["DEBUG"] != "true" {
-		t.Errorf("api.Env[DEBUG] = %q, want true", api.Env["DEBUG"])
-	}
-	if len(api.Ports) != 2 {
-		t.Fatalf("api.Ports = %v, want 2 entries", api.Ports)
-	}
-	if api.Ports[0] != (state.Port{Host: "8080", Container: "8080", Protocol: "tcp"}) {
-		t.Errorf("api.Ports[0] = %+v", api.Ports[0])
-	}
-	wantP1 := state.Port{HostIP: "127.0.0.1", Host: "9090", Container: "9090", Protocol: "tcp"}
-	if api.Ports[1] != wantP1 {
-		t.Errorf("api.Ports[1] = %+v, want %+v", api.Ports[1], wantP1)
-	}
-	if len(api.Volumes) != 2 {
-		t.Fatalf("api.Volumes = %v, want 2 entries", api.Volumes)
-	}
-	if api.Volumes[0] != (state.Volume{Type: "bind", Source: "/etc/api", Target: "/etc/api", ReadOnly: true}) {
-		t.Errorf("api.Volumes[0] = %+v", api.Volumes[0])
-	}
-	if api.Volumes[1] != (state.Volume{Type: "volume", Source: "data", Target: "/data"}) {
-		t.Errorf("api.Volumes[1] = %+v", api.Volumes[1])
-	}
+	assertEnv(t, "api", api.Env, map[string]string{"LOG_LEVEL": "warning", "DEBUG": "true"})
+	assertAPIPorts(t, api.Ports)
+	assertAPIVolumes(t, api.Volumes)
 	if !reflect.DeepEqual(api.Networks, []string{"frontend"}) {
 		t.Errorf("api.Networks = %v, want [frontend]", api.Networks)
 	}
-	if api.Labels["app"] != "api" || api.Labels["tier"] != "web" {
-		t.Errorf("api.Labels = %v", api.Labels)
-	}
-	wantHC := state.Healthcheck{
-		Test:     []string{"CMD", "curl", "-f", "http://localhost:8080/health"},
-		Interval: 5 * time.Second,
-		Timeout:  2 * time.Second,
-		Retries:  10,
-	}
-	if !reflect.DeepEqual(api.Healthcheck.Test, wantHC.Test) ||
-		api.Healthcheck.Interval != wantHC.Interval ||
-		api.Healthcheck.Timeout != wantHC.Timeout ||
-		api.Healthcheck.Retries != wantHC.Retries {
-		t.Errorf("api.Healthcheck = %+v, want %+v", api.Healthcheck, wantHC)
-	}
+	assertLabels(t, "api", api.Labels, map[string]string{"app": "api", "tier": "web"})
+	assertAPIHealthcheck(t, api.Healthcheck)
 	if !reflect.DeepEqual(api.DependsOn, []string{"postgres"}) {
 		t.Errorf("api.DependsOn = %v, want [postgres]", api.DependsOn)
 	}
+}
 
-	pg := services["postgres"]
+// assertPostgresService checks the normalized fields of the `postgres` service.
+func assertPostgresService(t *testing.T, pg state.Service) {
+	t.Helper()
 	if pg.Env["POSTGRES_PASSWORD"] != "secret" {
 		t.Errorf("postgres.Env[POSTGRES_PASSWORD] = %q, want secret", pg.Env["POSTGRES_PASSWORD"])
 	}
@@ -136,6 +109,81 @@ func TestParse_FullExample(t *testing.T) {
 	}
 	if pg.Healthcheck.Interval != 30*time.Second {
 		t.Errorf("postgres.Healthcheck.Interval = %v, want 30s (bare-integer seconds)", pg.Healthcheck.Interval)
+	}
+}
+
+// assertEnv checks that env matches want for the named service.
+func assertEnv(t *testing.T, name string, env, want map[string]string) {
+	t.Helper()
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("%s.Env[%s] = %q, want %q", name, k, env[k], v)
+		}
+	}
+	if len(env) != len(want) {
+		t.Errorf("%s.Env = %v, want %v", name, env, want)
+	}
+}
+
+// assertAPIPorts checks the two normalized port entries for `api`.
+func assertAPIPorts(t *testing.T, ports []state.Port) {
+	t.Helper()
+	if len(ports) != 2 {
+		t.Fatalf("api.Ports = %v, want 2 entries", ports)
+	}
+	wantP0 := state.Port{Host: "8080", Container: "8080", Protocol: "tcp"}
+	if ports[0] != wantP0 {
+		t.Errorf("api.Ports[0] = %+v, want %+v", ports[0], wantP0)
+	}
+	wantP1 := state.Port{HostIP: "127.0.0.1", Host: "9090", Container: "9090", Protocol: "tcp"}
+	if ports[1] != wantP1 {
+		t.Errorf("api.Ports[1] = %+v, want %+v", ports[1], wantP1)
+	}
+}
+
+// assertAPIVolumes checks the two normalized volume entries for `api`.
+func assertAPIVolumes(t *testing.T, vols []state.Volume) {
+	t.Helper()
+	if len(vols) != 2 {
+		t.Fatalf("api.Volumes = %v, want 2 entries", vols)
+	}
+	wantV0 := state.Volume{Type: "bind", Source: "/etc/api", Target: "/etc/api", ReadOnly: true}
+	if vols[0] != wantV0 {
+		t.Errorf("api.Volumes[0] = %+v, want %+v", vols[0], wantV0)
+	}
+	wantV1 := state.Volume{Type: "volume", Source: "data", Target: "/data"}
+	if vols[1] != wantV1 {
+		t.Errorf("api.Volumes[1] = %+v, want %+v", vols[1], wantV1)
+	}
+}
+
+// assertLabels checks that labels matches want for the named service.
+func assertLabels(t *testing.T, name string, labels, want map[string]string) {
+	t.Helper()
+	for k, v := range want {
+		if labels[k] != v {
+			t.Errorf("%s.Labels[%s] = %q, want %q", name, k, labels[k], v)
+		}
+	}
+	if len(labels) != len(want) {
+		t.Errorf("%s.Labels = %v, want %v", name, labels, want)
+	}
+}
+
+// assertAPIHealthcheck checks the normalized healthcheck for `api`.
+func assertAPIHealthcheck(t *testing.T, hc state.Healthcheck) {
+	t.Helper()
+	wantHC := state.Healthcheck{
+		Test:     []string{"CMD", "curl", "-f", "http://localhost:8080/health"},
+		Interval: 5 * time.Second,
+		Timeout:  2 * time.Second,
+		Retries:  10,
+	}
+	if !reflect.DeepEqual(hc.Test, wantHC.Test) ||
+		hc.Interval != wantHC.Interval ||
+		hc.Timeout != wantHC.Timeout ||
+		hc.Retries != wantHC.Retries {
+		t.Errorf("api.Healthcheck = %+v, want %+v", hc, wantHC)
 	}
 }
 

@@ -62,7 +62,7 @@ func Parse(data []byte) (map[string]state.Service, error) {
 		if nameNode.Value == "" {
 			return nil, errors.New("services: empty service name")
 		}
-		svc, err := parseService(nameNode.Value, svcNode)
+		svc, err := parseService(svcNode)
 		if err != nil {
 			return nil, fmt.Errorf("services.%s: %w", nameNode.Value, err)
 		}
@@ -98,7 +98,7 @@ func validateService(name string, svc state.Service) error {
 }
 
 // parseService parses a single service mapping node into a state.Service.
-func parseService(name string, node *yamlNode) (state.Service, error) {
+func parseService(node *yamlNode) (state.Service, error) {
 	svc := state.Service{Env: map[string]string{}, Labels: map[string]string{}}
 	if node == nil {
 		return svc, nil

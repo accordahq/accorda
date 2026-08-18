@@ -139,12 +139,12 @@ func TestServicesPath(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"", "compose.yaml"},
-		{"deploy/", "deploy/compose.yaml"},
-		{"deploy", "deploy/compose.yaml"},
-		{"deploy/compose.yaml", "deploy/compose.yaml"},
+		{"", defaultComposeFile},
+		{"deploy/", "deploy/" + defaultComposeFile},
+		{"deploy", "deploy/" + defaultComposeFile},
+		{"deploy/" + defaultComposeFile, "deploy/" + defaultComposeFile},
 		{"deploy/docker-compose.yml", "deploy/docker-compose.yml"},
-		{"deploy/services", "deploy/services/compose.yaml"},
+		{"deploy/services", "deploy/services/" + defaultComposeFile},
 	}
 	for _, c := range cases {
 		if got := servicesPath(c.in); got != c.want {

@@ -56,10 +56,10 @@ services:
   redis:
     image: redis:8
 `
-	if err := os.WriteFile(filepath.Join(origin, "compose.yaml"), []byte(compose), 0o644); err != nil {
-		t.Fatalf("write compose.yaml: %v", err)
+	if err := os.WriteFile(filepath.Join(origin, defaultComposeFile), []byte(compose), 0o644); err != nil {
+		t.Fatalf("write %s: %v", defaultComposeFile, err)
 	}
-	run(origin, "add", "compose.yaml")
+	run(origin, "add", defaultComposeFile)
 	run(origin, "commit", "-m", "initial")
 	sha = run(origin, "rev-parse", "HEAD")
 	committedAtStr := run(origin, "log", "-1", "--format=%aI")
@@ -74,7 +74,7 @@ services:
 }
 
 // makeOriginRepoWithHistory creates a repository with two commits whose
-// compose.yaml differs, then returns the URL plus both commits' metadata:
+// services file differs, then returns the URL plus both commits' metadata:
 // the older (old) and the current HEAD (head). It is used to verify that
 // Desired(ref) reads content at the passed commit, not the checked-out HEAD.
 func makeOriginRepoWithHistory(t *testing.T) (url, branch string, old, head commitInfo) {
@@ -113,10 +113,10 @@ services:
   redis:
     image: redis:7
 `
-	if err := os.WriteFile(filepath.Join(origin, "compose.yaml"), []byte(compose1), 0o644); err != nil {
-		t.Fatalf("write compose.yaml: %v", err)
+	if err := os.WriteFile(filepath.Join(origin, defaultComposeFile), []byte(compose1), 0o644); err != nil {
+		t.Fatalf("write %s: %v", defaultComposeFile, err)
 	}
-	run(origin, "add", "compose.yaml")
+	run(origin, "add", defaultComposeFile)
 	run(origin, "commit", "-m", "v1")
 	old = info(origin, "HEAD")
 
@@ -130,10 +130,10 @@ services:
   redis:
     image: redis:8
 `
-	if err := os.WriteFile(filepath.Join(origin, "compose.yaml"), []byte(compose2), 0o644); err != nil {
-		t.Fatalf("write compose.yaml: %v", err)
+	if err := os.WriteFile(filepath.Join(origin, defaultComposeFile), []byte(compose2), 0o644); err != nil {
+		t.Fatalf("write %s: %v", defaultComposeFile, err)
 	}
-	run(origin, "add", "compose.yaml")
+	run(origin, "add", defaultComposeFile)
 	run(origin, "commit", "-m", "v2")
 	head = info(origin, "HEAD")
 

@@ -20,6 +20,13 @@ import (
 // missing method is caught at build time, not at runtime.
 var _ sources.Source = (*Git)(nil)
 
+// defaultComposeFile is the services file read when the configured source
+// path is empty or points at a directory.
+const defaultComposeFile = "compose.yaml"
+
+// httpsScheme is the URL scheme used for HTTPS Git transports.
+const httpsScheme = "https://"
+
 // Git is the generic Git source adapter (docs/ACCORDA.md §13).
 //
 // It clones or fetches a repository into a local cache, checks out the
@@ -533,23 +540,23 @@ func isNotFoundExit(exit *exec.ExitError) bool {
 }
 
 // servicesPath returns the path to the services file relative to the repo
-// root, defaulting to compose.yaml when the source path is empty.
+// root, defaulting to defaultComposeFile when the source path is empty.
 func servicesPath(sourcePath string) string {
 	p := strings.TrimSpace(sourcePath)
 	if p == "" {
-		return "compose.yaml"
+		return defaultComposeFile
 	}
 	if isComposeFile(p) {
 		return p
 	}
-	return filepath.Join(p, "compose.yaml")
+	return filepath.Join(p, defaultComposeFile)
 }
 
 // isComposeFile reports whether path looks like a compose file name.
 func isComposeFile(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 	switch base {
-	case "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml":
+	case defaultComposeFile, "compose.yml", "docker-compose.yaml", "docker-compose.yml":
 		return true
 	default:
 		return false
@@ -590,10 +597,10 @@ func repoDirName(url string) string {
 //
 // Existing userinfo in rawURL is replaced so re-applying auth is idempotent.
 func httpsURLWithCredentials(rawURL, user, token string) (string, bool) {
-	if !strings.HasPrefix(strings.ToLower(rawURL), "https://") {
+	if !strings.HasPrefix(strings.ToLower(rawURL), httpsScheme) {
 		return rawURL, false
 	}
-	rest := rawURL[len("https://"):]
+	rest := rawURL[len(httpsScheme):]
 	// Strip any existing userinfo so applyAuth is idempotent.
 	if at := strings.Index(rest, "@"); at >= 0 {
 		// Only treat the first segment before a path "/" as userinfo.
@@ -601,7 +608,7 @@ func httpsURLWithCredentials(rawURL, user, token string) (string, bool) {
 			rest = rest[at+1:]
 		}
 	}
-	return "https://" + urlEscape(user) + ":" + urlEscape(token) + "@" + rest, true
+	return httpsScheme + urlEscape(user) + ":" + urlEscape(token) + "@" + rest, true
 }
 
 // urlUser extracts the userinfo username from rawURL, if present.

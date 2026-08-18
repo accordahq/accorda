@@ -2,7 +2,7 @@
 
 Accorda OSS is the open-source GitOps reconciliation project described in `docs/ACCORDA.md`.
 
-This repository intentionally stays focused on the OSS product and does not include hosted control-plane features.
+This repository intentionally stays focused on the OSS product and does not include hosted control-plane features. Architecture and design decisions are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## Project status
 

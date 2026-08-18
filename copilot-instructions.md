@@ -4,7 +4,7 @@ This file gives GitHub Copilot context about the Accorda project so it can work 
 
 ## Project overview
 
-This repository is the open-source Accorda OSS project described in `docs/ACCORDA.md`. The active implementation is Go-based and should stay aligned with that product definition rather than older archived implementation details.
+This repository is the open-source Accorda OSS project described in `docs/ACCORDA.md`. The active implementation is Go-based and should stay aligned with that product definition rather than older archived implementation details. Architecture and design decisions are recorded in `docs/DECISIONS.md`; read it before non-trivial changes and append an entry when a change alters a durable design choice.
 
 ## README maintenance
 
@@ -21,6 +21,9 @@ This repository is the open-source Accorda OSS project described in `docs/ACCORD
 - Validate with `gofmt`, `go test ./...`, and `go build ./...` in the module directory.
 - Avoid adding unused dependencies or speculative architecture.
 - Keep the project ready for OSS iteration without reintroducing stale earlier assumptions.
+- Follow the code-quality rules in `AGENTS.md` (DRY, SOLID, cognitive complexity). Do not duplicate literals or logic; extract named constants and shared helpers; keep functions and test functions below 15 cognitive complexity (SonarQube `go:S3776`); prefer table-driven tests over repeated assertion blocks.
+- Add a `doc.go` per package describing its responsibility and citing the spec sections it implements.
+- Guard interfaces with compile-time checks (`var _ Interface = (*Stub)(nil)`).
 
 ## Review expectations
 
