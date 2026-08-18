@@ -258,11 +258,18 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState) (*plan.P
 //     <service>`.
 //   - ActionNoop: skipped; the service is already converged.
 //
-// Apply is idempotent where possible: `up -d` and `rm -sf` are safe to
-// retry, and a plan with no changed services performs no work. It handles
-// partial failures by returning an error that names the first failing
-// service and its underlying cause, so the reconcile loop can surface which
-// service failed rather than a bare exit code (docs/ACCORDA.md §6).
+// Apply is idempotent where possible: `up -d` and `up -d --remove-orphans`
+// are safe to retry, and a plan with no changed services performs no work.
+// It handles partial failures by returning an error that names the first
+// failing service and its underlying cause, so the reconcile loop can
+// surface which service failed rather than a bare exit code
+// (docs/ACCORDA.md §6).
+//
+// A plan may carry one ActionRemove per orphan service, but `up -d
+// --remove-orphans` removes every orphan in a single invocation. Apply
+// therefore issues that command at most once, skipping any subsequent
+// ActionRemove actions so N orphans do not trigger N redundant full `up -d`
+// runs.
 func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 	if t == nil {
 		return errors.New("compose target: nil target")
@@ -273,7 +280,14 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 	if t.runner == nil {
 		return errors.New("compose target: compose runner is nil")
 	}
+	removedOrphans := false
 	for _, a := range p.Actions {
+		if a.Kind == plan.ActionRemove {
+			if removedOrphans {
+				continue
+			}
+			removedOrphans = true
+		}
 		if err := t.applyAction(ctx, a); err != nil {
 			return err
 		}

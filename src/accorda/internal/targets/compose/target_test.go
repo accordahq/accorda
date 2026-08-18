@@ -530,6 +530,37 @@ func TestApply_NoopOnly_DoesNothing(t *testing.T) {
 	}
 }
 
+func TestApply_MultipleOrphans_SingleRemoveOrphansCall(t *testing.T) {
+	// A plan with N orphans must issue `up -d --remove-orphans` exactly
+	// once, not once per orphan, since a single invocation removes all of
+	// them.
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{}
+	runner := &fakeRunner{}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	p := plan.New("", "acme/infra", "abc123", time.Now())
+	p.AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan-a"})
+	p.AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan-b"})
+	p.AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan-c"})
+
+	if err := tgt.Apply(context.Background(), p); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	want := [][]string{{"up", "-d", "--remove-orphans"}}
+	if len(runner.calls) != len(want) {
+		t.Fatalf("got %d runner calls, want %d: %v", len(runner.calls), len(want), runner.calls)
+	}
+	if !reflect.DeepEqual(runner.calls[0], want[0]) {
+		t.Errorf("call[0] = %v, want %v", runner.calls[0], want[0])
+	}
+}
+
 func TestApply_RunnerFails_IsError(t *testing.T) {
 	path := writeComposeFile(t)
 	cli := &fakeDockerClient{}
