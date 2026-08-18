@@ -149,15 +149,15 @@ Accorda should not require a special integration for Hetzner, DigitalOcean, EC2,
 
 For the Compose target, prerequisites should ideally remain:
 
-Linux
-Docker Engine
-Docker Compose v2
-Accorda Agent
+- Linux
+- Docker Engine
+- Docker Compose v2
+- Accorda Agent
 
 For Kubernetes:
 
-Kubernetes API access
-Accorda Agent
+- Kubernetes API access
+- Accorda Agent
 
 Cloud-provider-specific Kubernetes integrations should not be necessary.
 
@@ -171,11 +171,11 @@ The commercial strategy should not rely on deliberately crippling the OSS agent.
 
 The OSS proposition is:
 
-Deploy and reconcile your own infrastructure.
+> Deploy and reconcile your own infrastructure.
 
 The future Cloud proposition is:
 
-Understand, govern, and authorize deployments across your infrastructure.
+> Understand, govern, and authorize deployments across your infrastructure.
 
 ## 5. Core Reconciliation Model
 
@@ -283,15 +283,15 @@ VERIFYING
 
 This makes it possible to report:
 
+```bash
 Deployment       FAILED
 Production       HEALTHY
 Desired          d71b2e4
 Currently on     a01fd92
 Sync             OUT_OF_SYNC
+```
 
-This is much more informative than simply reporting:
-
-deployment failed
+This is much more informative than simply reporting: `deployment failed`
 
 ## 7. Deployment Receipts
 
@@ -321,17 +321,13 @@ Example:
 
 The digest is important.
 
-Git may say:
+Git may say: `ghcr.io/acme/api:latest`
 
-ghcr.io/acme/api:latest
-
-but Accorda should record:
-
-ghcr.io/acme/api@sha256:82af...
+but Accorda should record: `ghcr.io/acme/api@sha256:82af...`
 
 Accorda should therefore be capable of answering:
 
-Exactly which commit and container image digest was running on target X at time Y?
+> Exactly which commit and container image digest was running on target X at time Y?
 
 ## 8. Docker Compose Target
 
@@ -339,6 +335,7 @@ Docker Compose should be the first production-quality target.
 
 Example configuration:
 
+```yaml
 source:
   type: git
   url: git@github.com:acme/infra.git
@@ -356,6 +353,7 @@ reconcile:
   remove_orphans: true
 health:
   timeout: 120s
+```
 
 ## 9. Image Pull Policies
 
@@ -368,24 +366,24 @@ images:
 
 Possible values:
 
-changed
-missing
-always
-never
+- changed
+- missing
+- always
+- never
 
-missing
+### missing
 
 Pull an image only when it is not available locally.
 
-always
+### always
 
 Check/pull images on every deployment.
 
-never
+### never
 
 Do not automatically pull images.
 
-changed
+### changed
 
 Accorda calculates which services changed and pulls only those required images.
 
@@ -463,33 +461,31 @@ This helps determine whether a service actually requires recreation.
 
 The CLI should be a major part of the OSS experience.
 
-Potential binary:
+Binary: `accorda`
 
-Accorda
+### Core commands:
 
-Core commands:
+`accorda init`
+`accorda connect`
+`accorda status`
+`accorda diff`
+`accorda plan`
+`accorda sync`
+`accorda history`
+`accorda inspect`
+`accorda logs`
+`accorda auth`
+`accorda doctor`
+`accorda version`
 
-Accorda init
-Accorda connect
-Accorda status
-Accorda diff
-Accorda plan
-Accorda sync
-Accorda history
-Accorda inspect
-Accorda logs
-Accorda auth
-Accorda doctor
-Accorda version
-
-Accorda init
+### Accorda init
 
 Create a Accorda project/target.
 
-Accorda status
+### Accorda status
 
 Example:
-
+```bash
 Environment   production
 Repository    acme/backend
 Branch        main
@@ -502,11 +498,13 @@ SERVICE      STATE       HEALTH      IMAGE
 api          running     healthy     api:2.4.1
 worker       running     -           worker:2.4.1
 postgres     running     healthy     postgres:17
+```
 
-Accorda diff
+### Accorda diff
 
 Example:
 
+```yaml
 api
   image
     deployed: ghcr.io/acme/api:2.4.0
@@ -515,11 +513,13 @@ api
     LOG_LEVEL
       deployed: info
       desired:  warning
+```
 
-Accorda plan
+### Accorda plan
 
 Shows exactly what Accorda intends to do without performing the deployment.
 
+```bash
 Deployment plan
 Commit: a84fd21
 api
@@ -530,21 +530,23 @@ worker
   recreate        NO
 postgres
   recreate        NO
+```
 
-Accorda history
+### Accorda history
 
+```bash
 TIME                 COMMIT     RESULT      CHANGES
 18:42                d71b2e4    ✓ healthy   api
 17:13                a01fd92    ✓ healthy   worker
 15:51                87bc110    ✗ failed    api
 15:48                719db23    ✓ healthy   api
+```
 
-Accorda inspect
+### Accorda inspect
 
-Accorda inspect d71b2e4
+`accorda inspect d71b2e4` could show:
 
-could show:
-
+```bash
 api
   previous digest    sha256:abc...
   deployed digest    sha256:def...
@@ -552,6 +554,7 @@ api
   health             passed
 postgres
   unchanged
+```
 
 ## 12. Core Abstractions
 
@@ -575,7 +578,7 @@ type Target interface {
 
 Potential code organization:
 
-```text
+```bash
 Accorda/
 ├── cmd/
 ├── internal/
@@ -651,7 +654,7 @@ with zero SaaS dependency.
 
 Provider integrations add optional capabilities on top of generic Git.
 
-```text
+```bash
 Generic Git
 │
 ├── clone
@@ -681,14 +684,14 @@ Git provider integrations should be enhancements, never fundamental dependencies
 
 ## 15. Authentication
 
-Generic Git
+### Generic Git
 
 Support:
 
-SSH keys
-HTTPS credentials/tokens
+- SSH keys
+- HTTPS credentials/tokens
 
-GitHub
+### GitHub
 
 Preferred architecture:
 
