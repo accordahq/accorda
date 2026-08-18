@@ -140,16 +140,21 @@ When a reviewer leaves comments on the pull request, resolve them:
   resolve a thread; resolution is a separate action, and leaving threads
   unresolved blocks the reviewer from seeing the PR as addressed.
 
-Use the bundled script to list and resolve unresolved threads in one step
-(it fetches only thread IDs via `--jq`, so output stays small):
+Use the bundled script to inspect and resolve review threads. It has two
+modes and never resolves a thread you did not explicitly list:
 
 ```bash
+# List unresolved threads (id + short body snippet) so you can decide which
+# are actually addressed before resolving them.
 scripts/resolve-review-threads.sh <pr-number>
+
+# Resolve only the threads you pass (copy the IDs from the list output).
+scripts/resolve-review-threads.sh resolve <pr-number> <thread-id>...
 ```
 
-The script resolves every unresolved thread and prints each resolved ID. If
-you need to inspect a thread's content first, query it with `--jq` to trim
-the response to the fields you need rather than dumping full JSON.
+Resolve a thread only after its finding is addressed (fixed, or answered
+with a concrete rationale). Leave threads you have not yet addressed
+unresolved.
 
 ## Completion and handoff
 
