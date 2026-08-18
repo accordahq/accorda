@@ -247,8 +247,11 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState) (*plan.P
 //     with `docker compose up -d <service>`. Compose creates missing
 //     containers, recreates changed ones, and starts stopped ones, so a
 //     single `up -d` covers all three.
-//   - ActionRemove: the orphaned service is removed with
-//     `docker compose rm -sf <service>`.
+//   - ActionRemove: orphaned services (present at runtime but absent from
+//     the Compose file) are removed with `docker compose up -d
+//     --remove-orphans`. `rm` cannot be used here because the orphan's
+//     service name is no longer defined in the Compose file, so `rm` would
+//     fail with "no such service".
 //   - ActionPull: the service's image is pulled with
 //     `docker compose pull <service>`.
 //   - ActionStop: the service is stopped with `docker compose stop
@@ -288,7 +291,11 @@ func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
 			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
 		}
 	case plan.ActionRemove:
-		if err := t.runner.Run(ctx, "rm", "-sf", a.Service); err != nil {
+		// Orphans are removed with `up -d --remove-orphans`, which removes
+		// every container not defined in the Compose file. The service name
+		// is not passed because the orphan is no longer a defined service,
+		// so `rm <service>` would fail with "no such service".
+		if err := t.runner.Run(ctx, "up", "-d", "--remove-orphans"); err != nil {
 			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
 		}
 	case plan.ActionPull:

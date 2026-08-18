@@ -495,7 +495,7 @@ func TestApply_MapsActionsToComposeCommands(t *testing.T) {
 		{"up", "-d", "api"},
 		{"up", "-d", "worker"},
 		{"up", "-d", "db"},
-		{"rm", "-sf", "orphan"},
+		{"up", "-d", "--remove-orphans"},
 		{"pull", "api"},
 		{"stop", "legacy"},
 	}

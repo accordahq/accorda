@@ -378,8 +378,11 @@ which the spec explicitly frames as "the equivalent of `docker compose up
 subcommand and delegates execution to a local `composeRunner` seam
 (`Run(ctx, args...)`), whose production implementation (`cliRunner`) shells
 out to the `docker compose` CLI scoped with `-f <file> -p <project>`. The
-mapping is: create/recreate/start → `up -d <service>`; remove → `rm -sf
-<service>`; pull → `pull <service>`; stop → `stop <service>`; noop → skipped.
+The mapping is: create/recreate/start → `up -d <service>`; remove → `up -d
+--remove-orphans`; pull → `pull <service>`; stop → `stop <service>`; noop →
+skipped. Orphans are removed via `--remove-orphans` rather than `rm
+<service>` because the orphan's service name is no longer defined in the
+Compose file, so `rm` would fail with "no such service".
 The runner is injected via `WithRunner` so tests substitute a fake without a
 `docker compose` binary or daemon, mirroring the `dockerClient` seam used by
 `Current`. Partial failures return an error naming the failing service and
