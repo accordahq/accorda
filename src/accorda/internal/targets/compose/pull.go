@@ -78,8 +78,8 @@ func pullChanged(desired *state.DesiredState, drift []plan.Action) []plan.Action
 
 // pullMissing returns a pull action for each desired service whose image is
 // not present in local, ordered by service name (docs/ACCORDA.md §9
-// "missing"). local maps image references (repo tags) that are already
-// available on the engine.
+// "missing"). local maps image references (repo tags and repo digests) that
+// are already available on the engine.
 func pullMissing(desired *state.DesiredState, local map[string]bool) []plan.Action {
 	var actions []plan.Action
 	for _, name := range sortedServiceNames(desired.Services) {
@@ -91,9 +91,15 @@ func pullMissing(desired *state.DesiredState, local map[string]bool) []plan.Acti
 	return actions
 }
 
-// localImages returns the set of image references (repo tags) currently
-// available on the Docker engine, read via the dockerClient seam. It is used
-// by the "missing" pull policy to decide which images still need pulling.
+// localImages returns the set of image references currently available on the
+// Docker engine, read via the dockerClient seam. It is used by the "missing"
+// pull policy to decide which images still need pulling.
+//
+// Both repo tags and repo digests are indexed. A digest-pinned image
+// (e.g. "ghcr.io/acme/api@sha256:91a...") is pulled by digest, so Docker
+// populates RepoDigests but leaves RepoTags empty; indexing only tags would
+// make such images look perpetually missing and re-pull them on every
+// deployment (docs/ACCORDA.md §7 emphasizes recording digests).
 func (t *Target) localImages(ctx context.Context) (map[string]bool, error) {
 	if t.docker == nil {
 		return nil, errors.New("compose target: docker client is nil")
@@ -106,6 +112,9 @@ func (t *Target) localImages(ctx context.Context) (map[string]bool, error) {
 	for _, s := range summaries {
 		for _, tag := range s.RepoTags {
 			local[tag] = true
+		}
+		for _, digest := range s.RepoDigests {
+			local[digest] = true
 		}
 	}
 	return local, nil

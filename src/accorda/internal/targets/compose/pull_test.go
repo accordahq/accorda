@@ -125,6 +125,50 @@ func TestSelectPulls_Missing_ImageListFails(t *testing.T) {
 	}
 }
 
+func TestSelectPulls_Missing_DigestPinnedImage(t *testing.T) {
+	// A digest-pinned image is pulled by digest, so Docker populates
+	// RepoDigests but leaves RepoTags empty. The missing policy must index
+	// RepoDigests too, otherwise the image looks perpetually missing and is
+	// re-pulled on every deployment (docs/ACCORDA.md §7).
+	desired := desiredState(map[string]string{
+		"api": "ghcr.io/acme/api@sha256:91a",
+	})
+	cli := &fakeDockerClient{
+		images: []image.Summary{
+			{RepoDigests: []string{"ghcr.io/acme/api@sha256:91a"}},
+		},
+	}
+	tgt := &Target{pullPolicy: config.PullMissing, docker: cli}
+	got, err := tgt.selectPulls(context.Background(), desired, nil)
+	if err != nil {
+		t.Fatalf("selectPulls: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("pull actions = %v, want none (digest already local)", got)
+	}
+}
+
+func TestSelectPulls_Missing_DigestPinnedImageAbsent(t *testing.T) {
+	// A digest-pinned image that is not present locally must still be pulled.
+	desired := desiredState(map[string]string{
+		"api": "ghcr.io/acme/api@sha256:91a",
+	})
+	cli := &fakeDockerClient{
+		images: []image.Summary{
+			{RepoDigests: []string{"ghcr.io/acme/api@sha256:other"}},
+		},
+	}
+	tgt := &Target{pullPolicy: config.PullMissing, docker: cli}
+	got, err := tgt.selectPulls(context.Background(), desired, nil)
+	if err != nil {
+		t.Fatalf("selectPulls: %v", err)
+	}
+	want := []string{"api"}
+	if !reflect.DeepEqual(pullNames(got), want) {
+		t.Errorf("pull services = %v, want %v", pullNames(got), want)
+	}
+}
+
 func TestSelectPulls_Missing_NilDockerClient(t *testing.T) {
 	desired := desiredState(map[string]string{"api": "api:2"})
 	tgt := &Target{pullPolicy: config.PullMissing}
