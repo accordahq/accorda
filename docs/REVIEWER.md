@@ -80,6 +80,36 @@ first. If they match, submit `--comment` and record the intended verdict
 (`APPROVE` or `REQUEST_CHANGES`) in the review body, as noted in the Reviewer
 boundary above.
 
+### Inline review comments
+
+`gh` has no first-class command for inline (line-anchored) review comments;
+they must be posted through the REST API. Post them **before** submitting the
+final review so they are attached to the same review thread:
+
+```bash
+# Head commit SHA (required for the comment to anchor to the diff):
+gh pr view <PR> --json headRefOid --jq .headRefOid
+
+# Post one inline comment per finding:
+gh api repos/accordahq/accorda/pulls/<PR>/comments \
+  -f commit_id=<HEAD_SHA> \
+  -f path=<file> \
+  -F line=<N> \
+  -f body='<finding text>'
+```
+
+Critical details that have caused silent failures:
+
+- `line` must be an **integer**. Use `-F line=N` (forces a number); `-f line=N`
+  sends a string and the API rejects it with a 422 `"line" is not an integer`.
+- `commit_id` must be the PR **head** SHA, not the merge or base SHA.
+- `path` is the repo-relative file path; `line` is the 1-based line number in
+  the file at that commit (use `grep -n` on the checked-out branch to find it).
+- The comment body is plain text; GitHub-flavored Markdown is rendered.
+
+The final review (`gh pr review ...`) is separate and summarizes the verdict;
+inline comments carry the per-line findings.
+
 If `gh` calls fail with a transient GitHub error (e.g. 5xx), retry once or
 twice; if it keeps failing, fall back to the local branch and report PR
 metadata, CI, and any linked issue as unavailable. When `gh` is unavailable
