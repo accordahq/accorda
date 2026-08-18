@@ -224,6 +224,10 @@ func (p *Plan) String() string {
 //     stop api", the canonical §5.3 drift example).
 //   - A service whose desired image differs from the running image is
 //     recreated.
+//   - A service whose deployed configuration hash differs from the desired
+//     hash is recreated even when its image is unchanged (docs/ACCORDA.md
+//     §10): a change to command, ports, volumes, networks, labels,
+//     healthcheck, or depends_on requires recreation.
 //   - A service running but not in desired is removed (orphan).
 //   - A service that matches desired is a noop.
 func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, runtime *state.RuntimeState) []Action {
@@ -233,11 +237,8 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 	if runtime == nil {
 		runtime = &state.RuntimeState{}
 	}
-	deployedExists := make(map[string]bool)
-	if deployed != nil {
-		for name := range deployed.Services {
-			deployedExists[name] = true
-		}
+	if deployed == nil {
+		deployed = &state.DeployedState{}
 	}
 
 	// Iterate service names in sorted order so the returned action slice is
@@ -248,9 +249,10 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 	for _, name := range sortedKeys(desired.Services) {
 		dsvc := desired.Services[name]
 		rsvc, present := runtime.Services[name]
+		psvc, pPresent := deployed.Services[name]
 		switch {
 		case !present:
-			if deployedExists[name] {
+			if pPresent {
 				actions = append(actions, Action{Kind: ActionStart, Service: name, Image: dsvc.Image})
 			} else {
 				actions = append(actions, Action{Kind: ActionCreate, Service: name, Image: dsvc.Image})
@@ -267,6 +269,13 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 				From:    rsvc.Image,
 				To:      dsvc.Image,
 			})
+		case pPresent && psvc.Hash() != dsvc.Hash():
+			// The image is unchanged but the deployed configuration hash
+			// differs from the desired hash (docs/ACCORDA.md §10): a
+			// reconciliation-relevant field other than image changed, so the
+			// service must be recreated. This case follows the image check so
+			// an image change keeps its specific From/To detail.
+			actions = append(actions, Action{Kind: ActionRecreate, Service: name, Image: dsvc.Image})
 		case rsvc.Status != state.RunningStatus:
 			// Present but stopped/exited with an unchanged image: drift, not
 			// convergence. Mirror compareService's status check so a manually

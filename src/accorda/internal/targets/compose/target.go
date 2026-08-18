@@ -232,7 +232,12 @@ func (t *Target) Current(ctx context.Context) (*state.RuntimeState, error) {
 // deployment identifiers (that is the reconcile loop's responsibility,
 // docs/ACCORDA.md §7). CreatedAt is wall-clock time, so two runs differ only
 // in that field; the action ordering is deterministic (docs/DECISIONS.md #12).
-func (t *Target) Plan(ctx context.Context, desired *state.DesiredState) (*plan.Plan, error) {
+//
+// deployed supplies the previously deployed service configuration so
+// DriftActions can compare the canonical service hash (docs/ACCORDA.md §10)
+// and recreate a service whose command, ports, volumes, networks, labels,
+// healthcheck, or depends_on changed even when its image did not.
+func (t *Target) Plan(ctx context.Context, desired *state.DesiredState, deployed *state.DeployedState) (*plan.Plan, error) {
 	if t == nil {
 		return nil, errors.New("compose target: nil target")
 	}
@@ -247,7 +252,7 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState) (*plan.P
 	// carries an environment concept; the field is documented as "the target
 	// environment the plan applies to" (docs/ACCORDA.md §31).
 	p := plan.New("", desired.Repository, desired.Commit, time.Now())
-	drift := plan.DriftActions(desired, nil, runtime)
+	drift := plan.DriftActions(desired, deployed, runtime)
 	// Inject pull actions according to the image pull policy
 	// (docs/ACCORDA.md §9). Pulls are added before the drift actions so
 	// images are fetched before the services that depend on them are created

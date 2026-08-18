@@ -421,3 +421,43 @@ The `dockerClient` seam grows `ImageList` (still a subset of the Docker SDK
 APIClient, confined to the adapter). The `missing` policy is the only one
 that reads the engine's image list; the others are pure functions of the
 desired state and drift actions.
+
+### 19. Service hashing for recreate decisions
+
+**Context.** Issue #13 (§10) requires Accorda to compare normalized service
+configuration rather than relying exclusively on textual Git diffs, so it can
+decide whether a service actually requires recreation. The normalized service
+config (image, command, env, ports, volumes, networks, labels, healthcheck,
+depends_on) is already produced by the Compose parser (docs/DECISIONS.md #7)
+and its unordered collections are already sorted for determinism
+(docs/DECISIONS.md #12).
+
+**Decision.** `state.Service` gains a `Hash()` method that canonicalizes the
+reconciliation-relevant fields into a deterministic string and returns its
+SHA-256 hex digest. Unordered collections (env, labels, ports, volumes,
+networks, depends_on) are sorted at the canonicalization boundary so
+reordering-equivalent configs hash identically; ordered fields (command,
+healthcheck test) are preserved verbatim because their order is significant.
+`state.Compare` adds a final desired-vs-deployed check that compares the two
+hashes, so a service whose image and env match but whose command, ports,
+volumes, networks, labels, healthcheck, or depends_on changed is flagged
+OUT_OF_SYNC. The hash lives in `internal/core/state/hash.go` and uses only
+the standard library (`crypto/sha256`, `encoding/hex`).
+
+The recreation decision itself is wired into the plan path:
+`plan.DriftActions` compares the deployed service's hash against the desired
+hash and emits `ActionRecreate` when they differ even though the image is
+unchanged. To supply the deployed configuration, the `Target.Plan` interface
+method gains a `deployed *state.DeployedState` parameter (previously the
+Compose target passed `nil`, so `DriftActions` could not see the deployed
+hash and also could not distinguish `ActionCreate` from `ActionStart`). The
+Compose target forwards its `deployed` argument to `DriftActions`.
+
+**Consequence.** Recreate decisions now cover the full normalized service
+definition, not just image and env, and are driven in both the status path
+(`Compare`) and the plan path (`DriftActions`). The hash is a pure function
+of the service value, so it is deterministic and testable without a target.
+Any new reconciliation-relevant field added to `state.Service` must be
+included in `canonical()` or it will be silently excluded from recreate
+decisions. The `Target.Plan` signature change is a breaking interface change
+that all target drivers and the reconcile loop must adopt.

@@ -33,8 +33,12 @@ type Target interface {
 	// Current returns the runtime state currently running on the target.
 	Current(ctx context.Context) (*state.RuntimeState, error)
 	// Plan computes the deployment plan that reconciles desired state with
-	// the target's current state, without applying it.
-	Plan(ctx context.Context, desired *state.DesiredState) (*plan.Plan, error)
+	// the target's current state, without applying it. deployed is the
+	// state Accorda last successfully deployed; it supplies the deployed
+	// service configuration used to decide recreation via the canonical
+	// service hash (docs/ACCORDA.md §10). It may be nil when there is no
+	// prior deployment.
+	Plan(ctx context.Context, desired *state.DesiredState, deployed *state.DeployedState) (*plan.Plan, error)
 	// Apply applies the given plan to the target. It must be idempotent
 	// where possible so that retries are safe.
 	Apply(ctx context.Context, p *plan.Plan) error
@@ -67,7 +71,7 @@ func NewStub() *Stub { return &Stub{} }
 
 func (Stub) Validate(context.Context) error                       { return ErrNotImplemented }
 func (Stub) Current(context.Context) (*state.RuntimeState, error) { return nil, ErrNotImplemented }
-func (Stub) Plan(context.Context, *state.DesiredState) (*plan.Plan, error) {
+func (Stub) Plan(context.Context, *state.DesiredState, *state.DeployedState) (*plan.Plan, error) {
 	return nil, ErrNotImplemented
 }
 func (Stub) Apply(context.Context, *plan.Plan) error        { return ErrNotImplemented }

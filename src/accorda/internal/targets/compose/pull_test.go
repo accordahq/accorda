@@ -205,7 +205,7 @@ func TestPlan_InjectsPullActions(t *testing.T) {
 	}
 
 	desired := desiredState(map[string]string{"api": "api:2"})
-	p, err := tgt.Plan(context.Background(), desired)
+	p, err := tgt.Plan(context.Background(), desired, nil)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}

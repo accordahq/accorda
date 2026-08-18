@@ -399,7 +399,7 @@ func TestPlan_ComputesDesiredVsDeployedDiff(t *testing.T) {
 			"worker": {Image: "worker:1"},
 		},
 	}
-	p, err := tgt.Plan(context.Background(), desired)
+	p, err := tgt.Plan(context.Background(), desired, nil)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestPlan_Converged_IsUnchanged(t *testing.T) {
 		Commit:     "abc123",
 		Services:   map[string]state.Service{"api": {Image: "api:1"}},
 	}
-	p, err := tgt.Plan(context.Background(), desired)
+	p, err := tgt.Plan(context.Background(), desired, nil)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -466,12 +466,57 @@ func TestPlan_Converged_IsUnchanged(t *testing.T) {
 	}
 }
 
+func TestPlan_RecreatesOnConfigChange(t *testing.T) {
+	// A service whose image is unchanged but whose configuration hash differs
+	// (e.g. command changed) must be recreated through Target.Plan, exercising
+	// the forwarding of the deployed state to plan.DriftActions
+	// (docs/ACCORDA.md §10).
+	path := writeComposeFile(t)
+	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			summary(project, "api"),
+		},
+		inspected: map[string]container.InspectResponse{
+			"id-api": inspect("api:1", "running", "healthy"),
+		},
+	}
+	tgt := newTarget(t, path, cli)
+
+	desired := &state.DesiredState{
+		Repository: "acme/infra",
+		Commit:     "abc123",
+		Services: map[string]state.Service{
+			"api": {Image: "api:1", Command: []string{"./api", "--port", "8080"}},
+		},
+	}
+	deployed := &state.DeployedState{
+		DeploymentID: "dep_1",
+		Commit:       "abc123",
+		Services: map[string]state.Service{
+			"api": {Image: "api:1", Command: []string{"./api", "--port", "9090"}},
+		},
+	}
+	p, err := tgt.Plan(context.Background(), desired, deployed)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	kinds := map[string]plan.ActionKind{}
+	for _, a := range p.Actions {
+		kinds[a.Service] = a.Kind
+	}
+	if kinds["api"] != plan.ActionRecreate {
+		t.Errorf("api kind = %q, want %q", kinds["api"], plan.ActionRecreate)
+	}
+}
+
 func TestPlan_NilDesired_IsError(t *testing.T) {
 	path := writeComposeFile(t)
 	cli := &fakeDockerClient{}
 	tgt := newTarget(t, path, cli)
 
-	if _, err := tgt.Plan(context.Background(), nil); err == nil {
+	if _, err := tgt.Plan(context.Background(), nil, nil); err == nil {
 		t.Fatal("expected error for nil desired state, got nil")
 	}
 }
