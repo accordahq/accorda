@@ -11,18 +11,16 @@ import (
 
 // dockerClient is the seam the Compose target uses to talk to the Docker
 // engine. It is a subset of the Docker SDK's APIClient surface, narrowed to
-// the calls the runtime-state reader needs (Ping, ContainerList,
-// ContainerInspect). Defining the seam as a local interface keeps the Docker
-// SDK dependency inside this adapter (core never sees it) and lets tests
-// substitute a fake client without a running daemon (docs/ACCORDA.md §12,
-// docs/DECISIONS.md #3).
+// the calls the runtime-state reader needs (Ping, ContainerList). Defining
+// the seam as a local interface keeps the Docker SDK dependency inside this
+// adapter (core never sees it) and lets tests substitute a fake client
+// without a running daemon (docs/ACCORDA.md §12, docs/DECISIONS.md #3).
 //
 // The real Docker client (client.Client) satisfies this interface; see the
 // compile-time assertion below.
 type dockerClient interface {
 	Ping(ctx context.Context) (types.Ping, error)
 	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
-	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
 }
 
 // Compile-time check: the Docker SDK client satisfies dockerClient.

@@ -18,13 +18,11 @@ import (
 )
 
 // fakeDockerClient is a test double for the dockerClient seam. It returns
-// canned responses for Ping, ContainerList, and ContainerInspect so the
-// Compose target can be exercised without a running Docker daemon.
+// canned responses for Ping and ContainerList so the Compose target can be
+// exercised without a running Docker daemon.
 type fakeDockerClient struct {
 	pingErr    error
 	containers []container.Summary
-	inspected  map[string]container.InspectResponse
-	inspectErr map[string]error
 	listErr    error
 	// lastOptions captures the full ListOptions passed to ContainerList so
 	// tests can assert the All flag (drift visibility) and the label filter.
@@ -41,13 +39,6 @@ func (f *fakeDockerClient) ContainerList(_ context.Context, options container.Li
 		return nil, f.listErr
 	}
 	return f.containers, nil
-}
-
-func (f *fakeDockerClient) ContainerInspect(_ context.Context, id string) (container.InspectResponse, error) {
-	if err, ok := f.inspectErr[id]; ok {
-		return container.InspectResponse{}, err
-	}
-	return f.inspected[id], nil
 }
 
 // writeComposeFile writes a minimal valid Compose file in a temp dir and
@@ -71,6 +62,17 @@ func newTarget(t *testing.T, path string, cli *fakeDockerClient) *Target {
 		t.Fatalf("New: %v", err)
 	}
 	return tgt
+}
+
+// summary builds a container.Summary with the given service label, state,
+// and image, tagged with the project label so Current() selects it.
+func summary(project, service, state, image string) container.Summary {
+	return container.Summary{
+		ID:     "id-" + service,
+		Image:  image,
+		State:  state,
+		Labels: map[string]string{composeProjectLabel: project, composeServiceLabel: service},
+	}
 }
 
 func TestNew_RequiresFile(t *testing.T) {
@@ -125,34 +127,11 @@ func TestValidate_PingFails_IsError(t *testing.T) {
 
 func TestCurrent_MapsContainersToRuntimeState(t *testing.T) {
 	path := writeComposeFile(t)
-	dir := filepath.Base(filepath.Dir(path))
-	project := normalizeProjectName(dir)
+	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
 	cli := &fakeDockerClient{
 		containers: []container.Summary{
-			{
-				ID: "c1",
-				Labels: map[string]string{
-					composeProjectLabel: project,
-					composeServiceLabel: "api",
-				},
-			},
-			{
-				ID: "c2",
-				Labels: map[string]string{
-					composeProjectLabel: project,
-					composeServiceLabel: "worker",
-				},
-			},
-		},
-		inspected: map[string]container.InspectResponse{
-			"c1": {ContainerJSONBase: &container.ContainerJSONBase{
-				Image: "api:1",
-				State: &container.State{Status: "running", Health: &container.Health{Status: "healthy"}},
-			}},
-			"c2": {ContainerJSONBase: &container.ContainerJSONBase{
-				Image: "worker:1",
-				State: &container.State{Status: "running"},
-			}},
+			summary(project, "api", "running", "api:1"),
+			summary(project, "worker", "running", "worker:1"),
 		},
 	}
 	tgt := newTarget(t, path, cli)
@@ -166,13 +145,13 @@ func TestCurrent_MapsContainersToRuntimeState(t *testing.T) {
 	}
 
 	api := rs.Services["api"]
-	wantAPI := state.RuntimeService{Status: "running", Health: "healthy", Image: "api:1"}
+	wantAPI := state.RuntimeService{Status: "running", Image: "api:1"}
 	if api != wantAPI {
 		t.Errorf("api = %+v, want %+v", api, wantAPI)
 	}
 
 	worker := rs.Services["worker"]
-	wantWorker := state.RuntimeService{Status: "running", Health: "", Image: "worker:1"}
+	wantWorker := state.RuntimeService{Status: "running", Image: "worker:1"}
 	if worker != wantWorker {
 		t.Errorf("worker = %+v, want %+v", worker, wantWorker)
 	}
@@ -193,14 +172,7 @@ func TestCurrent_IncludesStoppedContainers(t *testing.T) {
 	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
 	cli := &fakeDockerClient{
 		containers: []container.Summary{
-			{ID: "c1", Labels: map[string]string{
-				composeProjectLabel: project, composeServiceLabel: "api"}},
-		},
-		inspected: map[string]container.InspectResponse{
-			"c1": {ContainerJSONBase: &container.ContainerJSONBase{
-				Image: "api:1",
-				State: &container.State{Status: "exited"},
-			}},
+			summary(project, "api", "exited", "api:1"),
 		},
 	}
 	tgt := newTarget(t, path, cli)
@@ -217,32 +189,6 @@ func TestCurrent_IncludesStoppedContainers(t *testing.T) {
 	}
 }
 
-func TestCurrent_NoHealthcheckLabel_IsEmpty(t *testing.T) {
-	path := writeComposeFile(t)
-	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
-	cli := &fakeDockerClient{
-		containers: []container.Summary{
-			{ID: "c1", Labels: map[string]string{
-				composeProjectLabel: project, composeServiceLabel: "api"}},
-		},
-		inspected: map[string]container.InspectResponse{
-			"c1": {ContainerJSONBase: &container.ContainerJSONBase{
-				Image: "api:1",
-				State: &container.State{Status: "running", Health: &container.Health{Status: "none"}},
-			}},
-		},
-	}
-	tgt := newTarget(t, path, cli)
-
-	rs, err := tgt.Current(context.Background())
-	if err != nil {
-		t.Fatalf("Current: %v", err)
-	}
-	if got := rs.Services["api"].Health; got != "" {
-		t.Errorf("Health = %q, want empty for no healthcheck", got)
-	}
-}
-
 func TestCurrent_SkipsContainerWithoutServiceLabel(t *testing.T) {
 	// A container with the project label but no service label is not a
 	// Compose service and must be skipped.
@@ -252,7 +198,6 @@ func TestCurrent_SkipsContainerWithoutServiceLabel(t *testing.T) {
 		containers: []container.Summary{
 			{ID: "c1", Labels: map[string]string{composeProjectLabel: project}},
 		},
-		inspected: map[string]container.InspectResponse{},
 	}
 	tgt := newTarget(t, path, cli)
 
@@ -262,23 +207,6 @@ func TestCurrent_SkipsContainerWithoutServiceLabel(t *testing.T) {
 	}
 	if len(rs.Services) != 0 {
 		t.Errorf("got %d services, want 0: %+v", len(rs.Services), rs.Services)
-	}
-}
-
-func TestCurrent_InspectFails_IsError(t *testing.T) {
-	path := writeComposeFile(t)
-	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
-	cli := &fakeDockerClient{
-		containers: []container.Summary{
-			{ID: "c1", Labels: map[string]string{
-				composeProjectLabel: project, composeServiceLabel: "api"}},
-		},
-		inspectErr: map[string]error{"c1": errors.New("inspect boom")},
-	}
-	tgt := newTarget(t, path, cli)
-
-	if _, err := tgt.Current(context.Background()); err == nil {
-		t.Fatal("expected error when inspect fails, got nil")
 	}
 }
 
@@ -309,6 +237,56 @@ func TestCurrent_EmptyProject_ReturnsEmptyState(t *testing.T) {
 	}
 }
 
+func TestCurrent_ScaledReplicasDisagree_IsDegraded(t *testing.T) {
+	// Two replicas of the same service with different states must surface a
+	// degraded status rather than silently letting the last one win.
+	path := writeComposeFile(t)
+	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			summary(project, "api", "running", "api:1"),
+			summary(project, "api", "exited", "api:1"),
+		},
+	}
+	tgt := newTarget(t, path, cli)
+
+	rs, err := tgt.Current(context.Background())
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if len(rs.Services) != 1 {
+		t.Fatalf("got %d services, want 1: %+v", len(rs.Services), rs.Services)
+	}
+	if got := rs.Services["api"].Status; got != degradedStatus {
+		t.Errorf("api.Status = %q, want %q", got, degradedStatus)
+	}
+}
+
+func TestCurrent_ScaledReplicasAgree_IsSingleEntry(t *testing.T) {
+	// Two replicas of the same service in the same state collapse to one
+	// entry with that shared state.
+	path := writeComposeFile(t)
+	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			summary(project, "api", "running", "api:1"),
+			summary(project, "api", "running", "api:1"),
+		},
+	}
+	tgt := newTarget(t, path, cli)
+
+	rs, err := tgt.Current(context.Background())
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if len(rs.Services) != 1 {
+		t.Fatalf("got %d services, want 1: %+v", len(rs.Services), rs.Services)
+	}
+	if got := rs.Services["api"].Status; got != "running" {
+		t.Errorf("api.Status = %q, want running", got)
+	}
+}
+
 func TestPlan_Apply_Health_NotImplemented(t *testing.T) {
 	path := writeComposeFile(t)
 	cli := &fakeDockerClient{}
@@ -329,14 +307,7 @@ func TestWithProjectName_OverridesDerived(t *testing.T) {
 	path := writeComposeFile(t)
 	cli := &fakeDockerClient{
 		containers: []container.Summary{
-			{ID: "c1", Labels: map[string]string{
-				composeProjectLabel: "explicit", composeServiceLabel: "api"}},
-		},
-		inspected: map[string]container.InspectResponse{
-			"c1": {ContainerJSONBase: &container.ContainerJSONBase{
-				Image: "api:1",
-				State: &container.State{Status: "running"},
-			}},
+			summary("explicit", "api", "running", "api:1"),
 		},
 	}
 	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
@@ -406,51 +377,31 @@ func TestComposeProjectName_BareFilenameFallsBackToWorkingDir(t *testing.T) {
 	}
 }
 
-func TestToRuntimeService_StatusAndHealth(t *testing.T) {
+func TestToRuntimeService_StatusAndImage(t *testing.T) {
 	cases := []struct {
 		name    string
-		inspect container.InspectResponse
+		summary container.Summary
 		want    state.RuntimeService
 	}{
 		{
-			name: "running healthy",
-			inspect: container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Image: "api:1",
-					State: &container.State{Status: "running", Health: &container.Health{Status: "healthy"}},
-				},
-			},
-			want: state.RuntimeService{Status: "running", Health: "healthy", Image: "api:1"},
+			name:    "running",
+			summary: container.Summary{State: "running", Image: "api:1"},
+			want:    state.RuntimeService{Status: "running", Image: "api:1"},
 		},
 		{
-			name: "exited no health",
-			inspect: container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Image: "api:1",
-					State: &container.State{Status: "exited"},
-				},
-			},
-			want: state.RuntimeService{Status: "exited", Health: "", Image: "api:1"},
+			name:    "exited",
+			summary: container.Summary{State: "exited", Image: "api:1"},
+			want:    state.RuntimeService{Status: "exited", Image: "api:1"},
 		},
 		{
-			name: "running unhealthy",
-			inspect: container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Image: "api:1",
-					State: &container.State{Status: "running", Health: &container.Health{Status: "unhealthy"}},
-				},
-			},
-			want: state.RuntimeService{Status: "running", Health: "unhealthy", Image: "api:1"},
-		},
-		{
-			name:    "no state",
-			inspect: container.InspectResponse{},
+			name:    "empty",
+			summary: container.Summary{},
 			want:    state.RuntimeService{},
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := toRuntimeService(c.inspect); !reflect.DeepEqual(got, c.want) {
+			if got := toRuntimeService(c.summary); !reflect.DeepEqual(got, c.want) {
 				t.Errorf("toRuntimeService = %+v, want %+v", got, c.want)
 			}
 		})
@@ -549,74 +500,13 @@ func TestCurrent_ListIncludesStoppedContainers_AllTrue(t *testing.T) {
 	}
 }
 
-func TestCurrent_HealthStarting_Mapped(t *testing.T) {
-	path := writeComposeFile(t)
-	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
-	cli := &fakeDockerClient{
-		containers: []container.Summary{
-			{ID: "c1", Labels: map[string]string{
-				composeProjectLabel: project, composeServiceLabel: "api"}},
-		},
-		inspected: map[string]container.InspectResponse{
-			"c1": {ContainerJSONBase: &container.ContainerJSONBase{
-				Image: "api:1",
-				State: &container.State{Status: "running", Health: &container.Health{Status: "starting"}},
-			}},
-		},
-	}
-	tgt := newTarget(t, path, cli)
-
-	rs, err := tgt.Current(context.Background())
-	if err != nil {
-		t.Fatalf("Current: %v", err)
-	}
-	if got := rs.Services["api"].Health; got != "starting" {
-		t.Errorf("Health = %q, want starting", got)
-	}
-}
-
-func TestCurrent_OnlyProjectLabelContainersUsed(t *testing.T) {
-	// Containers are pre-filtered by the engine via the label filter; the
-	// returned set must include every listed container that carries the
-	// service label, and the inspect image is what surfaces.
-	path := writeComposeFile(t)
-	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
-	cli := &fakeDockerClient{
-		containers: []container.Summary{
-			{ID: "c1", Labels: map[string]string{
-				composeProjectLabel: project, composeServiceLabel: "api"}},
-		},
-		inspected: map[string]container.InspectResponse{
-			"c1": {ContainerJSONBase: &container.ContainerJSONBase{
-				Image: "ghcr.io/acme/api:2.4.1",
-				State: &container.State{Status: "running"},
-			}},
-		},
-	}
-	tgt := newTarget(t, path, cli)
-
-	rs, err := tgt.Current(context.Background())
-	if err != nil {
-		t.Fatalf("Current: %v", err)
-	}
-	if got := rs.Services["api"].Image; got != "ghcr.io/acme/api:2.4.1" {
-		t.Errorf("Image = %q, want ghcr.io/acme/api:2.4.1", got)
-	}
-}
-
 func TestWithProjectName_NormalizesOverride(t *testing.T) {
 	// WithProjectName must normalize so an override with uppercase/space
 	// matches the com.docker.compose.project label Compose applies.
 	path := writeComposeFile(t)
 	cli := &fakeDockerClient{
 		containers: []container.Summary{
-			{ID: "c1", Labels: map[string]string{
-				composeProjectLabel: "myapp", composeServiceLabel: "api"}},
-		},
-		inspected: map[string]container.InspectResponse{
-			"c1": {ContainerJSONBase: &container.ContainerJSONBase{
-				State: &container.State{Status: "running"},
-			}},
+			summary("myapp", "api", "running", "api:1"),
 		},
 	}
 	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
@@ -668,28 +558,19 @@ func TestServiceName_NilLabelsReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestToRuntimeService_StartingHealth(t *testing.T) {
-	inspect := container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Image: "api:1",
-			State: &container.State{Status: "running", Health: &container.Health{Status: "starting"}},
-		},
-	}
-	want := state.RuntimeService{Status: "running", Health: "starting", Image: "api:1"}
-	if got := toRuntimeService(inspect); !reflect.DeepEqual(got, want) {
-		t.Errorf("toRuntimeService = %+v, want %+v", got, want)
+func TestMergeRuntime_DisagreeIsDegraded(t *testing.T) {
+	a := state.RuntimeService{Status: "running", Image: "api:1"}
+	b := state.RuntimeService{Status: "exited", Image: "api:1"}
+	want := state.RuntimeService{Status: degradedStatus, Image: "api:1"}
+	if got := mergeRuntime(a, b); !reflect.DeepEqual(got, want) {
+		t.Errorf("mergeRuntime = %+v, want %+v", got, want)
 	}
 }
 
-func TestToRuntimeService_NoHealthcheckFieldIsEmpty(t *testing.T) {
-	inspect := container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Image: "api:1",
-			State: &container.State{Status: "running", Health: &container.Health{Status: container.NoHealthcheck}},
-		},
-	}
-	want := state.RuntimeService{Status: "running", Health: "", Image: "api:1"}
-	if got := toRuntimeService(inspect); !reflect.DeepEqual(got, want) {
-		t.Errorf("toRuntimeService = %+v, want %+v", got, want)
+func TestMergeRuntime_AgreeIsShared(t *testing.T) {
+	a := state.RuntimeService{Status: "running", Image: "api:1"}
+	b := state.RuntimeService{Status: "running", Image: "api:1"}
+	if got := mergeRuntime(a, b); !reflect.DeepEqual(got, a) {
+		t.Errorf("mergeRuntime = %+v, want %+v", got, a)
 	}
 }

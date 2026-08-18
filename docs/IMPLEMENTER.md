@@ -123,6 +123,20 @@ gh pr create --base main --head <branch-name>
 
 Do not merge the PR unless the user separately and explicitly requests it.
 
+### 8. Resolve review feedback
+
+When a reviewer leaves comments on the pull request, resolve them:
+
+- Read every review comment (including inline comments) and address each
+  finding — fix blocking issues, and either fix or explicitly respond to
+  non-blocking ones.
+- Prefer fixing over arguing; when a finding is intentionally not fixed,
+  reply with a concrete rationale rather than leaving it unanswered.
+- After making changes, re-run the relevant validation and push the follow-up
+  commits to the same branch.
+- Reply to the review thread summarizing what changed so the reviewer can
+  re-review without re-reading the whole diff.
+
 ## Completion and handoff
 
 An implementation request is complete only when the pull request exists and
