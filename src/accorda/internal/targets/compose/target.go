@@ -41,8 +41,12 @@ var _ targets.Target = (*Target)(nil)
 //   - Plan computes the desired-vs-deployed diff (docs/ACCORDA.md §9) by
 //     reading the runtime state and delegating to plan.DriftActions,
 //     producing a per-service CHANGED/UNCHANGED plan without applying it.
+//   - Apply executes a plan by running the equivalent of `docker compose up
+//     -d` scoped to the changed services (docs/ACCORDA.md §9), delegating to
+//     a composeRunner seam so the `docker compose` CLI stays confined to
+//     this adapter.
 //
-// Apply and Health return targets.ErrNotImplemented until later milestones.
+// Health returns targets.ErrNotImplemented until a later milestone.
 type Target struct {
 	// file is the Compose file path resolved from config.Target (File, or
 	// Path when File is empty).
@@ -54,6 +58,9 @@ type Target struct {
 	// docker is the Docker engine client seam. It is injected so tests can
 	// substitute a fake client without a running daemon.
 	docker dockerClient
+	// runner executes `docker compose` subcommands for Apply. It is injected
+	// so tests can substitute a fake without a `docker compose` binary.
+	runner composeRunner
 }
 
 // Option configures a Compose Target.
@@ -64,6 +71,13 @@ type Option func(*Target)
 // builds a real client from the environment.
 func WithDockerClient(c dockerClient) Option {
 	return func(t *Target) { t.docker = c }
+}
+
+// WithRunner injects a composeRunner for the target to use. It is primarily
+// intended for tests; production callers leave it unset and New builds a
+// cliRunner that shells out to `docker compose`.
+func WithRunner(r composeRunner) Option {
+	return func(t *Target) { t.runner = r }
 }
 
 // New constructs a Compose Target from an Accorda project's target
@@ -97,6 +111,9 @@ func New(cfg config.Target, opts ...Option) (*Target, error) {
 			return nil, fmt.Errorf("compose target: docker client: %w", err)
 		}
 		t.docker = cli
+	}
+	if t.runner == nil {
+		t.runner = cliRunner{file: t.file, project: t.project}
 	}
 	return t, nil
 }
@@ -219,10 +236,73 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState) (*plan.P
 	return p, nil
 }
 
-// Apply applies the given plan to the target. Not yet implemented
-// (docs/ACCORDA.md §6 deploy phase).
-func (t *Target) Apply(_ context.Context, _ *plan.Plan) error {
-	return targets.ErrNotImplemented
+// Apply applies the given plan to the target (docs/ACCORDA.md §6 deploy
+// phase, §9). It runs the equivalent of `docker compose up -d` scoped to
+// only the services the plan marks as changed, so unchanged services are
+// left untouched (docs/ACCORDA.md §9: "docker compose up -d api").
+//
+// The action kinds map to Compose operations as follows:
+//
+//   - ActionCreate, ActionRecreate, ActionStart: the service is brought up
+//     with `docker compose up -d <service>`. Compose creates missing
+//     containers, recreates changed ones, and starts stopped ones, so a
+//     single `up -d` covers all three.
+//   - ActionRemove: the orphaned service is removed with
+//     `docker compose rm -sf <service>`.
+//   - ActionPull: the service's image is pulled with
+//     `docker compose pull <service>`.
+//   - ActionStop: the service is stopped with `docker compose stop
+//     <service>`.
+//   - ActionNoop: skipped; the service is already converged.
+//
+// Apply is idempotent where possible: `up -d` and `rm -sf` are safe to
+// retry, and a plan with no changed services performs no work. It handles
+// partial failures by returning an error that names the first failing
+// service and its underlying cause, so the reconcile loop can surface which
+// service failed rather than a bare exit code (docs/ACCORDA.md §6).
+func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
+	if t == nil {
+		return errors.New("compose target: nil target")
+	}
+	if p == nil {
+		return errors.New("compose target: plan is nil")
+	}
+	if t.runner == nil {
+		return errors.New("compose target: compose runner is nil")
+	}
+	for _, a := range p.Actions {
+		if err := t.applyAction(ctx, a); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyAction executes a single plan action against the Compose project. It
+// returns an error naming the service and action so a partial failure is
+// attributable to the specific service that failed.
+func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
+	switch a.Kind {
+	case plan.ActionCreate, plan.ActionRecreate, plan.ActionStart:
+		if err := t.runner.Run(ctx, "up", "-d", a.Service); err != nil {
+			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
+		}
+	case plan.ActionRemove:
+		if err := t.runner.Run(ctx, "rm", "-sf", a.Service); err != nil {
+			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
+		}
+	case plan.ActionPull:
+		if err := t.runner.Run(ctx, "pull", a.Service); err != nil {
+			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
+		}
+	case plan.ActionStop:
+		if err := t.runner.Run(ctx, "stop", a.Service); err != nil {
+			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
+		}
+	case plan.ActionNoop:
+		// Already converged; nothing to do.
+	}
+	return nil
 }
 
 // Health verifies the health of the currently deployed workloads. Not yet
