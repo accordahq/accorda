@@ -185,46 +185,70 @@ func TestRun_Init_Auth(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			dir := t.TempDir()
-			var out bytes.Buffer
-			base := []string{"init", "--dir", dir, "--repo", "git@github.com:acme/backend.git"}
-			if e := run(append(base, c.args...), &out, nil); e != nil {
-				if c.wantErr == "" {
-					t.Fatalf("run(init) error = %v, want nil", e)
-				}
-				if !strings.Contains(e.Error(), c.wantErr) {
-					t.Fatalf("error = %v, want it to contain %q", e, c.wantErr)
-				}
-				return
-			}
-			if c.wantErr != "" {
-				t.Fatalf("expected error containing %q, got nil", c.wantErr)
-			}
-			got, err := os.ReadFile(filepath.Join(dir, config.File))
-			if err != nil {
-				t.Fatalf("read project file: %v", err)
-			}
-			s := string(got)
-			if c.wantAuth != "" && !strings.Contains(s, c.wantAuth) {
-				t.Fatalf("project file missing auth section %q; got %s", c.wantAuth, s)
-			}
-			if c.wantAuth == "" && strings.Contains(s, "auth:") {
-				t.Fatalf("project file should have no auth section; got %s", s)
-			}
-			// Verify the SSH key path appears when ssh auth is used.
-			if strings.Contains(c.wantAuth, "ssh") && !strings.Contains(s, "/home/user/.ssh/id_ed25519") {
-				t.Fatalf("project file missing SSH key path; got %s", s)
-			}
-			if c.wantHint != "" && !strings.Contains(out.String(), c.wantHint) {
-				t.Fatalf("stdout missing hint %q; got %s", c.wantHint, out.String())
-			}
-			if c.wantLoad {
-				if _, err := config.Load(dir); err != nil {
-					t.Fatalf("config.Load after init: %v", err)
-				}
-			}
+			assertInitAuth(t, c.args, c.wantAuth, c.wantLoad, c.wantErr, c.wantHint)
 		})
 	}
+}
+
+// assertInitAuth runs `accorda init` with the given auth flags and checks the
+// written file, stdout hint, and config.Load outcome. It is extracted from
+// TestRun_Init_Auth to keep the test function below the cognitive complexity
+// limit (go:S3776).
+func assertInitAuth(t *testing.T, args []string, wantAuth string, wantLoad bool, wantErr, wantHint string) {
+	t.Helper()
+	dir := t.TempDir()
+	var out bytes.Buffer
+	base := []string{"init", "--dir", dir, "--repo", "git@github.com:acme/backend.git"}
+	if e := run(append(base, args...), &out, nil); e != nil {
+		if wantErr == "" {
+			t.Fatalf("run(init) error = %v, want nil", e)
+		}
+		if !strings.Contains(e.Error(), wantErr) {
+			t.Fatalf("error = %v, want it to contain %q", e, wantErr)
+		}
+		return
+	}
+	if wantErr != "" {
+		t.Fatalf("expected error containing %q, got nil", wantErr)
+	}
+	s := readInitFile(t, dir)
+	assertAuthContent(t, s, wantAuth)
+	if wantHint != "" && !strings.Contains(out.String(), wantHint) {
+		t.Fatalf("stdout missing hint %q; got %s", wantHint, out.String())
+	}
+	if wantLoad {
+		if _, err := config.Load(dir); err != nil {
+			t.Fatalf("config.Load after init: %v", err)
+		}
+	}
+}
+
+// assertAuthContent checks the written project file for the expected auth
+// section. Extracted from assertInitAuth to reduce cognitive complexity
+// (go:S3776).
+func assertAuthContent(t *testing.T, s, wantAuth string) {
+	t.Helper()
+	if wantAuth != "" && !strings.Contains(s, wantAuth) {
+		t.Fatalf("project file missing auth section %q; got %s", wantAuth, s)
+	}
+	if wantAuth == "" && strings.Contains(s, "auth:") {
+		t.Fatalf("project file should have no auth section; got %s", s)
+	}
+	// Verify the SSH key path appears when ssh auth is used.
+	if strings.Contains(wantAuth, "ssh") && !strings.Contains(s, "/home/user/.ssh/id_ed25519") {
+		t.Fatalf("project file missing SSH key path; got %s", s)
+	}
+}
+
+// readInitFile reads the accorda.yaml written by init in dir, failing the
+// test on error. Extracted to reduce cognitive complexity (go:S3776).
+func readInitFile(t *testing.T, dir string) string {
+	t.Helper()
+	got, err := os.ReadFile(filepath.Join(dir, config.File))
+	if err != nil {
+		t.Fatalf("read project file: %v", err)
+	}
+	return string(got)
 }
 
 func TestRun_Init_MissingFlagValue(t *testing.T) {

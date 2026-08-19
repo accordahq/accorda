@@ -492,37 +492,51 @@ target:
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p, err := Parse([]byte(c.yaml))
-			if err != nil {
-				t.Fatalf("Parse: %v", err)
-			}
-			out, err := MarshalProject(p)
-			if err != nil {
-				t.Fatalf("MarshalProject: %v", err)
-			}
-			// The marshaled document must re-parse through the strict loader.
-			p2, err := Parse(out)
-			if err != nil {
-				t.Fatalf("re-Parse of marshaled output failed: %v\noutput:\n%s", err, out)
-			}
-			// The round-tripped project must match the original on the fields
-			// that matter for reconciliation.
-			if p2.Environment != p.Environment {
-				t.Errorf("Environment = %q, want %q", p2.Environment, p.Environment)
-			}
-			if p2.Source.URL != p.Source.URL || p2.Source.Branch != p.Source.Branch {
-				t.Errorf("Source = %+v, want %+v", p2.Source, p.Source)
-			}
-			if p2.Target.Type != p.Target.Type {
-				t.Errorf("Target.Type = %q, want %q", p2.Target.Type, p.Target.Type)
-			}
-			if len(p2.Secrets.Files) != len(p.Secrets.Files) {
-				t.Errorf("Secrets.Files len = %d, want %d", len(p2.Secrets.Files), len(p.Secrets.Files))
-			}
-			if p2.Secrets.Provider != p.Secrets.Provider {
-				t.Errorf("Secrets.Provider = %q, want %q", p2.Secrets.Provider, p.Secrets.Provider)
-			}
+			assertRoundTrip(t, c.yaml)
 		})
+	}
+}
+
+// assertRoundTrip parses yaml, marshals it back, re-parses, and checks that
+// the fields that matter for reconciliation match. It is extracted from
+// TestMarshalProject_RoundTrip to keep the test function below the cognitive
+// complexity limit (go:S3776).
+func assertRoundTrip(t *testing.T, yaml string) {
+	t.Helper()
+	p, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	out, err := MarshalProject(p)
+	if err != nil {
+		t.Fatalf("MarshalProject: %v", err)
+	}
+	// The marshaled document must re-parse through the strict loader.
+	p2, err := Parse(out)
+	if err != nil {
+		t.Fatalf("re-Parse of marshaled output failed: %v\noutput:\n%s", err, out)
+	}
+	assertProjectEqual(t, p, p2)
+}
+
+// assertProjectEqual checks that two Projects match on the fields that matter
+// for reconciliation. Extracted to reduce cognitive complexity (go:S3776).
+func assertProjectEqual(t *testing.T, want, got *Project) {
+	t.Helper()
+	if got.Environment != want.Environment {
+		t.Errorf("Environment = %q, want %q", got.Environment, want.Environment)
+	}
+	if got.Source.URL != want.Source.URL || got.Source.Branch != want.Source.Branch {
+		t.Errorf("Source = %+v, want %+v", got.Source, want.Source)
+	}
+	if got.Target.Type != want.Target.Type {
+		t.Errorf("Target.Type = %q, want %q", got.Target.Type, want.Target.Type)
+	}
+	if len(got.Secrets.Files) != len(want.Secrets.Files) {
+		t.Errorf("Secrets.Files len = %d, want %d", len(got.Secrets.Files), len(want.Secrets.Files))
+	}
+	if got.Secrets.Provider != want.Secrets.Provider {
+		t.Errorf("Secrets.Provider = %q, want %q", got.Secrets.Provider, want.Secrets.Provider)
 	}
 }
 
