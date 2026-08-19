@@ -11,7 +11,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 
 	"accorda/internal/config"
-	"accorda/internal/core/health"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 	"accorda/internal/targets"
@@ -45,8 +44,9 @@ var _ targets.Target = (*Target)(nil)
 //     -d` scoped to the changed services (docs/ACCORDA.md §9), delegating to
 //     a composeRunner seam so the `docker compose` CLI stays confined to
 //     this adapter.
-//
-// Health returns targets.ErrNotImplemented until a later milestone.
+//   - Health verifies the health of the deployed workloads by reading the
+//     runtime state and mapping each service's Docker healthcheck status to
+//     a health.Status, waiting up to the health timeout (docs/ACCORDA.md §19).
 type Target struct {
 	// file is the Compose file path resolved from config.Target (File, or
 	// Path when File is empty).
@@ -64,6 +64,9 @@ type Target struct {
 	// pullPolicy selects which images to pull before deployment
 	// (docs/ACCORDA.md §9). It defaults to config.PullChanged.
 	pullPolicy string
+	// healthTimeout is the maximum time Health waits for services to become
+	// healthy (docs/ACCORDA.md §19). It defaults to defaultHealthTimeout.
+	healthTimeout time.Duration
 }
 
 // Option configures a Compose Target.
@@ -94,6 +97,17 @@ func WithPullPolicy(policy string) Option {
 	return func(t *Target) { t.pullPolicy = policy }
 }
 
+// WithHealthTimeout sets the maximum time Health waits for services to become
+// healthy (docs/ACCORDA.md §19). It defaults to defaultHealthTimeout. It is
+// primarily intended for tests and for callers that construct a Target
+// directly from a config.Target without a full config.Project; the reconcile
+// loop will supply it from the project's health.timeout setting once it
+// constructs targets from a config.Project (the sync command is still a
+// stub, so no production caller wires it yet).
+func WithHealthTimeout(d time.Duration) Option {
+	return func(t *Target) { t.healthTimeout = d }
+}
+
 // New constructs a Compose Target from an Accorda project's target
 // configuration. It does not touch the Docker engine or the filesystem;
 // Validate performs those checks.
@@ -115,7 +129,7 @@ func New(cfg config.Target, opts ...Option) (*Target, error) {
 	if file == "" {
 		return nil, errors.New("compose target: target.file or target.path is required")
 	}
-	t := &Target{file: file, project: composeProjectName(file), pullPolicy: config.PullChanged}
+	t := &Target{file: file, project: composeProjectName(file), pullPolicy: config.PullChanged, healthTimeout: defaultHealthTimeout}
 	for _, opt := range opts {
 		opt(t)
 	}
@@ -360,12 +374,6 @@ func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
 	return nil
 }
 
-// Health verifies the health of the currently deployed workloads. Not yet
-// implemented (docs/ACCORDA.md §19; tracked by issue #15).
-func (t *Target) Health(_ context.Context) (*health.Health, error) {
-	return nil, targets.ErrNotImplemented
-}
-
 // serviceName returns the Compose service name from a container's labels, or
 // "" when the label is absent (for example a container not managed by
 // Compose).
@@ -403,6 +411,11 @@ func toRuntimeService(c container.InspectResponse) state.RuntimeService {
 // disagree (for example one running and one stopped). It signals drift that
 // a single last-wins entry would otherwise hide (docs/ACCORDA.md §5.3).
 const degradedStatus = "degraded"
+
+// defaultHealthTimeout is the maximum time Health waits for services to
+// become healthy when no explicit timeout is configured. It mirrors the
+// config default for health.timeout (docs/ACCORDA.md §19).
+const defaultHealthTimeout = 120 * time.Second
 
 // mergeRuntime combines two RuntimeService values for the same service name
 // (multiple replicas). When the replicas agree, the merged value is that

@@ -62,6 +62,25 @@ gh pr diff <PR>
 gh pr checks <PR>
 gh issue view <ISSUE>           # for a linked issue body when available
 
+Use the bundled `scripts/pr-review.sh` to post inline comments and submit the
+final review. It resolves the head SHA, forces the integer `line` type, and
+applies the authorship rule automatically:
+
+```bash
+# Post one inline comment per finding (before the final review, so they
+# attach to the same review thread):
+scripts/pr-review.sh <PR> inline <path> <line> '<finding text>'
+
+# Submit the final review. Use EXACTLY ONE verdict:
+scripts/pr-review.sh <PR> review approve         '<body>'
+scripts/pr-review.sh <PR> review request-changes '<body>'
+scripts/pr-review.sh <PR> review comment         '<body>'
+```
+
+The script wraps the raw `gh` calls below; the details still matter when
+debugging a failure:
+
+```bash
 # Submit a review. Use EXACTLY ONE of the event flags:
 gh pr review <PR> --approve     --body-file <file>   # or -b "<body>"
 gh pr review <PR> --request-changes --body-file <file>
@@ -78,13 +97,14 @@ Authorship rule: GitHub rejects `--approve` and `--request-changes` from the PR
 author. Always compare `gh api user --jq .login` against the PR `author.login`
 first. If they match, submit `--comment` and record the intended verdict
 (`APPROVE` or `REQUEST_CHANGES`) in the review body, as noted in the Reviewer
-boundary above.
+boundary above. `scripts/pr-review.sh review` does this automatically.
 
 ### Inline review comments
 
 `gh` has no first-class command for inline (line-anchored) review comments;
 they must be posted through the REST API. Post them **before** submitting the
-final review so they are attached to the same review thread:
+final review so they are attached to the same review thread. The script's
+`inline` mode does this; the raw form is:
 
 ```bash
 # Head commit SHA (required for the comment to anchor to the diff):
@@ -106,6 +126,8 @@ Critical details that have caused silent failures:
 - `path` is the repo-relative file path; `line` is the 1-based line number in
   the file at that commit (use `grep -n` on the checked-out branch to find it).
 - The comment body is plain text; GitHub-flavored Markdown is rendered.
+- The `line` must be part of the diff (a changed line); anchoring to an
+  unchanged line fails with a 422 `"could not be resolved"`.
 
 The final review (`gh pr review ...`) is separate and summarizes the verdict;
 inline comments carry the per-line findings.

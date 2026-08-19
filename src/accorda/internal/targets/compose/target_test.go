@@ -89,7 +89,7 @@ func writeComposeFile(t *testing.T) string {
 
 // newTarget builds a Target with a fake client and the Compose file at path,
 // using the project name derived from the file's directory basename.
-func newTarget(t *testing.T, path string, cli *fakeDockerClient) *Target {
+func newTarget(t *testing.T, path string, cli dockerClient) *Target {
 	t.Helper()
 	tgt, err := New(config.Target{Type: config.TargetCompose, File: path}, WithDockerClient(cli))
 	if err != nil {
@@ -360,16 +360,6 @@ func TestCurrent_ScaledReplicasAgree_IsSingleEntry(t *testing.T) {
 	}
 	if got := rs.Services["api"].Status; got != "running" {
 		t.Errorf("api.Status = %q, want running", got)
-	}
-}
-
-func TestHealth_NotImplemented(t *testing.T) {
-	path := writeComposeFile(t)
-	cli := &fakeDockerClient{}
-	tgt := newTarget(t, path, cli)
-
-	if _, err := tgt.Health(context.Background()); !errors.Is(err, targets.ErrNotImplemented) {
-		t.Errorf("Health err = %v, want ErrNotImplemented", err)
 	}
 }
 

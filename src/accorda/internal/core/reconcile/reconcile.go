@@ -212,10 +212,11 @@ func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.Des
 			r.rollback(ctx, res, desired)
 			return nil, false
 		}
-		// Health verification is not yet implemented by the target
-		// (docs/ACCORDA.md §19; tracked by issue #15). Treat the deployment
-		// as healthy so the lifecycle can proceed to SYNCED; the health gate
-		// becomes active once the target implements Health.
+		// Health verification is not implemented by this target (for example
+		// the Stub, or a driver that has not yet landed its Health method).
+		// Treat the deployment as healthy so the lifecycle can proceed to
+		// SYNCED; the health gate is active for targets that implement
+		// Health (docs/ACCORDA.md §19).
 		return &health.Health{Deployed: true, Healthy: true}, true
 	}
 	if h == nil {
@@ -227,7 +228,15 @@ func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.Des
 	}
 	h.Deployed = true
 	h.Summarize()
-	if !h.Healthy {
+	// Only a genuinely unhealthy deployment fails verification and triggers
+	// rollback. A deployment whose services have no healthchecks reports
+	// Overall == StatusUnknown, which is not a failure: DEPLOYED, HEALTHY,
+	// and SYNCED are distinct outcomes (docs/ACCORDA.md §19), and a target
+	// without healthchecks is deployed but not health-verifiable, so it must
+	// proceed rather than be rolled back. StatusStarting is likewise not a
+	// failure; the target's Health is responsible for waiting out the
+	// starting window (and reporting unhealthy on timeout).
+	if h.Overall == health.StatusUnhealthy {
 		r.fail(ctx, res, PhaseVerifying, commit.SHA, p.DeploymentID,
 			fmt.Errorf("reconcile: health check failed: %s", h.Overall))
 		r.rollback(ctx, res, desired)

@@ -495,3 +495,43 @@ than provider callbacks. The `ErrNotImplemented` health bypass is a
 temporary, documented divergence that must be removed when #15 is
 implemented. The `Bus` is synchronous and in-memory; a future async or
 durable bus can implement the same interface without changing the reconciler.
+
+### 21. Compose health verification maps Docker healthcheck status
+
+**Context.** Issue #15 (§19) requires the Compose target to wait for Compose
+healthchecks before declaring a deployment successful, distinguishing
+DEPLOYED, HEALTHY, and SYNCED, and honoring `health.timeout`. The runtime
+state already carries each container's healthcheck status (docs/DECISIONS.md
+#15), and `health.Health` already models the aggregate and per-service
+outcomes.
+
+**Decision.** `Target.Health` reads the runtime state via `Current` and maps
+each service's Docker healthcheck status to a `health.Status`: `healthy` →
+`StatusHealthy`, `starting` → `StatusStarting`, empty (no healthcheck) →
+`StatusUnknown`, and anything else → `StatusUnhealthy`. It polls `Current`
+every `healthPollInterval` (2s) until no service is still starting, or until
+the health timeout elapses, then summarizes the per-service results. The
+timeout is carried on the `Target` as `healthTimeout` (default
+`defaultHealthTimeout` = 120s, mirroring the config default), settable via
+`WithHealthTimeout`; the reconcile loop will supply it from the project's
+`health.timeout` setting once it constructs targets from a `config.Project`
+(the `sync` command is still a stub, so no production caller wires it yet).
+When the timeout elapses while a service is still
+starting, that service is reported unhealthy with a message naming the
+timeout, so a deployment that never becomes healthy is not silently declared
+successful. A service with no healthcheck is immediately unknown and does not
+block the wait. `Health` returns an error only when reading runtime state
+fails; an unhealthy deployment is reported through the returned `Health`
+value, not an error.
+
+**Consequence.** The `ErrNotImplemented` health bypass in the reconciler
+(docs/DECISIONS.md #20) is now dead for the Compose target: `Health` returns
+a real assessment, so the reconcile loop's VERIFYING phase gates on actual
+health. The gate is on `Overall == StatusUnhealthy` rather than `!Healthy`,
+so a no-healthcheck deployment (Overall == `StatusUnknown`) proceeds to
+SYNCED instead of being rolled back — DEPLOYED, HEALTHY, and SYNCED are
+distinct outcomes (docs/ACCORDA.md §19). The Docker SDK dependency is
+unchanged (health is read from the existing `ContainerInspect` path). The
+health timeout is a target-level concern, consistent with the pull policy
+(docs/DECISIONS.md #18); the reconcile loop must thread `health.timeout` into
+the target when it constructs the driver.
