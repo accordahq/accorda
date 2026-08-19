@@ -67,10 +67,10 @@ func composeService(s state.Service) map[string]any {
 		m["environment"] = s.Env
 	}
 	if len(s.Ports) > 0 {
-		m["ports"] = stringPorts(s.Ports)
+		m["ports"] = StringPorts(s.Ports)
 	}
 	if len(s.Volumes) > 0 {
-		m["volumes"] = stringVolumes(s.Volumes)
+		m["volumes"] = StringVolumes(s.Volumes)
 	}
 	if len(s.Networks) > 0 {
 		m["networks"] = s.Networks
@@ -89,9 +89,11 @@ func composeService(s state.Service) map[string]any {
 	return m
 }
 
-// stringPorts converts a service's normalized ports to Compose short-form
-// strings.
-func stringPorts(ports []state.Port) []string {
+// StringPorts converts a service's normalized ports to Compose short-form
+// strings. It is exported so the `accorda diff` CLI command renders ports
+// identically to the Compose writer, keeping the canonical form in one place
+// (docs/DECISIONS.md #12, #13).
+func StringPorts(ports []state.Port) []string {
 	out := make([]string, 0, len(ports))
 	for _, p := range ports {
 		out = append(out, portString(p))
@@ -99,9 +101,11 @@ func stringPorts(ports []state.Port) []string {
 	return out
 }
 
-// stringVolumes converts a service's normalized volumes to Compose short-form
-// strings.
-func stringVolumes(volumes []state.Volume) []string {
+// StringVolumes converts a service's normalized volumes to Compose short-form
+// strings. It is exported so the `accorda diff` CLI command renders volumes
+// identically to the Compose writer, keeping the canonical form in one place
+// (docs/DECISIONS.md #12, #13).
+func StringVolumes(volumes []state.Volume) []string {
 	out := make([]string, 0, len(volumes))
 	for _, v := range volumes {
 		out = append(out, volumeString(v))

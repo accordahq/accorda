@@ -853,3 +853,38 @@ The git source's `redactURL` helper is exported (`git.RedactURL`) so `status`
 redacts a configured URL identically to the source, keeping credentials out of
 user-facing output. A future task may reconcile `status` with the
 deployed-commit semantics of the persisted receipts (#7) as the CLI grows.
+
+### 31. `accorda diff` and `accorda plan` are read-only CLI projections
+
+**Context.** Issue #26 (§11) requires `accorda diff` (per-field deployed vs
+desired) and `accorda plan` (intended actions without deploying). The plan
+phase (#10, decision #16) and the `plan.Plan` `String()`/`Changed()` summary
+already exist, and the receipt journal records the last healthy deployment
+(#7, #27), so both commands can be built entirely from existing seams without
+new core abstractions.
+
+**Decision.** `cmd/accorda/diff.go` implements `accorda diff` as a read-only,
+daemon-free projection: the "deployed" side is the desired state re-read from
+Git at the last healthy deployment's commit (`lastHealthyReceipt` + source
+`Desired`), because the receipt journal stores only per-service image/digest
+and the full per-field definition must come from the source; the "desired"
+side is the current Git HEAD. Only services and fields that differ are
+printed, in a YAML-like tree with `deployed:`/`desired:` pairs matching the
+§11 example, in sorted order (#12). `cmd/accorda/plan.go` implements
+`accorda plan` by fetching the desired state, constructing the target, and
+calling `Target.Plan` with the same full-model deployed baseline as `diff`
+(re-read from the source at the deployed commit via a shared
+`deployedAtCommit` helper, converted to a `DeployedState`), so the two
+commands agree on the deployed side and a converged service is not
+over-reported as `CHANGED`; it then prints the plan header and
+`plan.Plan.String()`. Neither command mutates the target or source.
+
+**Consequence.** `accorda diff` and `accorda plan` become fully implemented
+CLI surface. `diff` needs no Docker daemon because it compares Git commits;
+`plan` requires the target's runtime (via `Target.Plan`) but never applies
+the plan. Both share the `deployedAtCommit` helper (and `lastHealthyReceipt`)
+so the deployed baseline is consistent with each other and with `status`'s
+deployed-commit read; `plan` uses the full model rather than the image-only
+`previousFromHistory` rollback baseline, so its output reflects the actual
+deployed configuration. The remaining stub commands are `history`, `inspect`,
+`logs`, and `doctor`.

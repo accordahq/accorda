@@ -318,3 +318,108 @@ func TestE2E_Status_ReportsAfterSync(t *testing.T) {
 		}
 	}
 }
+
+// TestE2E_Diff_AfterSync drives `accorda diff` after a successful sync and
+// verifies it reports no differences when the deployed and desired states
+// agree, and that it fetches the current remote tip rather than a stale local
+// cache: after the remote advances, `diff` must show the change even though
+// the local cache still points at the deployed commit (docs/ACCORDA.md §11).
+func TestE2E_Diff_AfterSync(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir := writeE2EProject(t)
+	origin := gitOriginDir(t, dir)
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+
+	// First converge so a healthy receipt exists.
+	var syncOut bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &syncOut, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// A converged deployment must produce an empty diff (no differing
+	// services or fields).
+	var converged bytes.Buffer
+	if err := run([]string{"diff", "--dir", dir}, &converged, nil); err != nil {
+		t.Fatalf("diff (converged): %v", err)
+	}
+	if s := converged.String(); strings.TrimSpace(s) != "" {
+		t.Errorf("diff output = %q, want empty for a converged deployment", s)
+	}
+
+	// Advance the remote to a new image without touching the local cache, so
+	// the old buggy path (Desired with a nil ref) would read the stale cache
+	// and report no change. `diff` must fetch and show the new image.
+	if err := os.WriteFile(filepath.Join(origin, testutil.ComposeFile), []byte(changedImageCompose), 0o644); err != nil {
+		t.Fatalf("write origin compose (changed image): %v", err)
+	}
+	runGit(t, origin, "add", testutil.ComposeFile)
+	runGit(t, origin, "commit", "-m", "bump image")
+
+	var out bytes.Buffer
+	if err := run([]string{"diff", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("diff (after remote advance): %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "image") || !strings.Contains(s, "busybox:1.37") {
+		t.Errorf("diff output = %q, want it to show the new image busybox:1.37", s)
+	}
+}
+
+// changedImageCompose declares the api service with a bumped image tag, used
+// to advance the origin remote after a sync so `accorda diff` must fetch the
+// new tip rather than read a stale cache.
+const changedImageCompose = `services:
+  api:
+    image: busybox:1.37
+    command: ["sh", "-c", "sleep 300"]
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 1s
+      timeout: 1s
+      retries: 3
+`
+
+// TestE2E_Plan_AfterSync drives `accorda plan` after a successful sync and
+// verifies it prints the plan header and a per-service UNCHANGED summary for
+// the converged deployment, without applying anything (docs/ACCORDA.md §11).
+// The deployed baseline is the full service model re-read from the source at
+// the deployed commit, so a converged service reports UNCHANGED rather than
+// being over-reported as CHANGED.
+func TestE2E_Plan_AfterSync(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir := writeE2EProject(t)
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+
+	// First converge so a healthy receipt exists.
+	var syncOut bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &syncOut, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := run([]string{"plan", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	s := out.String()
+	for _, want := range []string{
+		"Deployment plan\n",
+		"api",
+		"UNCHANGED",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("plan output missing %q; got:\n%s", want, s)
+		}
+	}
+}
