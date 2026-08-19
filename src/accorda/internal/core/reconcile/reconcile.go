@@ -246,6 +246,13 @@ func (r *Reconciler) sync(ctx context.Context, res *Result, desired *state.Desir
 	if err != nil {
 		return r.fail(ctx, res, PhaseHealthy, commit.SHA, p.DeploymentID, err)
 	}
+	// Note: DeployedState is synthesized from the freshly-fetched desired
+	// state because there is no persisted deployment history yet. As a
+	// result state.Compare can only observe DRIFTED (runtime divergence),
+	// never OUT_OF_SYNC (desired != deployed), since desired and deployed
+	// always agree by construction. This resolves once deployment receipts
+	// and history are wired in (the WithPrevious seam already exists for
+	// that); revisit when §7 receipts land.
 	deployed := &state.DeployedState{
 		DeploymentID: p.DeploymentID,
 		Commit:       commit.SHA,
