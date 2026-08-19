@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -106,8 +107,7 @@ func previousFromHistory(store history.Store) *state.DeployedState {
 	if err != nil {
 		return nil
 	}
-	for i := len(receipts) - 1; i >= 0; i-- {
-		rc := receipts[i]
+	for _, rc := range slices.Backward(receipts) {
 		if rc.Result != history.OutcomeHealthy {
 			continue
 		}
