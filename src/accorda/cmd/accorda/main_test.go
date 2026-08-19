@@ -148,6 +148,85 @@ func TestRun_Init_MissingRepo(t *testing.T) {
 	}
 }
 
+func TestRun_Init_Auth(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string // appended to a base init command with --dir and --repo
+		wantAuth string   // expected auth section content (empty = no auth section)
+		wantLoad bool     // whether config.Load should succeed on the written file
+		wantErr  string   // non-empty = expected error substring
+		wantHint string   // non-empty = expected hint substring in stdout
+	}{
+		{
+			name:     "ambient (no auth flags)",
+			args:     nil,
+			wantAuth: "",
+			wantLoad: true,
+		},
+		{
+			name:     "ssh with key",
+			args:     []string{"--auth-type", "ssh", "--auth-key", "/home/user/.ssh/id_ed25519"},
+			wantAuth: "type: ssh",
+			wantLoad: true,
+		},
+		{
+			name:     "ssh without key fails validation",
+			args:     []string{"--auth-type", "ssh"},
+			wantErr:  "source.auth.key is required",
+			wantLoad: false,
+		},
+		{
+			name:     "https writes ambient with hint (token added by hand)",
+			args:     []string{"--auth-type", "https"},
+			wantAuth: "",
+			wantLoad: true,
+			wantHint: "HTTPS auth requires source.auth.token",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var out bytes.Buffer
+			base := []string{"init", "--dir", dir, "--repo", "git@github.com:acme/backend.git"}
+			if e := run(append(base, c.args...), &out, nil); e != nil {
+				if c.wantErr == "" {
+					t.Fatalf("run(init) error = %v, want nil", e)
+				}
+				if !strings.Contains(e.Error(), c.wantErr) {
+					t.Fatalf("error = %v, want it to contain %q", e, c.wantErr)
+				}
+				return
+			}
+			if c.wantErr != "" {
+				t.Fatalf("expected error containing %q, got nil", c.wantErr)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, config.File))
+			if err != nil {
+				t.Fatalf("read project file: %v", err)
+			}
+			s := string(got)
+			if c.wantAuth != "" && !strings.Contains(s, c.wantAuth) {
+				t.Fatalf("project file missing auth section %q; got %s", c.wantAuth, s)
+			}
+			if c.wantAuth == "" && strings.Contains(s, "auth:") {
+				t.Fatalf("project file should have no auth section; got %s", s)
+			}
+			// Verify the SSH key path appears when ssh auth is used.
+			if strings.Contains(c.wantAuth, "ssh") && !strings.Contains(s, "/home/user/.ssh/id_ed25519") {
+				t.Fatalf("project file missing SSH key path; got %s", s)
+			}
+			if c.wantHint != "" && !strings.Contains(out.String(), c.wantHint) {
+				t.Fatalf("stdout missing hint %q; got %s", c.wantHint, out.String())
+			}
+			if c.wantLoad {
+				if _, err := config.Load(dir); err != nil {
+					t.Fatalf("config.Load after init: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestRun_Init_MissingFlagValue(t *testing.T) {
 	var out bytes.Buffer
 	e := run([]string{"init", "--env"}, &out, nil)

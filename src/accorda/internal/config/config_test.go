@@ -462,3 +462,88 @@ target:
 		t.Fatalf("Parse: unexpected error for absent auth: %v", err)
 	}
 }
+
+func TestMarshalProject_RoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "compose example (secrets list form)",
+			yaml: composeExample25,
+		},
+		{
+			name: "kubernetes example (secrets provider form)",
+			yaml: kubernetesExample25,
+		},
+		{
+			name: "init-shaped minimal project",
+			yaml: `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/backend.git
+  branch: main
+target:
+  type: compose
+  file: compose.yaml
+`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, err := Parse([]byte(c.yaml))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			out, err := MarshalProject(p)
+			if err != nil {
+				t.Fatalf("MarshalProject: %v", err)
+			}
+			// The marshaled document must re-parse through the strict loader.
+			p2, err := Parse(out)
+			if err != nil {
+				t.Fatalf("re-Parse of marshaled output failed: %v\noutput:\n%s", err, out)
+			}
+			// The round-tripped project must match the original on the fields
+			// that matter for reconciliation.
+			if p2.Environment != p.Environment {
+				t.Errorf("Environment = %q, want %q", p2.Environment, p.Environment)
+			}
+			if p2.Source.URL != p.Source.URL || p2.Source.Branch != p.Source.Branch {
+				t.Errorf("Source = %+v, want %+v", p2.Source, p.Source)
+			}
+			if p2.Target.Type != p.Target.Type {
+				t.Errorf("Target.Type = %q, want %q", p2.Target.Type, p.Target.Type)
+			}
+			if len(p2.Secrets.Files) != len(p.Secrets.Files) {
+				t.Errorf("Secrets.Files len = %d, want %d", len(p2.Secrets.Files), len(p.Secrets.Files))
+			}
+			if p2.Secrets.Provider != p.Secrets.Provider {
+				t.Errorf("Secrets.Provider = %q, want %q", p2.Secrets.Provider, p.Secrets.Provider)
+			}
+		})
+	}
+}
+
+func TestMarshalProject_OmitsEmptySections(t *testing.T) {
+	p := &Project{
+		Version:     SchemaVersion,
+		Environment: "production",
+		Source:      Source{Type: "git", URL: "git@github.com:acme/backend.git", Branch: "main"},
+		Target:      Target{Type: TargetCompose, File: "compose.yaml"},
+	}
+	ApplyDefaults(p)
+	out, err := MarshalProject(p)
+	if err != nil {
+		t.Fatalf("MarshalProject: %v", err)
+	}
+	s := string(out)
+	// Auth should be absent (ambient) — no empty username/token fields.
+	if strings.Contains(s, "auth:") {
+		t.Errorf("marshaled output should omit empty auth section; got:\n%s", s)
+	}
+	if strings.Contains(s, `username: ""`) || strings.Contains(s, `token: ""`) {
+		t.Errorf("marshaled output should omit empty auth fields; got:\n%s", s)
+	}
+}

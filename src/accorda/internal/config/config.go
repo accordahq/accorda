@@ -93,13 +93,13 @@ type Auth struct {
 	Type string `yaml:"type"`
 	// Key is the path to an SSH private key used when Type == "ssh", e.g.
 	// "/etc/Accorda/git.key".
-	Key string `yaml:"key"`
+	Key string `yaml:"key,omitempty"`
 	// Username is the HTTPS username. For token auth this is often
 	// "oauth2" or "x-access-token"; it defaults accordingly.
-	Username string `yaml:"username"`
+	Username string `yaml:"username,omitempty"`
 	// Token is the HTTPS credential/token. It is treated as a secret and
 	// must never be logged.
-	Token string `yaml:"token"`
+	Token string `yaml:"token,omitempty"`
 }
 
 // Target describes the deployment target (docs/ACCORDA.md §8, §24, §25).
@@ -189,6 +189,24 @@ func (s *Secrets) UnmarshalYAML(value *yaml.Node) error {
 	}
 }
 
+// MarshalYAML implements yaml.Marshaler so Secrets round-trips through the
+// strict loader. UnmarshalYAML accepts two shapes (a list of file paths or a
+// {provider: ...} mapping); MarshalYAML emits the same shape that was decoded
+// so a Project produced by Parse round-trips through MarshalProject back to a
+// document the strict loader accepts (docs/ACCORDA.md §25).
+//
+// When both Files and Provider are empty, MarshalYAML returns a nil node so
+// the field is omitted entirely by the parent's omitempty tag.
+func (s Secrets) MarshalYAML() (any, error) {
+	if len(s.Files) > 0 {
+		return s.Files, nil
+	}
+	if s.Provider != "" {
+		return map[string]string{"provider": s.Provider}, nil
+	}
+	return nil, nil
+}
+
 // Notifications enables notification channels (docs/ACCORDA.md §21, §39).
 type Notifications struct {
 	GitHub  bool `yaml:"github,omitempty"`
@@ -225,10 +243,12 @@ func Parse(data []byte) (*Project, error) {
 }
 
 // MarshalProject encodes a Project as the canonical accorda.yaml document
-// (docs/ACCORDA.md §25). It is the inverse of Parse: a Project produced by
-// Parse round-trips through MarshalProject back to an equivalent document.
-// Optional sections that are at their zero value are omitted so the output
-// is minimal and matches what a user would author by hand.
+// (docs/ACCORDA.md §25). It is the inverse of Parse for the fields init
+// writes: a Project produced by Parse round-trips through MarshalProject back
+// to an equivalent document the strict loader accepts, including the Secrets
+// list/provider shapes. Optional sections that are at their zero value are
+// omitted so the output is minimal and matches what a user would author by
+// hand.
 //
 // MarshalProject does not validate p; callers that need a valid document
 // (for example `accorda init`) should construct a Project the loader would

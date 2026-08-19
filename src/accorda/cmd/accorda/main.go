@@ -185,10 +185,14 @@ func newInitCmd() *cobra.Command {
 			"to reconcile from, and the Compose target, matching the §11\n" +
 			"`accorda init` purpose and the unified project format in §25.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := initProject(dir, env, repo, branch, file, authType, authKey); err != nil {
+			hint, err := initProject(dir, env, repo, branch, file, authType, authKey)
+			if err != nil {
 				return fmt.Errorf("init: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Initialized Accorda project in %s\n", filepath.Join(dir, config.File))
+			if hint != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\n", hint)
+			}
 			return nil
 		},
 	}
@@ -197,7 +201,7 @@ func newInitCmd() *cobra.Command {
 	c.Flags().StringVar(&repo, "repo", "", "Git source repository URL")
 	c.Flags().StringVar(&branch, "branch", "main", "Git branch to reconcile")
 	c.Flags().StringVar(&file, "file", initComposeFile, "Compose target file path")
-	c.Flags().StringVar(&authType, "auth-type", "", "Git auth type: ssh or https (default: ambient)")
+	c.Flags().StringVar(&authType, "auth-type", "", "Git auth type: ssh or https (https writes ambient; add source.auth.token by hand)")
 	c.Flags().StringVar(&authKey, "auth-key", "", "SSH private key path (for --auth-type=ssh)")
 	return c
 }
@@ -207,10 +211,17 @@ func newInitCmd() *cobra.Command {
 // it. The file is the unified project format consumed by the config loader
 // (internal/config), aligning `init` with the rest of the CLI
 // (docs/DECISIONS.md #11).
-func initProject(dir, env, repo, branch, file, authType, authKey string) error {
+//
+// It returns a non-empty hint string when the user requested HTTPS auth
+// (which requires a token that cannot be supplied via a flag without
+// recording it in shell history); the hint tells the user to edit the file
+// and add source.auth.token. In that case the file is written with ambient
+// auth (no auth section) so it remains valid and loadable.
+func initProject(dir, env, repo, branch, file, authType, authKey string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return "", err
 	}
+	auth, hint := initAuth(authType, authKey)
 	proj := &config.Project{
 		Version:     config.SchemaVersion,
 		Environment: env,
@@ -218,7 +229,7 @@ func initProject(dir, env, repo, branch, file, authType, authKey string) error {
 			Type:   "git",
 			URL:    repo,
 			Branch: branch,
-			Auth:   initAuth(authType, authKey),
+			Auth:   auth,
 		},
 		Target: config.Target{
 			Type: config.TargetCompose,
@@ -227,29 +238,36 @@ func initProject(dir, env, repo, branch, file, authType, authKey string) error {
 	}
 	config.ApplyDefaults(proj)
 	if err := config.Validate(proj); err != nil {
-		return err
+		return "", err
 	}
 	data, err := config.MarshalProject(proj)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return os.WriteFile(filepath.Join(dir, config.File), data, 0o644)
+	if err := os.WriteFile(filepath.Join(dir, config.File), data, 0o644); err != nil {
+		return "", err
+	}
+	return hint, nil
 }
 
 // initAuth builds the source.auth configuration from the init flags. An empty
 // authType means "use the ambient Git environment" and produces a zero Auth,
 // which the loader and the git source both accept (docs/ACCORDA.md §15).
-func initAuth(authType, authKey string) config.Auth {
+//
+// For --auth-type=ssh, the key path from --auth-key is recorded so the file is
+// ready to use. For --auth-type=https, the token cannot be supplied via a
+// flag without recording it in shell history, so init writes ambient auth
+// (no auth section) and returns a hint telling the user to edit the file and
+// add source.auth.token by hand. This keeps the generated file valid and
+// loadable rather than failing validation with no file written.
+func initAuth(authType, authKey string) (config.Auth, string) {
 	switch authType {
 	case config.AuthSSH:
-		return config.Auth{Type: config.AuthSSH, Key: authKey}
+		return config.Auth{Type: config.AuthSSH, Key: authKey}, ""
 	case config.AuthHTTPS:
-		// The token is not supplied via a flag to avoid recording it in the
-		// project file or shell history; the user edits accorda.yaml to add
-		// source.auth.token after init.
-		return config.Auth{Type: config.AuthHTTPS}
+		return config.Auth{}, "Note: HTTPS auth requires source.auth.token; edit " + config.File + " to add it."
 	default:
-		return config.Auth{}
+		return config.Auth{}, ""
 	}
 }
 
