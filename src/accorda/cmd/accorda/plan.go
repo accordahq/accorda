@@ -33,8 +33,8 @@ func newPlanCmd() *cobra.Command {
 		Long: "Show the intended deployment plan without performing it\n" +
 			"(docs/ACCORDA.md §11): fetch the desired state from Git, compare it\n" +
 			"with the target's current state, and print the per-service actions\n" +
-			"that a sync would take. plan is read-only and does not change the\n" +
-			"target or source.",
+			"Accorda would take to reconcile the desired state. plan is read-only\n" +
+			"and does not change the target or source.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := runPlan(cmd, dir); err != nil {
 				return fmt.Errorf("plan: %w", err)
@@ -94,8 +94,8 @@ func runPlan(cmd *cobra.Command, dir string) error {
 // writePlan prints the plan in the format shown in docs/ACCORDA.md §11. It
 // delegates to plan.Plan.String, which renders the identifying fields
 // (deployment, environment, commit) followed by the per-service
-// CHANGED/UNCHANGED summary, so `accorda plan` shows the same intended
-// actions a `sync` would apply without performing them.
+// CHANGED/UNCHANGED summary, so `accorda plan` shows the intended actions
+// without performing them.
 func writePlan(w io.Writer, p *plan.Plan) {
 	fmt.Fprintf(w, "Deployment plan\n")
 	fmt.Fprintf(w, "%s", p.String())
