@@ -109,14 +109,14 @@ func summary(project, service string) container.Summary {
 }
 
 // inspect builds a container.InspectResponse with the given image, state,
-// and health status. It sets both Config.Image (the image reference the
-// operator passed) and ContainerJSONBase.Image (the resolved image ID), as
-// a real Docker inspect response does, so the runtime-state reader exercises
-// its reference-preferring lookup.
+// and health status. It sets ContainerJSONBase.Image to the resolved image ID
+// ("sha256:<image>") and Config.Image to the reference the operator passed,
+// mirroring a real Docker inspect response, so the runtime-state reader
+// exercises its reference-preferring lookup.
 func inspect(image, state, health string) container.InspectResponse {
 	return container.InspectResponse{
 		ContainerJSONBase: &container.ContainerJSONBase{
-			Image: image,
+			Image: "sha256:" + image,
 			State: &container.State{Status: state, Health: &container.Health{Status: health}},
 		},
 		Config: &container.Config{Image: image},

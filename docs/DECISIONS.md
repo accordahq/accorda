@@ -638,18 +638,18 @@ invisible to the hermetic unit tests and to a newer local Go toolchain.
   to `ContainerJSONBase.Image` only when `Config` is absent.
 - The git source integration tests failed under Go 1.25.0 because go-git's
   `file://` transport returns "repository not found" on that toolchain but
-  works on Go 1.25.6+. The `go.mod` `go` directive was raised from `1.25.0` to
-  `1.25.6` so the CI-installed toolchain (via `go-version-file`) matches a
-  version where the file transport works.
+  works on Go 1.25.6+. The CI workflow now pins the toolchain explicitly to
+  Go 1.25.6 (`go-version: '1.25.6'`) rather than selecting it via
+  `go-version-file`, leaving the module's `go` directive at the true minimum
+  (1.25.0) so downstream builders on older 1.25.x patches are not forced up.
 - The E2E fixture used a relative `target.file`, which `sync` resolves against
   the process working directory rather than the project `--dir`; it now uses
   an absolute path.
 
 **Consequence.** The integration suite now passes in CI against a real Docker
-daemon and the pinned toolchain, and it proved its value by catching the
-image-reference bug that unit tests could not. Keeping the `go` directive at a
-patch that works with go-git's file transport is a toolchain constraint to
-preserve when bumping the Go version.
+daemon, and it proved its value by catching the image-reference bug that unit
+tests could not. The module's `go` directive stays at 1.25.0; only the CI
+toolchain is pinned to 1.25.6 to work around go-git's file-transport quirk.
 
 ### 25. Docker engine SDK vulnerabilities are accepted risk with no fixed version
 
