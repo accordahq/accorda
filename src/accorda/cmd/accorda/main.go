@@ -226,10 +226,6 @@ func newPlanCmd() *cobra.Command {
 	return stubCmd("plan", "show intended actions without deploying")
 }
 
-func newSyncCmd() *cobra.Command {
-	return stubCmd("sync", "run reconciliation")
-}
-
 func newHistoryCmd() *cobra.Command {
 	return stubCmd("history", "show deployment history")
 }

@@ -566,3 +566,36 @@ stub and no production caller constructs a `Reconciler` from a
 `config.Project`; the `WithDriftPolicy` seam is the wiring point for that
 future work, mirroring the `WithHealthTimeout`/`WithPullPolicy` seams on the
 Compose target.
+
+### 23. `accorda sync` wires the reconciler to the Git source and Compose target
+
+**Context.** Issue #27 (§11) requires the `accorda sync` command to trigger
+one reconciliation pass on demand. The reconciler (docs/DECISIONS.md #20),
+the Git source (docs/DECISIONS.md #8), and the Compose target
+(docs/DECISIONS.md #15–#19, #21) were all implemented and unit-tested but had
+no production caller: the `sync` command was a stub, so the drift policy
+(#22), pull policy (#18), and health timeout (#21) seams were never threaded
+from a `config.Project`.
+
+**Decision.** `cmd/accorda` gains a real `newSyncCmd` (in `sync.go`) that
+loads the project file via `config.Load(dir)`, constructs the Git source
+(`git.New(proj.Source)`) and the Compose target
+(`compose.New(proj.Target, compose.WithPullPolicy(proj.Images.Pull),
+compose.WithHealthTimeout(proj.Health.Timeout))`), and drives a single
+`reconcile.New(...).WithDriftPolicy(driftPolicy(proj.Reconcile.Drift))`
+cycle, printing the terminal phase and the `state.Comparison` summary. A
+`driftPolicy` helper maps the config's `reconcile.drift` string to the
+reconciler's `DriftPolicy` (unknown values degrade to `DriftReport`, matching
+the reconciler's defensive default). Only the Compose target is wired;
+`buildTarget` returns a "not implemented" error for other target types, which
+the config loader still recognizes. The `sync` command is removed from the
+`stubCmd` set.
+
+**Consequence.** The reconciliation lifecycle is now reachable end-to-end
+from the CLI, and the previously test-only seams (`WithDriftPolicy`,
+`WithPullPolicy`, `WithHealthTimeout`) are exercised by a production caller.
+The `sync` command performs a single pass, not the §11 loop; the loop and
+deployment-history persistence remain future work (issue #14's follow-up).
+The `init` command still writes `accorda.env` (docs/DECISIONS.md #11), so a
+user must author `accorda.yaml` by hand (or via a future `init` update) for
+`sync` to run.
