@@ -93,8 +93,33 @@ type Result struct {
 	// RolledBack is true when a failed deployment was rolled back to the
 	// previous deployment.
 	RolledBack bool
+	// RolledBackTo is the Git commit the failed deployment was rolled back
+	// to, populated when RolledBack is true. It lets callers report exactly
+	// which known previous deployment was restored (docs/ACCORDA.md §20).
+	RolledBackTo string
 	// Err is the failure cause when Phase is PhaseFailed.
 	Err error
+}
+
+// desiredApplier is the optional capability a target may implement to apply
+// an arbitrary desired state directly, bypassing the on-disk artifact that
+// Plan/Apply operate on. Core depends on this interface (not a concrete
+// driver) so rollback stays target-agnostic (docs/ACCORDA.md §20,
+// docs/DECISIONS.md #3). A target that does not implement it is rolled back
+// via Plan+Apply against the previously deployed services.
+//
+// Targets that materialize the desired state into an on-disk artifact (for
+// example the Compose target writes the services file before `docker compose
+// up -d`) must implement this so a rollback can restore the previous image
+// rather than re-applying the failed one. The compose driver's Plan/Apply
+// reads the on-disk file, so without this seam a rollback would recreate the
+// failed deployment.
+type desiredApplier interface {
+	// ApplyDesired applies the given desired state to the target, returning
+	// the plan that was applied (or an error). It is used for rollback, when
+	// the target must converge to a known previous state that differs from
+	// the state on disk.
+	ApplyDesired(ctx context.Context, desired *state.DesiredState) (*plan.Plan, error)
 }
 
 // Reconciler drives the reconciliation lifecycle (docs/ACCORDA.md §6). It
@@ -125,6 +150,12 @@ type Reconciler struct {
 	// startedAt is when the current reconciliation cycle began. It is set at
 	// the start of Reconcile and used as the receipt's StartedAt timestamp.
 	startedAt time.Time
+	// failedDeploymentID is the deployment identifier of the current cycle
+	// when it fails. A rollback receipt reuses it so the history links the
+	// rollback to the failed deployment that triggered it
+	// (docs/ACCORDA.md §20). It is empty when the cycle failed before a
+	// deployment identifier was assigned.
+	failedDeploymentID string
 }
 
 // New returns a Reconciler that orchestrates src and tgt, publishing events
@@ -259,6 +290,7 @@ func (r *Reconciler) deploy(ctx context.Context, res *Result, desired *state.Des
 		r.emit(ctx, events.EventDeploymentStarted, nil)
 	}
 	if err := r.target.Apply(ctx, p); err != nil {
+		r.failedDeploymentID = p.DeploymentID
 		r.fail(ctx, res, PhaseDeploying, commit.SHA, p.DeploymentID, err)
 		r.recordReceipt(ctx, desired, commit, nil, p, history.OutcomeFailed)
 		r.rollback(ctx, res, desired)
@@ -275,6 +307,7 @@ func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.Des
 	h, err := r.target.Health(ctx)
 	if err != nil {
 		if !errors.Is(err, targets.ErrNotImplemented) {
+			r.failedDeploymentID = p.DeploymentID
 			r.fail(ctx, res, PhaseVerifying, commit.SHA, p.DeploymentID, err)
 			r.recordReceipt(ctx, desired, commit, nil, p, history.OutcomeFailed)
 			r.rollback(ctx, res, desired)
@@ -305,6 +338,7 @@ func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.Des
 	// failure; the target's Health is responsible for waiting out the
 	// starting window (and reporting unhealthy on timeout).
 	if h.Overall == health.StatusUnhealthy {
+		r.failedDeploymentID = p.DeploymentID
 		r.fail(ctx, res, PhaseVerifying, commit.SHA, p.DeploymentID,
 			fmt.Errorf("reconcile: health check failed: %s", h.Overall))
 		r.recordReceipt(ctx, desired, commit, nil, p, history.OutcomeFailed)
@@ -404,6 +438,9 @@ func (r *Reconciler) recordReceipt(ctx context.Context, desired *state.DesiredSt
 // deterministic regardless of action order or duplicates
 // (docs/ACCORDA.md §11, docs/DECISIONS.md #12).
 func changedServices(p *plan.Plan) []string {
+	if p == nil {
+		return nil
+	}
 	seen := make(map[string]struct{})
 	for _, a := range p.Actions {
 		if a.Kind == plan.ActionNoop {
@@ -474,6 +511,17 @@ func (r *Reconciler) fail(ctx context.Context, res *Result, from Phase, commit, 
 // (docs/ACCORDA.md §20). It re-plans and re-applies the previous deployed
 // services. When there is no previous deployment, or the rollback itself
 // fails, it is a no-op and the failure stands.
+//
+// A target that implements the desiredApplier capability (for example the
+// Compose target, which materializes the desired services into the on-disk
+// Compose file before `docker compose up -d`) is rolled back by applying the
+// previous desired state directly, so the on-disk artifact reflects the
+// restored services. A target that only implements the Target interface is
+// rolled back by re-planning and re-applying the previous deployed services.
+//
+// A successful rollback is recorded in the deployment history as an
+// OutcomeRolledBack receipt (docs/ACCORDA.md §20: "Rollback events must be
+// recorded in deployment history").
 func (r *Reconciler) rollback(ctx context.Context, res *Result, failed *state.DesiredState) {
 	if r.previous == nil || r.previous.Commit == "" {
 		return
@@ -484,19 +532,53 @@ func (r *Reconciler) rollback(ctx context.Context, res *Result, failed *state.De
 		Commit:     r.previous.Commit,
 		Services:   r.previous.Services,
 	}
-	p, err := r.target.Plan(ctx, prevDesired, nil)
-	if err != nil {
-		return
-	}
-	if err := r.target.Apply(ctx, p); err != nil {
-		return
+	var applied *plan.Plan
+	if applier, ok := r.target.(desiredApplier); ok {
+		var err error
+		applied, err = applier.ApplyDesired(ctx, prevDesired)
+		if err != nil {
+			return
+		}
+	} else {
+		p, err := r.target.Plan(ctx, prevDesired, nil)
+		if err != nil {
+			return
+		}
+		if err := r.target.Apply(ctx, p); err != nil {
+			return
+		}
+		applied = p
 	}
 	res.RolledBack = true
+	res.RolledBackTo = r.previous.Commit
 	r.emit(ctx, events.EventDeploymentRolledBack, nil)
-	// Note: §20 requires "Rollback events must be recorded in deployment
-	// history", and internal/core/history documents that obligation. History
-	// is not yet wired into the reconciler; when it is, this is where the
-	// rollback record must be written (tracked by issue #14's follow-up).
+	r.recordRollbackReceipt(ctx, prevDesired, applied)
+}
+
+// recordRollbackReceipt writes a rollback receipt so the deployment history
+// records that a failed deployment was restored to a known previous commit
+// (docs/ACCORDA.md §20). It is best-effort: a store failure does not change
+// the rollback outcome.
+func (r *Reconciler) recordRollbackReceipt(ctx context.Context, desired *state.DesiredState, p *plan.Plan) {
+	if r.receipts == nil {
+		return
+	}
+	var services map[string]history.ServiceReceipt
+	if p != nil {
+		services = make(map[string]history.ServiceReceipt, len(p.Actions))
+	}
+	receipt := history.Receipt{
+		DeploymentID: r.failedDeploymentID,
+		Repository:   desired.Repository,
+		Environment:  r.environment,
+		Commit:       desired.Commit,
+		StartedAt:    r.startedAt,
+		CompletedAt:  time.Now(),
+		Result:       history.OutcomeRolledBack,
+		Changes:      changedServices(p),
+		Services:     services,
+	}
+	_ = r.receipts.Append(ctx, receipt)
 }
 
 // transition emits a state-transition event on the bus.

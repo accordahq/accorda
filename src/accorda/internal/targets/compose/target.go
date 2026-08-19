@@ -418,6 +418,37 @@ func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
 	return nil
 }
 
+// ApplyDesired applies an arbitrary desired state directly, bypassing the
+// on-disk Compose file that Plan and Apply read. It is the desiredApplier
+// capability the reconcile loop uses to roll back a failed deployment to a
+// known previous state (docs/ACCORDA.md §20).
+//
+// The Compose driver's Plan and Apply resolve services against the Compose
+// file on disk, so a rollback that merely re-planned the previous services
+// would recreate the image currently in the file — the failed one. ApplyDesired
+// first materializes the given services into the file, then plans and applies
+// them, so the on-disk artifact and the runtime both converge to the restored
+// state. It returns the plan it applied.
+func (t *Target) ApplyDesired(ctx context.Context, desired *state.DesiredState) (*plan.Plan, error) {
+	if t == nil {
+		return nil, errors.New("compose target: nil target")
+	}
+	if desired == nil {
+		return nil, errors.New("compose target: desired state is nil")
+	}
+	if err := writeComposeServices(t.file, desired.Services); err != nil {
+		return nil, err
+	}
+	p, err := t.Plan(ctx, desired, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := t.Apply(ctx, p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
 // serviceName returns the Compose service name from a container's labels, or
 // "" when the label is absent (for example a container not managed by
 // Compose).

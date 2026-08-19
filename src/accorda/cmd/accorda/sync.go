@@ -12,6 +12,7 @@ import (
 	"accorda/internal/core/events"
 	"accorda/internal/core/history"
 	"accorda/internal/core/reconcile"
+	"accorda/internal/core/state"
 	"accorda/internal/sources/git"
 	"accorda/internal/targets/compose"
 )
@@ -61,17 +62,65 @@ func runSync(cmd *cobra.Command, dir string) error {
 		return err
 	}
 
+	store := history.NewFileStore(receiptPath(dir))
 	r := reconcile.New(src, tgt, events.NewBus()).
 		WithDriftPolicy(driftPolicy(proj.Reconcile.Drift)).
 		WithEnvironment(proj.Environment).
-		WithReceiptStore(history.NewFileStore(receiptPath(dir)))
+		WithReceiptStore(store).
+		WithPrevious(previousFromHistory(store))
 	res := r.Reconcile(context.Background())
 
 	if res.Phase == reconcile.PhaseFailed {
+		if res.RolledBack {
+			// A failed deployment was rolled back to a known previous commit.
+			// Report the rollback clearly so a user sees what was restored and
+			// why the active state is healthy (docs/ACCORDA.md §20).
+			fmt.Fprintf(cmd.OutOrStdout(), "sync: %s\n", res.Phase)
+			fmt.Fprintf(cmd.OutOrStdout(), "rollback: restored to commit %s\n", res.RolledBackTo)
+			return fmt.Errorf("reconciliation failed and was rolled back: %w", res.Err)
+		}
 		return fmt.Errorf("reconciliation failed: %w", res.Err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "sync: %s\n", res.Phase)
 	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", res.Comparison.String())
+	return nil
+}
+
+// previousFromHistory returns the last known-healthy deployment read from the
+// receipt journal, used as the rollback target (docs/ACCORDA.md §20). It scans
+// the receipts for the most recent OutcomeHealthy row and reconstructs its
+// deployed state from the recorded commit and per-service images. When history
+// is empty (or has no healthy deployment), it returns nil so the reconciler
+// treats rollback as unsafe and lets the failure stand.
+//
+// The previous services carry only the image reference recorded in the
+// receipt (the history model records image + digest per service), so a
+// rollback restores the image that was running for the last healthy commit.
+// The Compose target's ApplyDesired materializes that image into the on-disk
+// Compose file before applying.
+func previousFromHistory(store history.Store) *state.DeployedState {
+	if store == nil {
+		return nil
+	}
+	receipts, err := store.List(context.Background())
+	if err != nil {
+		return nil
+	}
+	for i := len(receipts) - 1; i >= 0; i-- {
+		rc := receipts[i]
+		if rc.Result != history.OutcomeHealthy {
+			continue
+		}
+		services := make(map[string]state.Service, len(rc.Services))
+		for name, svc := range rc.Services {
+			services[name] = state.Service{Image: svc.Image}
+		}
+		return &state.DeployedState{
+			DeploymentID: rc.DeploymentID,
+			Commit:       rc.Commit,
+			Services:     services,
+		}
+	}
 	return nil
 }
 

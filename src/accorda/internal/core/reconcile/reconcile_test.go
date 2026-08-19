@@ -867,3 +867,165 @@ func TestNewDeploymentID_IsUniqueAndPrefixed(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+func TestReconcile_ApplyFailure_RollsBackAndRecordsReceipt(t *testing.T) {
+	// A deployment that fails during apply, with a previous deployment
+	// available, must be rolled back to the previous commit and record an
+	// OutcomeRolledBack receipt carrying the restored commit
+	// (docs/ACCORDA.md §20).
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{applyErr: errors.New("apply boom"), changedPlan: true}
+	prev := &state.DeployedState{
+		DeploymentID: "dep_0",
+		Commit:       "prev123",
+		Services:     map[string]state.Service{"api": {Image: "api:1"}},
+	}
+	store := &fakeStore{}
+	r := New(src, tgt, events.NewBus()).
+		WithEnvironment("production").
+		WithReceiptStore(store).
+		WithPrevious(prev)
+
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseFailed {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
+	}
+	if !res.RolledBack {
+		t.Fatal("RolledBack = false, want true")
+	}
+	if res.RolledBackTo != "prev123" {
+		t.Errorf("RolledBackTo = %q, want prev123", res.RolledBackTo)
+	}
+	// The rollback re-planned and re-applied the previous services.
+	if len(tgt.applied) != 1 {
+		t.Fatalf("applied plans = %d, want 1 (rollback)", len(tgt.applied))
+	}
+	if tgt.applied[0].Commit != "prev123" {
+		t.Errorf("rollback commit = %q, want %q", tgt.applied[0].Commit, "prev123")
+	}
+
+	// History records the failed deployment and the rollback.
+	if len(store.appended) != 2 {
+		t.Fatalf("appended receipts = %d, want 2 (failed + rolled_back)", len(store.appended))
+	}
+	rb := store.appended[1]
+	if rb.Result != history.OutcomeRolledBack {
+		t.Errorf("receipt result = %q, want %q", rb.Result, history.OutcomeRolledBack)
+	}
+	if rb.Commit != "prev123" {
+		t.Errorf("receipt commit = %q, want prev123", rb.Commit)
+	}
+	if rb.DeploymentID == "" {
+		t.Error("rollback receipt deployment id should reuse the failed cycle id")
+	}
+	if rb.Environment != "production" {
+		t.Errorf("receipt environment = %q, want production", rb.Environment)
+	}
+}
+
+func TestReconcile_HealthFailure_NoPrevious_NoRollback(t *testing.T) {
+	// When a deployment fails health verification but there is no previous
+	// deployment (empty history), rollback is unsafe and the failure must
+	// stand: no rollback, no rolled-back receipt (docs/ACCORDA.md §20
+	// "where safely possible").
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	unhealthy := health.New(time.Unix(0, 0))
+	unhealthy.SetService("api", health.StatusUnhealthy, "exit 1")
+	unhealthy.Summarize()
+	tgt := &fakeTarget{health: &unhealthy, changedPlan: true}
+	store := &fakeStore{}
+	r := New(src, tgt, events.NewBus()).WithReceiptStore(store)
+
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseFailed {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
+	}
+	if res.RolledBack {
+		t.Error("RolledBack = true, want false (no previous deployment)")
+	}
+	if res.RolledBackTo != "" {
+		t.Errorf("RolledBackTo = %q, want empty", res.RolledBackTo)
+	}
+	// Only the deploy-phase Apply runs; the failure is not rolled back, so
+	// no second Apply is issued for the previous deployment.
+	if len(tgt.applied) != 1 {
+		t.Errorf("applied plans = %d, want 1 (deploy only, no rollback)", len(tgt.applied))
+	}
+	// Only the failed deployment is recorded; no rollback receipt.
+	if len(store.appended) != 1 {
+		t.Fatalf("appended receipts = %d, want 1 (failed only)", len(store.appended))
+	}
+	if rc := store.appended[0]; rc.Result != history.OutcomeFailed {
+		t.Errorf("receipt result = %q, want %q", rc.Result, history.OutcomeFailed)
+	}
+}
+
+// applyDesiredTarget is a fakeTarget that also implements the desiredApplier
+// capability, recording the desired states passed to ApplyDesired.
+type applyDesiredTarget struct {
+	fakeTarget
+	applyDesired []*state.DesiredState
+}
+
+func (f *applyDesiredTarget) ApplyDesired(_ context.Context, desired *state.DesiredState) (*plan.Plan, error) {
+	f.applyDesired = append(f.applyDesired, desired)
+	p := plan.New("", desired.Repository, desired.Commit, time.Unix(0, 0))
+	for name, svc := range desired.Services {
+		p.AddAction(plan.Action{Kind: plan.ActionRecreate, Service: name, Image: svc.Image})
+	}
+	return p, nil
+}
+
+func TestReconcile_ApplyFailure_RollsBackViaApplyDesired(t *testing.T) {
+	// A target that implements the desiredApplier capability is rolled back
+	// via ApplyDesired, which receives the previous desired state (restored
+	// commit + services) directly (docs/ACCORDA.md §20).
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &applyDesiredTarget{}
+	tgt.applyErr = errors.New("apply boom")
+	tgt.changedPlan = true
+	prev := &state.DeployedState{
+		DeploymentID: "dep_0",
+		Commit:       "prev123",
+		Services:     map[string]state.Service{"api": {Image: "api:1"}},
+	}
+	r := New(src, tgt, events.NewBus()).WithPrevious(prev)
+
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseFailed {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
+	}
+	if !res.RolledBack {
+		t.Fatal("RolledBack = false, want true")
+	}
+	if res.RolledBackTo != "prev123" {
+		t.Errorf("RolledBackTo = %q, want prev123", res.RolledBackTo)
+	}
+	// The rollback went through ApplyDesired with the previous state.
+	if len(tgt.applyDesired) != 1 {
+		t.Fatalf("ApplyDesired calls = %d, want 1", len(tgt.applyDesired))
+	}
+	got := tgt.applyDesired[0]
+	if got.Commit != "prev123" {
+		t.Errorf("ApplyDesired commit = %q, want prev123", got.Commit)
+	}
+	if got.Services["api"].Image != "api:1" {
+		t.Errorf("ApplyDesired api.Image = %q, want api:1", got.Services["api"].Image)
+	}
+	// The fake's Plan path must not have been used for the rollback.
+	if len(tgt.fakeTarget.applied) != 0 {
+		t.Errorf("Plan-based rollback applied %d plans, want 0 (ApplyDesired used)", len(tgt.fakeTarget.applied))
+	}
+}

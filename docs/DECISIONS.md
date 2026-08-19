@@ -737,3 +737,42 @@ cycles with their changed services, matching the §11 table. Failed receipts
 omit digest data because the runtime was never read. A store failure still
 never changes the reported cycle outcome. `accorda history` (issue #28) can
 now render the §11 columns directly from the journal.
+
+### 28. Rollback restores the last known-healthy deployment
+
+**Context.** Issue #17 (§20) requires that when a deployment fails (apply or
+health verification), Accorda restore the last known-healthy commit "where
+safely possible" and record the rollback in deployment history. Deployment
+receipts (#26, #27) already record per-service image + digest for healthy
+cycles and carry a `Commit`, so the previous deployment is reconstructible
+from the receipt journal. The Compose target's `Plan`/`Apply` resolve services
+against the on-disk Compose file, so a rollback that merely re-planned the
+previous services would recreate the image currently in the file — the failed
+one.
+
+**Decision.** Rollback is wired as follows:
+- `internal/core/history` gains `OutcomeRolledBack`, recorded as a receipt
+  carrying the restored commit when a rollback succeeds (§20).
+- `reconcile.Result` gains `RolledBackTo` (the restored commit) alongside
+  `RolledBack`; the `sync` command prints an informative
+  `rollback: restored to commit <sha>` message so a user sees what happened.
+- The reconcile loop gains a `desiredApplier` capability interface
+  (`ApplyDesired(ctx, desired) (*plan.Plan, error)`); a target that
+  implements it (the Compose target) is rolled back by applying the previous
+  desired state directly, so the on-disk artifact reflects the restored image
+  before `docker compose up -d` runs. A target that only implements `Target`
+  is rolled back via the existing `Plan`+`Apply` path.
+- `accorda sync` reconstructs the previous deployment from the receipt
+  journal via `previousFromHistory(store)` (the most recent `OutcomeHealthy`
+  receipt, image-only per the image-centric model of #6) and supplies it via
+  `WithPrevious`. When history is empty, `previousFromHistory` returns nil and
+  the reconciler's existing nil-previous guard makes rollback a no-op — the
+  failure stands (the "where safely possible" qualifier in §20).
+
+**Consequence.** A failed deployment rolls back automatically to the last
+healthy commit with an informative CLI message and an `OutcomeRolledBack`
+history record. With no prior healthy deployment, the failure stands and no
+rollback is attempted. The Compose target implements `ApplyDesired`; other
+targets keep the `Plan`+`Apply` fallback, and core stays target-agnostic
+(#3). `accorda history` (#28 CLI) can later render the rolled-back rows from
+the journal; only recording is implemented here.

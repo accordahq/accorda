@@ -63,6 +63,11 @@ const (
 	// plan) return before a deployment is attempted and do not record a
 	// receipt.
 	OutcomeFailed Outcome = "failed"
+	// OutcomeRolledBack marks a deployment that failed and was rolled back to
+	// a known previous healthy deployment (docs/ACCORDA.md §20). The receipt
+	// carries the commit that was restored, so the history records both the
+	// failed cycle and the rollback that followed it.
+	OutcomeRolledBack Outcome = "rolled_back"
 )
 
 // ServiceReceipt records the image reference and resolved manifest digest for
