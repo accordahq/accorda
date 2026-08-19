@@ -19,9 +19,9 @@
 //	accorda history  show deployment history
 //
 // Additional §11 commands (inspect, logs, doctor, version) are registered;
-// version is fully implemented and status is implemented in status.go; the
-// rest are recognized but report that they are not yet implemented until the
-// backing core packages land.
+// version is fully implemented, and status, diff, and plan are implemented
+// in status.go, diff.go, and plan.go. The rest are recognized but report that
+// they are not yet implemented until the backing core packages land.
 package main
 
 import (
@@ -220,14 +220,6 @@ func stubCmd(name, short string) *cobra.Command {
 			return fmt.Errorf("%s: not yet implemented (see docs/ACCORDA.md §11, §45)", name)
 		},
 	}
-}
-
-func newDiffCmd() *cobra.Command {
-	return stubCmd("diff", "show deployed vs desired changes")
-}
-
-func newPlanCmd() *cobra.Command {
-	return stubCmd("plan", "show intended actions without deploying")
 }
 
 func newHistoryCmd() *cobra.Command {

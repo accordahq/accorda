@@ -143,7 +143,7 @@ func TestRun_Init_UnknownFlag(t *testing.T) {
 }
 
 func TestRun_StubCommands(t *testing.T) {
-	for _, cmd := range []string{"diff", "plan", "history", "inspect", "logs", "doctor"} {
+	for _, cmd := range []string{"history", "inspect", "logs", "doctor"} {
 		var out bytes.Buffer
 		e := run([]string{cmd}, &out, nil)
 		if e == nil {
