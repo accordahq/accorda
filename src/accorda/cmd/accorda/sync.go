@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -68,7 +69,7 @@ func runSync(cmd *cobra.Command, dir string) error {
 		WithDriftPolicy(driftPolicy(proj.Reconcile.Drift)).
 		WithEnvironment(proj.Environment).
 		WithReceiptStore(store).
-		WithPrevious(previousFromHistory(store))
+		WithPrevious(previousFromHistory(store, cmd.ErrOrStderr()))
 	res := r.Reconcile(context.Background())
 
 	if res.Phase == reconcile.PhaseFailed {
@@ -95,16 +96,23 @@ func runSync(cmd *cobra.Command, dir string) error {
 // treats rollback as unsafe and lets the failure stand.
 //
 // The previous services carry only the image reference recorded in the
-// receipt (the history model records image + digest per service), so a
-// rollback restores the image that was running for the last healthy commit.
-// The Compose target's ApplyDesired materializes that image into the on-disk
-// Compose file before applying.
-func previousFromHistory(store history.Store) *state.DeployedState {
+// receipt (the history model records image + digest per service); the
+// reconciler restores the full previous service model by reading the desired
+// state at the previous commit from the source, so the on-disk Compose file
+// reflects the complete previous deployment rather than just the image.
+//
+// A store read error is reported to warn (so an operator can distinguish "no
+// prior healthy deployment" from "history could not be read") and treated as
+// no rollback target, honoring the "where safely possible" qualifier in §20.
+func previousFromHistory(store history.Store, warn io.Writer) *state.DeployedState {
 	if store == nil {
 		return nil
 	}
 	receipts, err := store.List(context.Background())
 	if err != nil {
+		if warn != nil {
+			fmt.Fprintf(warn, "sync: warning: could not read deployment history for rollback: %v\n", err)
+		}
 		return nil
 	}
 	for _, rc := range slices.Backward(receipts) {

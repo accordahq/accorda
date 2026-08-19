@@ -759,15 +759,24 @@ one.
 - The reconcile loop gains a `desiredApplier` capability interface
   (`ApplyDesired(ctx, desired) (*plan.Plan, error)`); a target that
   implements it (the Compose target) is rolled back by applying the previous
-  desired state directly, so the on-disk artifact reflects the restored image
-  before `docker compose up -d` runs. A target that only implements `Target`
-  is rolled back via the existing `Plan`+`Apply` path.
+  desired state directly, so the on-disk artifact reflects the restored
+  services before `docker compose up -d` runs. A target that only implements
+  `Target` is rolled back via the existing `Plan`+`Apply` path.
+- The rollback restores the **full** previous service model by reading the
+  desired state at the previous commit from the source (`Source.Desired`),
+  not just the image reference recorded in the receipt, so the restored
+  Compose file carries the previous command, env, ports, volumes, healthcheck,
+  and dependencies. If the source cannot be read, it falls back to the
+  image-only services from the receipt (the "where safely possible" qualifier
+  in §20).
 - `accorda sync` reconstructs the previous deployment from the receipt
   journal via `previousFromHistory(store)` (the most recent `OutcomeHealthy`
   receipt, image-only per the image-centric model of #6) and supplies it via
   `WithPrevious`. When history is empty, `previousFromHistory` returns nil and
   the reconciler's existing nil-previous guard makes rollback a no-op — the
-  failure stands (the "where safely possible" qualifier in §20).
+  failure stands (the "where safely possible" qualifier in §20). A store read
+  error is reported to the command's stderr so an operator can distinguish
+  "no prior healthy deployment" from "history could not be read".
 
 **Consequence.** A failed deployment rolls back automatically to the last
 healthy commit with an informative CLI message and an `OutcomeRolledBack`

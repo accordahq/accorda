@@ -200,6 +200,15 @@ func TestE2E_Sync_RollsBackOnFailedDeploy(t *testing.T) {
 	if !strings.Contains(string(data), "busybox:1.36") {
 		t.Errorf("compose file after rollback = %q, want it to contain busybox:1.36", data)
 	}
+	// The full previous service model is restored from the source, not just
+	// the image: the command and healthcheck from the original e2eCompose
+	// must be present (docs/ACCORDA.md §20).
+	if !strings.Contains(string(data), "sleep 300") {
+		t.Errorf("compose file after rollback = %q, want the previous command restored", data)
+	}
+	if !strings.Contains(string(data), "healthcheck") {
+		t.Errorf("compose file after rollback = %q, want the previous healthcheck restored", data)
+	}
 }
 
 // TestE2E_Sync_FailureNoHistory_NoRollback verifies the unsafe-to-rollback

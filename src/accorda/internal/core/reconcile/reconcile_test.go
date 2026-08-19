@@ -22,6 +22,10 @@ type fakeSource struct {
 	desiredErr error
 	commit     sources.Commit
 	desired    *state.DesiredState
+	// desiredByCommit returns the desired state for a specific commit SHA,
+	// used by rollback to restore the full previous service model. When a
+	// requested SHA is present, it takes precedence over desired.
+	desiredByCommit map[string]*state.DesiredState
 }
 
 func (f *fakeSource) Validate(context.Context) error { return nil }
@@ -31,9 +35,14 @@ func (f *fakeSource) Fetch(context.Context) (sources.Commit, error) {
 	}
 	return f.commit, nil
 }
-func (f *fakeSource) Desired(context.Context, *sources.Commit) (*state.DesiredState, error) {
+func (f *fakeSource) Desired(_ context.Context, ref *sources.Commit) (*state.DesiredState, error) {
 	if f.desiredErr != nil {
 		return nil, f.desiredErr
+	}
+	if ref != nil {
+		if ds, ok := f.desiredByCommit[ref.SHA]; ok {
+			return ds, nil
+		}
 	}
 	return f.desired, nil
 }
@@ -103,6 +112,20 @@ func healthyDesired() *state.DesiredState {
 		Commit:     "abc123",
 		Services: map[string]state.Service{
 			"api": {Image: "api:2"},
+		},
+	}
+}
+
+// previousDesired returns the full desired state at the previous commit
+// ("prev123"), used by rollback tests to exercise restoring the complete
+// service model from the source rather than just the image reference.
+func previousDesired() *state.DesiredState {
+	return &state.DesiredState{
+		Repository: "acme/infra",
+		Branch:     "main",
+		Commit:     "prev123",
+		Services: map[string]state.Service{
+			"api": {Image: "api:1", Command: []string{"serve"}},
 		},
 	}
 }
@@ -204,6 +227,9 @@ func TestReconcile_ApplyFailure_RollsBack(t *testing.T) {
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
+		desiredByCommit: map[string]*state.DesiredState{
+			"prev123": previousDesired(),
+		},
 	}
 	tgt := &fakeTarget{applyErr: errors.New("apply boom")}
 	prev := &state.DeployedState{
@@ -234,6 +260,9 @@ func TestReconcile_HealthFailure_RollsBack(t *testing.T) {
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
+		desiredByCommit: map[string]*state.DesiredState{
+			"prev123": previousDesired(),
+		},
 	}
 	unhealthy := health.New(time.Unix(0, 0))
 	unhealthy.SetService("api", health.StatusUnhealthy, "exit 1")
@@ -876,6 +905,9 @@ func TestReconcile_ApplyFailure_RollsBackAndRecordsReceipt(t *testing.T) {
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
+		desiredByCommit: map[string]*state.DesiredState{
+			"prev123": previousDesired(),
+		},
 	}
 	tgt := &fakeTarget{applyErr: errors.New("apply boom"), changedPlan: true}
 	prev := &state.DeployedState{
@@ -924,6 +956,10 @@ func TestReconcile_ApplyFailure_RollsBackAndRecordsReceipt(t *testing.T) {
 	}
 	if rb.Environment != "production" {
 		t.Errorf("receipt environment = %q, want production", rb.Environment)
+	}
+	// The rollback receipt records the restored services (docs/ACCORDA.md §20).
+	if got := rb.Services["api"].Image; got != "api:1" {
+		t.Errorf("rollback receipt api.Image = %q, want api:1", got)
 	}
 }
 
@@ -987,10 +1023,13 @@ func (f *applyDesiredTarget) ApplyDesired(_ context.Context, desired *state.Desi
 func TestReconcile_ApplyFailure_RollsBackViaApplyDesired(t *testing.T) {
 	// A target that implements the desiredApplier capability is rolled back
 	// via ApplyDesired, which receives the previous desired state (restored
-	// commit + services) directly (docs/ACCORDA.md §20).
+	// commit + full service model) directly (docs/ACCORDA.md §20).
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
+		desiredByCommit: map[string]*state.DesiredState{
+			"prev123": previousDesired(),
+		},
 	}
 	tgt := &applyDesiredTarget{}
 	tgt.applyErr = errors.New("apply boom")
@@ -1023,6 +1062,10 @@ func TestReconcile_ApplyFailure_RollsBackViaApplyDesired(t *testing.T) {
 	}
 	if got.Services["api"].Image != "api:1" {
 		t.Errorf("ApplyDesired api.Image = %q, want api:1", got.Services["api"].Image)
+	}
+	// The full service model is restored from the source, not just the image.
+	if len(got.Services["api"].Command) == 0 {
+		t.Error("ApplyDesired api.Command is empty, want the full previous model restored")
 	}
 	// The fake's Plan path must not have been used for the rollback.
 	if len(tgt.fakeTarget.applied) != 0 {

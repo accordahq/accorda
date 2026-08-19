@@ -526,11 +526,21 @@ func (r *Reconciler) rollback(ctx context.Context, res *Result, failed *state.De
 	if r.previous == nil || r.previous.Commit == "" {
 		return
 	}
+	// Restore the full desired state at the previous commit from the source so
+	// the rollback restores the complete service model (command, env, ports,
+	// volumes, healthcheck, ...), not just the image reference recorded in the
+	// receipt. Fall back to the recorded services if the source cannot be read
+	// (the "where safely possible" qualifier in docs/ACCORDA.md §20).
 	prevDesired := &state.DesiredState{
 		Repository: failed.Repository,
 		Branch:     failed.Branch,
 		Commit:     r.previous.Commit,
 		Services:   r.previous.Services,
+	}
+	if r.source != nil {
+		if ds, err := r.source.Desired(ctx, &sources.Commit{SHA: r.previous.Commit}); err == nil && ds != nil && len(ds.Services) > 0 {
+			prevDesired = ds
+		}
 	}
 	var applied *plan.Plan
 	if applier, ok := r.target.(desiredApplier); ok {
@@ -563,9 +573,12 @@ func (r *Reconciler) recordRollbackReceipt(ctx context.Context, desired *state.D
 	if r.receipts == nil {
 		return
 	}
-	var services map[string]history.ServiceReceipt
-	if p != nil {
-		services = make(map[string]history.ServiceReceipt, len(p.Actions))
+	// Record the restored services so the rollback receipt reflects what was
+	// actually restored, mirroring the healthy-receipt shape (docs/ACCORDA.md
+	// §7, §20).
+	services := make(map[string]history.ServiceReceipt, len(desired.Services))
+	for name, svc := range desired.Services {
+		services[name] = history.ServiceReceipt{Image: svc.Image}
 	}
 	receipt := history.Receipt{
 		DeploymentID: r.failedDeploymentID,

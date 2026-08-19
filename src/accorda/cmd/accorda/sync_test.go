@@ -75,7 +75,7 @@ func TestDriftPolicy(t *testing.T) {
 // treats rollback as unsafe and lets the failure stand.
 func TestPreviousFromHistory_EmptyHistory_NoPrevious(t *testing.T) {
 	store := history.NewFileStore(t.TempDir() + "/receipts.jsonl")
-	if prev := previousFromHistory(store); prev != nil {
+	if prev := previousFromHistory(store, nil); prev != nil {
 		t.Fatalf("previousFromHistory(empty) = %+v, want nil", prev)
 	}
 }
@@ -106,7 +106,7 @@ func TestPreviousFromHistory_ReturnsLastHealthy(t *testing.T) {
 		}
 	}
 
-	prev := previousFromHistory(store)
+	prev := previousFromHistory(store, nil)
 	if prev == nil {
 		t.Fatal("previousFromHistory = nil, want the last healthy deployment")
 	}
@@ -124,7 +124,23 @@ func TestPreviousFromHistory_ReturnsLastHealthy(t *testing.T) {
 // TestPreviousFromHistory_NilStore verifies a nil store yields no rollback
 // target.
 func TestPreviousFromHistory_NilStore(t *testing.T) {
-	if prev := previousFromHistory(nil); prev != nil {
+	if prev := previousFromHistory(nil, nil); prev != nil {
 		t.Fatalf("previousFromHistory(nil) = %+v, want nil", prev)
+	}
+}
+
+// TestPreviousFromHistory_StoreError_WarnsAndNoPrevious verifies that a store
+// read error is reported to the warning writer and yields no rollback target,
+// so an operator can distinguish "no prior healthy deployment" from "history
+// could not be read".
+func TestPreviousFromHistory_StoreError_WarnsAndNoPrevious(t *testing.T) {
+	// A directory path is not a readable journal, so List returns an error.
+	store := history.NewFileStore(t.TempDir())
+	var warn bytes.Buffer
+	if prev := previousFromHistory(store, &warn); prev != nil {
+		t.Fatalf("previousFromHistory(error) = %+v, want nil", prev)
+	}
+	if !strings.Contains(warn.String(), "could not read deployment history") {
+		t.Errorf("warning = %q, want it to mention the history read failure", warn.String())
 	}
 }
