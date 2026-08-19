@@ -888,3 +888,41 @@ deployed-commit read; `plan` uses the full model rather than the image-only
 `previousFromHistory` rollback baseline, so its output reflects the actual
 deployed configuration. The remaining stub commands are `history`, `inspect`,
 `logs`, and `doctor`.
+
+### 32. Plan environment is threaded from the project, not the desired state
+
+**Context.** Issue #52 (§25, §31) requires `Plan.Environment` to reflect the
+project's environment from `accorda.yaml`, not the Git-declared desired-state
+repository. `Target.Plan` populated `Plan.Environment` with
+`desired.Repository` as a stand-in, guarded by a TODO whose premise (that
+`DesiredState` should carry an environment field) was incorrect: §5.1 lists
+only `Repository`, `Branch`, `Commit` for desired state, while §25 declares
+`environment` as a top-level project field (`config.Project.Environment`) and
+§31 carries it as a plan identifying field. The reconciler already owned an
+`r.environment` field (set via `WithEnvironment`, decision #23) used in
+deployment receipts (§7), but the plan's `Environment` was still the
+repository stand-in.
+
+**Decision.** The environment is threaded from `config.Project.Environment`
+into the Compose target via a new `WithEnvironment` option, mirroring the
+`WithPullPolicy` (decision #18) and `WithHealthTimeout` (decision #21) seams.
+`buildTarget` (shared by `accorda sync` and `accorda plan`) supplies
+`compose.WithEnvironment(proj.Environment)`, and `Target.Plan` uses the
+stored `t.environment` instead of `desired.Repository`, removing the TODO and
+the stand-in. The reconciler does not overwrite `p.Environment` after
+`Target.Plan`: the plan is a value type whose `environment` is part of its
+identity (§31: "deterministic enough to be hashed and signed"), so the target
+is the single source of authority for that field, just as it is for `Commit`
+and `CreatedAt`. The reconciler retains its own `r.environment` for the
+separate concern of receipt recording (§7). When the project has no
+environment set, `Plan.Environment` is empty rather than a repository
+stand-in; a future config-validation change can require the field if wanted.
+
+**Consequence.** `Plan.Environment` now matches the spec's project-level
+environment concept, and `accorda plan`/`accorda sync` output and any future
+plan hashing reflect the real environment. The change stays within the
+established `With*` threading pattern, so no `Target` interface change is
+needed and future target drivers receive the environment the same way. The
+reconciler's plan/receipt separation is preserved: the plan owns its
+`environment`, the receipt owns its `environment`, and they agree because
+both derive from the same `config.Project.Environment`.

@@ -67,6 +67,12 @@ type Target struct {
 	// healthTimeout is the maximum time Health waits for services to become
 	// healthy (docs/ACCORDA.md §19). It defaults to defaultHealthTimeout.
 	healthTimeout time.Duration
+	// environment is the target environment the plan applies to
+	// (docs/ACCORDA.md §25, §31). It is threaded from the project's
+	// top-level environment field via the WithEnvironment option and
+	// recorded on every plan the target generates. It is the project-level
+	// environment concept, not the Git-declared desired-state repository.
+	environment string
 }
 
 // Option configures a Compose Target.
@@ -104,6 +110,17 @@ func WithPullPolicy(policy string) Option {
 // command supplies it from the project's health.timeout setting.
 func WithHealthTimeout(d time.Duration) Option {
 	return func(t *Target) { t.healthTimeout = d }
+}
+
+// WithEnvironment sets the target environment recorded on every plan the
+// target generates (docs/ACCORDA.md §25, §31). The environment is a
+// top-level project field in accorda.yaml, not a Git-declared desired-state
+// field, so it is threaded from config.Project.Environment by the sync and
+// plan commands rather than derived from the desired state. An empty value
+// is left as-is: the generated plan's Environment is empty rather than a
+// repository stand-in.
+func WithEnvironment(env string) Option {
+	return func(t *Target) { t.environment = env }
 }
 
 // New constructs a Compose Target from an Accorda project's target
@@ -283,13 +300,14 @@ func imageDigest(ctx context.Context, docker dockerClient, ref string) string {
 //
 // Plan is safe and idempotent: it makes no changes to the target and returns
 // the same action set for the same desired and runtime states. The plan's
-// identifying fields are populated from the desired state: Commit is the
-// desired commit, and Environment is a stand-in holding the repository
-// because DesiredState has no environment field yet (see the TODO below).
-// DeploymentID is empty because the Compose target does not yet assign
-// deployment identifiers (that is the reconcile loop's responsibility,
-// docs/ACCORDA.md §7). CreatedAt is wall-clock time, so two runs differ only
-// in that field; the action ordering is deterministic (docs/DECISIONS.md #12).
+// identifying fields are populated from the target's configuration and the
+// desired state: Commit is the desired commit, and Environment is the
+// project's environment threaded in via WithEnvironment
+// (docs/ACCORDA.md §25, §31). DeploymentID is empty because the Compose
+// target does not yet assign deployment identifiers (that is the reconcile
+// loop's responsibility, docs/ACCORDA.md §7). CreatedAt is wall-clock time,
+// so two runs differ only in that field; the action ordering is
+// deterministic (docs/DECISIONS.md #12).
 //
 // deployed supplies the previously deployed service configuration so
 // DriftActions can compare the canonical service hash (docs/ACCORDA.md §10)
@@ -306,10 +324,7 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState, deployed
 	if err != nil {
 		return nil, err
 	}
-	// TODO: Environment is a stand-in for the repository until DesiredState
-	// carries an environment concept; the field is documented as "the target
-	// environment the plan applies to" (docs/ACCORDA.md §31).
-	p := plan.New("", desired.Repository, desired.Commit, time.Now())
+	p := plan.New("", t.environment, desired.Commit, time.Now())
 	drift := plan.DriftActions(desired, deployed, runtime)
 	// Inject pull actions according to the image pull policy
 	// (docs/ACCORDA.md §9). Pulls are added before the drift actions so

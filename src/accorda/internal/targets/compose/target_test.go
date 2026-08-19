@@ -498,8 +498,8 @@ func TestPlan_ComputesDesiredVsDeployedDiff(t *testing.T) {
 	if p.Commit != "abc123" {
 		t.Errorf("Commit = %q, want %q", p.Commit, "abc123")
 	}
-	if p.Environment != "acme/infra" {
-		t.Errorf("Environment = %q, want %q", p.Environment, "acme/infra")
+	if p.Environment != "" {
+		t.Errorf("Environment = %q, want empty when WithEnvironment is not set", p.Environment)
 	}
 
 	kinds := map[string]plan.ActionKind{}
@@ -517,6 +517,43 @@ func TestPlan_ComputesDesiredVsDeployedDiff(t *testing.T) {
 	}
 	if !p.Changed() {
 		t.Error("Changed() = false, want true for a plan with changes")
+	}
+}
+
+func TestPlan_EnvironmentFromProject(t *testing.T) {
+	// Plan.Environment must reflect the project's environment threaded in via
+	// WithEnvironment (docs/ACCORDA.md §25, §31), not the Git-declared
+	// desired-state repository. The environment is a top-level project field
+	// in accorda.yaml, so the target carries it rather than deriving it from
+	// the desired state.
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{
+		containers: []container.Summary{summary(normalizeProjectName(filepath.Base(filepath.Dir(path))), "api")},
+		inspected: map[string]container.InspectResponse{
+			"id-api": inspect("api:1", "running", "healthy"),
+		},
+	}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithEnvironment("production"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	desired := &state.DesiredState{
+		Repository: "acme/infra",
+		Commit:     "abc123",
+		Services:   map[string]state.Service{"api": {Image: "api:1"}},
+	}
+	p, err := tgt.Plan(context.Background(), desired, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if p.Environment != "production" {
+		t.Errorf("Environment = %q, want %q", p.Environment, "production")
+	}
+	// The repository must never leak into Environment as a stand-in.
+	if p.Environment == desired.Repository {
+		t.Errorf("Environment = %q matches repository stand-in, want the project environment", p.Environment)
 	}
 }
 

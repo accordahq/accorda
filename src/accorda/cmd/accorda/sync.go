@@ -157,6 +157,7 @@ func buildTarget(p *config.Project) (*compose.Target, error) {
 	return compose.New(p.Target,
 		compose.WithPullPolicy(p.Images.Pull),
 		compose.WithHealthTimeout(p.Health.Timeout),
+		compose.WithEnvironment(p.Environment),
 	)
 }
 
