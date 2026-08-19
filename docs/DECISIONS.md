@@ -461,3 +461,37 @@ Any new reconciliation-relevant field added to `state.Service` must be
 included in `canonical()` or it will be silently excluded from recreate
 decisions. The `Target.Plan` signature change is a breaking interface change
 that all target drivers and the reconcile loop must adopt.
+
+### 20. Reconciliation lifecycle state machine and event bus
+
+**Context.** Issue #14 (§6) requires the reconciliation lifecycle state
+machine that orchestrates `Source.Fetch`, `Target.Plan`, `Target.Apply`, and
+health verification, emitting state transitions as events (§21). The issue
+lists the event bus (#20) as a dependency, but the bus is self-contained
+infrastructure with no blockers, so it is implemented here rather than
+blocking the lifecycle on a separate milestone.
+
+**Decision.** `internal/core/events` gains an in-memory `Bus` (interface +
+`NewBus`) with `Publish` and `Subscribe`; subscribers receive events
+synchronously in subscription order, and `Subscribe` returns an idempotent
+unsubscribe function. `internal/core/reconcile` gains a `Reconciler` that
+walks the lifecycle phases (`DETECTED → FETCHING → VALIDATING → PLANNING →
+PULLING → DEPLOYING → VERIFYING → HEALTHY → SYNCED`), emitting an
+`EventStateTransition` (payload `StateTransition{From, To, Commit,
+DeploymentID, Err}`) at each phase change plus the §21 deployment events
+(`deployment.detected`, `deployment.started`, `deployment.succeeded`,
+`deployment.failed`, `deployment.rolled_back`, `health.changed`). Failure
+paths transition to `FAILED`; when apply or health verification fails and a
+previous deployment is known (`WithPrevious`), the reconciler re-plans and
+re-applies the previous services and emits `deployment.rolled_back` (§20).
+Because `Target.Health` is still `ErrNotImplemented` (issue #15), the
+reconciler treats that sentinel as "healthy" so the lifecycle can reach
+`SYNCED`; the health gate becomes active once #15 lands. The reconciler
+depends only on the `Source` and `Target` interfaces (docs/DECISIONS.md #3).
+
+**Consequence.** The lifecycle is driven end-to-end in core without a
+concrete provider, and consumers observe progress through the bus rather
+than provider callbacks. The `ErrNotImplemented` health bypass is a
+temporary, documented divergence that must be removed when #15 is
+implemented. The `Bus` is synchronous and in-memory; a future async or
+durable bus can implement the same interface without changing the reconciler.
