@@ -72,11 +72,14 @@ func runPlan(cmd *cobra.Command, dir string) error {
 
 	// The plan is computed against the last known-healthy deployment as the
 	// deployed baseline, matching what a sync would plan toward
-	// (docs/ACCORDA.md §20). The deployed baseline is reconstructed from the
-	// receipt journal; when history has no healthy deployment, nil is passed
-	// and the plan treats every desired service as new.
+	// (docs/ACCORDA.md §20). The baseline is the full service model re-read
+	// from the source at the deployed commit (the receipt journal stores only
+	// image/digest), so `accorda plan` and `accorda diff` agree on the
+	// deployed side and a converged service is not over-reported as CHANGED.
+	// When history has no healthy deployment, the baseline is nil and the plan
+	// treats every desired service as new.
 	store := history.NewFileStore(receiptPath(dir))
-	deployed := previousFromHistory(store, cmd.ErrOrStderr())
+	deployed := deployedStateFromDesired(deployedAtCommit(ctx, src, store, cmd.ErrOrStderr()))
 	p, err := tgt.Plan(ctx, desired, deployed)
 	if err != nil {
 		return err

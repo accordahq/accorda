@@ -98,17 +98,19 @@ func runDiff(cmd *cobra.Command, dir string) error {
 	return nil
 }
 
-// deployedAtCommit returns the desired state at the last healthy deployment's
-// commit, reconstructed from the source. It returns nil when history has no
-// healthy deployment or the source cannot be read at that commit, so diff
-// degrades to "all desired is new". A store read error is reported to warn so
-// an operator can distinguish "no prior healthy deployment" from "history
-// could not be read", mirroring `accorda sync`'s previousFromHistory.
+// deployedAtCommit returns the full desired state at the last healthy
+// deployment's commit, reconstructed from the source. It returns nil when
+// history has no healthy deployment or the source cannot be read at that
+// commit, so the caller degrades to "all desired is new". A store read error
+// is reported to warn so an operator can distinguish "no prior healthy
+// deployment" from "history could not be read", mirroring `accorda sync`'s
+// previousFromHistory. It is shared by `accorda diff` and `accorda plan` so
+// both commands use the same full-model deployed baseline.
 func deployedAtCommit(ctx context.Context, src sources.Source, store history.Store, warn io.Writer) *state.DesiredState {
 	rc, err := lastHealthyReceipt(store)
 	if err != nil {
 		if warn != nil {
-			fmt.Fprintf(warn, "diff: warning: could not read deployment history: %v\n", err)
+			fmt.Fprintf(warn, "warning: could not read deployment history: %v\n", err)
 		}
 		return nil
 	}
@@ -119,6 +121,21 @@ func deployedAtCommit(ctx context.Context, src sources.Source, store history.Sto
 		return d
 	}
 	return nil
+}
+
+// deployedStateFromDesired converts a full desired state (re-read from the
+// source at the deployed commit) into the DeployedState baseline a target's
+// Plan expects. It returns nil when the desired state is nil, so a caller
+// with no prior healthy deployment passes a nil baseline and the plan treats
+// every desired service as new.
+func deployedStateFromDesired(d *state.DesiredState) *state.DeployedState {
+	if d == nil {
+		return nil
+	}
+	return &state.DeployedState{
+		Commit:   d.Commit,
+		Services: d.Services,
+	}
 }
 
 // buildDiff produces the per-field diff tree from the deployed and desired

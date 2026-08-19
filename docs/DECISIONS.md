@@ -872,14 +872,19 @@ side is the current Git HEAD. Only services and fields that differ are
 printed, in a YAML-like tree with `deployed:`/`desired:` pairs matching the
 §11 example, in sorted order (#12). `cmd/accorda/plan.go` implements
 `accorda plan` by fetching the desired state, constructing the target, and
-calling `Target.Plan` with the last healthy deployment as the deployed
-baseline (mirroring the rollback target the sync command uses, decision #28),
-then printing the plan header and `plan.Plan.String()`. Neither command
-mutates the target or source.
+calling `Target.Plan` with the same full-model deployed baseline as `diff`
+(re-read from the source at the deployed commit via a shared
+`deployedAtCommit` helper, converted to a `DeployedState`), so the two
+commands agree on the deployed side and a converged service is not
+over-reported as `CHANGED`; it then prints the plan header and
+`plan.Plan.String()`. Neither command mutates the target or source.
 
 **Consequence.** `accorda diff` and `accorda plan` become fully implemented
 CLI surface. `diff` needs no Docker daemon because it compares Git commits;
 `plan` requires the target's runtime (via `Target.Plan`) but never applies
-the plan. Both reuse `lastHealthyReceipt`/`previousFromHistory` so the
-deployed baseline is consistent with `status` and `sync`. The remaining stub
-commands are `history`, `inspect`, `logs`, and `doctor`.
+the plan. Both share the `deployedAtCommit` helper (and `lastHealthyReceipt`)
+so the deployed baseline is consistent with each other and with `status`'s
+deployed-commit read; `plan` uses the full model rather than the image-only
+`previousFromHistory` rollback baseline, so its output reflects the actual
+deployed configuration. The remaining stub commands are `history`, `inspect`,
+`logs`, and `doctor`.
