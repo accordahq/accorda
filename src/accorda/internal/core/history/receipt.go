@@ -41,7 +41,10 @@ type Receipt struct {
 	// OutcomeHealthy or OutcomeFailed.
 	Result Outcome `json:"result"`
 	// Changes lists the service names the deployment changed, in sorted
-	// order. It is empty for a failed deployment or when nothing changed.
+	// order. It records the services the plan intended to change, so it is
+	// populated even for a failed deployment (docs/ACCORDA.md §11 shows the
+	// affected services on a failed row). It is empty only when the plan is
+	// a no-op.
 	Changes []string `json:"changes,omitempty"`
 	// Services records, per service name, the image reference and resolved
 	// manifest digest that were deployed. It is nil for a failed deployment.
@@ -55,8 +58,10 @@ type Outcome string
 const (
 	// OutcomeHealthy marks a deployment that converged and is healthy.
 	OutcomeHealthy Outcome = "healthy"
-	// OutcomeFailed marks a deployment that failed (fetch, validate, plan,
-	// apply, or health verification).
+	// OutcomeFailed marks a deployment that failed during apply or health
+	// verification. Failures earlier in the lifecycle (fetch, validate,
+	// plan) return before a deployment is attempted and do not record a
+	// receipt.
 	OutcomeFailed Outcome = "failed"
 )
 
