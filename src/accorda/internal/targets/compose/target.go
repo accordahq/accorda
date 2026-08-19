@@ -91,7 +91,7 @@ func WithRunner(r composeRunner) Option {
 // config.PullChanged, config.PullMissing, config.PullAlways, or
 // config.PullNever. It is primarily intended for tests and for callers that
 // construct a Target directly from a config.Target without a full
-// config.Project; the reconcile loop supplies the policy from the project's
+// config.Project; the sync command supplies the policy from the project's
 // images.pull setting.
 func WithPullPolicy(policy string) Option {
 	return func(t *Target) { t.pullPolicy = policy }
@@ -100,10 +100,8 @@ func WithPullPolicy(policy string) Option {
 // WithHealthTimeout sets the maximum time Health waits for services to become
 // healthy (docs/ACCORDA.md §19). It defaults to defaultHealthTimeout. It is
 // primarily intended for tests and for callers that construct a Target
-// directly from a config.Target without a full config.Project; the reconcile
-// loop will supply it from the project's health.timeout setting once it
-// constructs targets from a config.Project (the sync command is still a
-// stub, so no production caller wires it yet).
+// directly from a config.Target without a full config.Project; the sync
+// command supplies it from the project's health.timeout setting.
 func WithHealthTimeout(d time.Duration) Option {
 	return func(t *Target) { t.healthTimeout = d }
 }
