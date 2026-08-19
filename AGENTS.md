@@ -37,7 +37,7 @@ Use Implementer mode for requests to build, change, fix, refactor, or document t
 - Gather the initial context with `scripts/prepare-issue-context.sh <issue>` (fetches the issue, its PRs, diffs, CI, and working-tree state in one read-only call) so the implementation is grounded in the issue and any related PRs.
 - Follow the repository rules and README guidance, including relevant verification.
 - Keep implementation work aligned with the Accorda OSS scope and the project's Go build/test workflow.
-- Do not push or create a pull request without the user's explicit approval.
+- An explicit request to implement an issue or feature authorizes committing, pushing the implementation branch, and creating the pull request. Merging still requires a separate explicit request.
 - A requested implementation is complete only after the required validation and review are done and the final result is ready for publication.
 - Follow [`docs/IMPLEMENTER.md`](docs/IMPLEMENTER.md) for the implementation, verification, and handoff workflow.
 
@@ -125,9 +125,9 @@ The current Go project layout is intentionally simple and source-focused:
 ### Completion and pull requests
 
 - A requested implementation, including a documentation change, is complete only after the required validation has been run and the result is ready to review.
-- Before requesting publication approval, finish the implementation, run the relevant verification, review the complete diff, and prepare a concise PR title and description.
-- After explicit approval, push the implementation branch and create the PR against `main`. Do not merge it without a separate explicit request.
-- If approval is declined or GitHub access is unavailable, report the work as locally ready for a PR, not complete, and state the remaining action.
+- Finish the implementation, run the relevant verification, review the complete diff, and prepare a concise PR title and description.
+- Push the implementation branch and create the PR against `main` as part of fulfilling the implement request. Do not merge it without a separate explicit request.
+- If GitHub access is unavailable, report the work as locally ready for a PR, not complete, and state the remaining action.
 - Read-only investigation, explanation, review, and planning do not require a PR unless the user explicitly requests one.
 
 ## Common commands

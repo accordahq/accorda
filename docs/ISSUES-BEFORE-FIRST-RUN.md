@@ -7,5 +7,5 @@
 - [x] https://github.com/accordahq/accorda/issues/26
 - [ ] https://github.com/accordahq/accorda/issues/28
 - [ ] https://github.com/accordahq/accorda/issues/29
-- [ ] https://github.com/accordahq/accorda/issues/52
+- [x] https://github.com/accordahq/accorda/issues/52
 - [ ] https://github.com/accordahq/accorda/issues/68
