@@ -10,12 +10,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version-file: src/accorda/go.mod
+          # Pin the toolchain explicitly rather than via go-version-file: the
+          # module's go directive stays at the true minimum (1.25.0), while CI
+          # needs 1.25.6+ where go-git's file:// transport works
+          # (docs/DECISIONS.md #24).
+          go-version: '1.25.6'
 
       - name: Check formatting
         run: |
@@ -31,3 +35,24 @@ jobs:
         run: |
           cd src/accorda
           go build ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.25.6'
+
+      - name: Start Docker daemon
+        run: |
+          sudo systemctl start docker
+          docker info
+
+      - name: Run integration tests
+        run: |
+          cd src/accorda
+          go test -tags integration ./...

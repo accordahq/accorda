@@ -190,6 +190,21 @@ go test ./...
 go build ./...
 ```
 
+## Integration & end-to-end tests
+
+Beyond the hermetic unit tests, the repository ships an integration and end-to-end suite (build tag `integration`) that exercises Accorda against real external dependencies — a Git repository, a Docker daemon, and the Docker Compose CLI — per the testing strategy in `docs/ACCORDA.md` §55. Each test skips gracefully when its prerequisite is unavailable, so the default `go test ./...` run stays hermetic.
+
+- `internal/sources/git` — clones, fetches, checks out, and reads desired state from a real local Git repository.
+- `internal/targets/compose` — validates, plans, applies, reads runtime state, and verifies health against a real Docker daemon and `docker compose`.
+- `cmd/accorda` — drives the full lifecycle end-to-end: a Git commit declares the desired state, `accorda sync` detects it, plans, deploys, verifies health, and reports `SYNCED`.
+
+Shared fixtures and prerequisite checks live in `internal/testutil` so the three suites do not duplicate repository setup or skip logic.
+
+```bash
+cd src/accorda
+go test -tags integration ./internal/sources/git/ ./internal/targets/compose/ ./cmd/accorda/
+```
+
 ## Notes
 
 - `docs/ACCORDA.md` is the source of truth and must not be modified.

@@ -10,148 +10,17 @@ package git
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 
 	"accorda/internal/config"
 	"accorda/internal/sources"
+	"accorda/internal/testutil"
 )
 
-// requireGit skips the test if git is not on PATH.
-func requireGit(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-}
-
-// makeOriginRepo creates a fresh Git repository with one commit and a file at
-// the given path, then returns the URL (file://...) and the expected commit
-// SHA/branch/time.
-func makeOriginRepo(t *testing.T) (url, sha, branch string, committedAt time.Time) {
-	t.Helper()
-	gitConfig := []string{"-c", "user.name=Accorda Test", "-c", "user.email=test@accorda.dev"}
-	run := func(dir string, args ...string) string {
-		args = append(gitConfig, args...)
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-
-	origin := t.TempDir()
-	run(origin, "init", "--initial-branch=production")
-	compose := `
-services:
-  api:
-    image: ghcr.io/acme/api:1.9
-    environment:
-      LOG_LEVEL: warning
-  redis:
-    image: redis:8
-`
-	if err := os.WriteFile(filepath.Join(origin, defaultComposeFile), []byte(compose), 0o644); err != nil {
-		t.Fatalf("write %s: %v", defaultComposeFile, err)
-	}
-	run(origin, "add", defaultComposeFile)
-	run(origin, "commit", "-m", "initial")
-	sha = run(origin, "rev-parse", "HEAD")
-	committedAtStr := run(origin, "log", "-1", "--format=%aI")
-	when, err := time.Parse(time.RFC3339, committedAtStr)
-	if err != nil {
-		t.Fatalf("parse commit time %q: %v", committedAtStr, err)
-	}
-	committedAt = when.UTC()
-	branch = "production"
-	url = "file://" + origin
-	return url, sha, branch, committedAt
-}
-
-// makeOriginRepoWithHistory creates a repository with two commits whose
-// services file differs, then returns the URL plus both commits' metadata:
-// the older (old) and the current HEAD (head). It is used to verify that
-// Desired(ref) reads content at the passed commit, not the checked-out HEAD.
-func makeOriginRepoWithHistory(t *testing.T) (url, branch string, old, head commitInfo) {
-	t.Helper()
-	gitConfig := []string{"-c", "user.name=Accorda Test", "-c", "user.email=test@accorda.dev"}
-	run := func(dir string, args ...string) string {
-		args = append(gitConfig, args...)
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	info := func(dir, ref string) commitInfo {
-		sha := run(dir, "rev-parse", ref)
-		raw := run(dir, "log", "-1", "--format=%aI", ref)
-		when, err := time.Parse(time.RFC3339, raw)
-		if err != nil {
-			t.Fatalf("parse commit time %q: %v", raw, err)
-		}
-		return commitInfo{SHA: sha, Branch: "production", Time: when.UTC()}
-	}
-
-	origin := t.TempDir()
-	run(origin, "init", "--initial-branch=production")
-
-	// Commit 1: the older desired state.
-	compose1 := `
-services:
-  api:
-    image: ghcr.io/acme/api:1.8
-    environment:
-      LOG_LEVEL: info
-  redis:
-    image: redis:7
-`
-	if err := os.WriteFile(filepath.Join(origin, defaultComposeFile), []byte(compose1), 0o644); err != nil {
-		t.Fatalf("write %s: %v", defaultComposeFile, err)
-	}
-	run(origin, "add", defaultComposeFile)
-	run(origin, "commit", "-m", "v1")
-	old = info(origin, "HEAD")
-
-	// Commit 2: the new HEAD, with different services.
-	compose2 := `
-services:
-  api:
-    image: ghcr.io/acme/api:1.9
-    environment:
-      LOG_LEVEL: warning
-  redis:
-    image: redis:8
-`
-	if err := os.WriteFile(filepath.Join(origin, defaultComposeFile), []byte(compose2), 0o644); err != nil {
-		t.Fatalf("write %s: %v", defaultComposeFile, err)
-	}
-	run(origin, "add", defaultComposeFile)
-	run(origin, "commit", "-m", "v2")
-	head = info(origin, "HEAD")
-
-	branch = "production"
-	url = "file://" + origin
-	return url, branch, old, head
-}
-
-// commitInfo mirrors sources.Commit for test fixtures.
-type commitInfo struct {
-	SHA    string
-	Branch string
-	Time   time.Time
-}
-
 func TestGitSource_CloneFetchCheckoutAndHead(t *testing.T) {
-	requireGit(t)
-	url, wantSHA, wantBranch, wantTime := makeOriginRepo(t)
+	testutil.RequireGit(t)
+	url, wantSHA, wantBranch, wantTime := testutil.MakeOriginRepo(t)
 
 	cache := t.TempDir()
 	src := config.Source{Type: "git", URL: url, Branch: wantBranch}
@@ -211,8 +80,8 @@ func TestGitSource_CloneFetchCheckoutAndHead(t *testing.T) {
 }
 
 func TestGitSource_DesiredAtExplicitRef(t *testing.T) {
-	requireGit(t)
-	url, wantSHA, wantBranch, wantTime := makeOriginRepo(t)
+	testutil.RequireGit(t)
+	url, wantSHA, wantBranch, wantTime := testutil.MakeOriginRepo(t)
 
 	src := config.Source{Type: "git", URL: url, Branch: wantBranch}
 	g := New(src, WithCacheDir(t.TempDir()), WithBaseDir(t.TempDir()))
@@ -237,8 +106,8 @@ func TestGitSource_DesiredAtOlderCommit(t *testing.T) {
 	// services file at the passed commit, not at the checked-out HEAD. The
 	// repository has two commits with different services; after Fetch
 	// (HEAD = v2), requesting the older commit (v1) must return v1 services.
-	requireGit(t)
-	url, wantBranch, old, head := makeOriginRepoWithHistory(t)
+	testutil.RequireGit(t)
+	url, wantBranch, old, head := testutil.MakeOriginRepoWithHistory(t)
 
 	src := config.Source{Type: "git", URL: url, Branch: wantBranch}
 	g := New(src, WithCacheDir(t.TempDir()), WithBaseDir(t.TempDir()))
@@ -286,7 +155,7 @@ func TestGitSource_DesiredAtOlderCommit(t *testing.T) {
 }
 
 func TestGitSource_ValidateErrors(t *testing.T) {
-	requireGit(t)
+	testutil.RequireGit(t)
 	ctx := context.Background()
 
 	if err := New(config.Source{}).Validate(ctx); err == nil {

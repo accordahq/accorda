@@ -296,6 +296,27 @@ licenses do not apply to Accorda's own code.
 copyleft concerns. The `NOTICE` and `THIRD_PARTY_LICENSES.md` files, plus a
 CI license allowlist, keep the project compliant as dependencies change.
 
+### 15. Integration and end-to-end tests are gated behind the `integration` build tag
+
+**Context.** The testing strategy (docs/ACCORDA.md §55) calls for an
+integration and E2E suite against a real Git repository, Docker daemon, and
+Docker Compose. Those dependencies are not available in the default CI
+environment, and the default `go test ./...` run must stay hermetic.
+
+**Decision.** Integration and E2E tests live in `*_test.go` files guarded by
+the `integration` build tag and skip gracefully (via `t.Skipf`) when a
+prerequisite is unavailable. Shared repository fixtures and prerequisite
+checks are extracted into `internal/testutil` so the git source, compose
+target, and `cmd/accorda` suites do not duplicate setup or skip logic
+(DRY, docs/DECISIONS.md #13). The compose target's integration tests exercise
+the real `dockerClient` and `cliRunner` seams (no injected fakes), and the
+`cmd/accorda` E2E test drives the full lifecycle through `accorda sync`.
+
+**Consequence.** `go test ./...` remains hermetic; the integration suite is
+run explicitly with `go test -tags integration ./...`. New integration tests
+must use the `integration` tag and the `testutil` helpers rather than
+re-implementing fixtures.
+
 ---
 
 ## Decision log (continued)
@@ -599,3 +620,56 @@ deployment-history persistence remain future work (issue #14's follow-up).
 The `init` command still writes `accorda.env` (docs/DECISIONS.md #11), so a
 user must author `accorda.yaml` by hand (or via a future `init` update) for
 `sync` to run.
+
+### 24. Integration tests run in CI and surfaced real bugs
+
+**Context.** After wiring the `integration` build-tag suite (docs/DECISIONS.md
+#15) into a CI job with a live Docker daemon and the Go toolchain that
+`go-version-file` selects, the run failed in three distinct ways that were
+invisible to the hermetic unit tests and to a newer local Go toolchain.
+
+**Decision.** The failures were fixed as follows:
+- The compose/E2E suite surfaced a real production bug: `Target.Current` read
+  the runtime image from `ContainerJSONBase.Image`, which Docker populates
+  with the resolved image ID (`sha256:...`), not the image reference the
+  operator passed (`busybox:1.36`). Desired state models references
+  (docs/ACCORDA.md §8), so the desired-vs-runtime comparison always reported
+  drift. The reader now prefers `Config.Image` (the reference) and falls back
+  to `ContainerJSONBase.Image` only when `Config` is absent.
+- The git source integration tests failed under Go 1.25.0 because go-git's
+  `file://` transport returns "repository not found" on that toolchain but
+  works on Go 1.25.6+. The CI workflow now pins the toolchain explicitly to
+  Go 1.25.6 (`go-version: '1.25.6'`) rather than selecting it via
+  `go-version-file`, leaving the module's `go` directive at the true minimum
+  (1.25.0) so downstream builders on older 1.25.x patches are not forced up.
+- The E2E fixture used a relative `target.file`, which `sync` resolves against
+  the process working directory rather than the project `--dir`; it now uses
+  an absolute path.
+
+**Consequence.** The integration suite now passes in CI against a real Docker
+daemon, and it proved its value by catching the image-reference bug that unit
+tests could not. The module's `go` directive stays at 1.25.0; only the CI
+toolchain is pinned to 1.25.6 to work around go-git's file-transport quirk.
+
+### 25. Docker engine SDK vulnerabilities are accepted risk with no fixed version
+
+**Context.** `govulncheck` reports two advisories on the Docker engine SDK
+direct dependency (`github.com/docker/docker` v28.5.2+incompatible, the
+latest release): `GO-2026-4883` (off-by-one in plugin privilege validation
+during `docker plugin install`) and `GO-2026-4887` (AuthZ plugin bypass with
+oversized request bodies). Both advisories state that systems not using
+Docker plugins / authorization plugins are unaffected.
+
+**Decision.** Accept the findings as risk rather than attempt a version bump,
+because no fixed `github.com/docker/docker` release exists (the fixes landed
+only in the restructured `github.com/moby/moby/v2` module, ≥ v2.0.0-beta.8).
+Accorda uses the SDK only as a client (Ping, ContainerList, ContainerInspect,
+ImageList) and never installs plugins or drives the daemon's plugin/AuthZ
+flow, so the reported attack surface is not reachable from Accorda's usage.
+Migrating the dependency to `moby/moby/v2` is tracked as future work rather
+than a current change.
+
+**Consequence.** The `dockerClient` seam (docs/DECISIONS.md #15) stays on
+`github.com/docker/docker`; the advisories are documented as accepted,
+unreachable risk. A dependency migration to `github.com/moby/moby/v2` would be
+the way to clear them and should be revisited when that module stabilizes.
