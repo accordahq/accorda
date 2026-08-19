@@ -78,16 +78,6 @@ if [[ ${#prs[@]} -eq 0 ]]; then
     --jq '.[] | select(.event=="cross-referenced" and .source.issue.pull_request) | .source.issue.number')
 fi
 
-# Resolve the PRs that reference the issue when none were passed explicitly.
-prs=("$@")
-if [[ ${#prs[@]} -eq 0 ]]; then
-  prs=()
-  while IFS= read -r pr; do
-    prs+=("$pr")
-  done < <(gh api "repos/$owner/$repo/issues/$issue/timeline" \
-    --jq '.[] | select(.event=="cross-referenced" and .source.issue.pull_request) | .source.issue.number')
-fi
-
 # Write the full output to a deterministic file so an agent can read the
 # complete context in one call even when the terminal truncates inline output.
 # The file is created in the OS temp directory and named with the issue and
