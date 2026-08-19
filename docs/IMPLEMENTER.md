@@ -82,12 +82,24 @@ the change's scope and risk. Typical evidence includes:
 - build or packaging validation;
 - manual inspection of generated or user-facing output.
 
-Before publishing a pull request, run **both** the unit test suite and the
-integration/E2E suite (`go test ./...` and `go test -tags integration ...`), not
-just one of them, so behavior changes are verified against a real Git
-repository, Docker daemon, and Docker Compose when available. Re-run with
-`-count=1` when the result is cached so a claimed pass reflects the current
-working tree.
+Before publishing a pull request, run the full validation with a single
+command so **both** the unit suite and the integration/E2E suite run, not just
+one of them:
+
+```bash
+scripts/test.sh
+```
+
+The script runs a gofmt check, the build, the unit suite (`go test -count=1
+./...`), and the integration/E2E suite (`go test -count=1 -tags integration
+./...`), in that order, and stops on the first failure. Always use
+`scripts/test.sh` for full validation instead of assembling the long
+`go test` commands by hand, so a change that breaks a module outside the one
+under edit is never missed and the working tree is verified against a real Git
+repository, Docker daemon, and Docker Compose when available. The integration
+tests skip gracefully when a prerequisite is unavailable (see
+`internal/testutil`). `-count=1` avoids a cached result, so a claimed pass
+reflects the current working tree.
 
 Do not claim a check passed unless its result was observed. If a relevant check
 cannot run because of environment, dependency, credential, or infrastructure

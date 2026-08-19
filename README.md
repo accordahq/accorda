@@ -200,6 +200,14 @@ Beyond the hermetic unit tests, the repository ships an integration and end-to-e
 
 Shared fixtures and prerequisite checks live in `internal/testutil` so the three suites do not duplicate repository setup or skip logic.
 
+For full validation — gofmt check, build, unit suite, and the integration/E2E suite — run the single `scripts/test.sh` command instead of assembling the long `go test` invocations by hand:
+
+```bash
+scripts/test.sh
+```
+
+You can also run the integration suite directly from the module directory:
+
 ```bash
 cd src/accorda
 go test -tags integration ./internal/sources/git/ ./internal/targets/compose/ ./cmd/accorda/

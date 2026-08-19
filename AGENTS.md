@@ -132,8 +132,13 @@ The current Go project layout is intentionally simple and source-focused:
 
 | Task | Command |
 | --- | --- |
+| Run full validation (gofmt + build + unit + integration) | `scripts/test.sh` |
 | Format Go code | `cd src/accorda && gofmt -w ./...` |
-| Run Go tests | `cd src/accorda && go test ./...` |
+| Run Go tests (unit only) | `cd src/accorda && go test ./...` |
 | Build the app | `cd src/accorda && go build ./...` |
 | Run the starter app | `cd src/accorda && go run ./cmd/accorda` |
+
+Use `scripts/test.sh` for full validation — it runs the gofmt check, build,
+unit suite, and integration/E2E suite together, so a change that breaks a
+module outside the one under edit is never missed.
 

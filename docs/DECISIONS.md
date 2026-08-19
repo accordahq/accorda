@@ -776,3 +776,27 @@ rollback is attempted. The Compose target implements `ApplyDesired`; other
 targets keep the `Plan`+`Apply` fallback, and core stays target-agnostic
 (#3). `accorda history` (#28 CLI) can later render the rolled-back rows from
 the journal; only recording is implemented here.
+
+### 29. Full validation is run through `scripts/test.sh`
+
+**Context.** Agents and contributors were expected to run both the unit suite
+(`go test ./...`) and the integration/E2E suite (`go test -tags integration
+./...`) before publishing a pull request, but the long commands were easy to
+get wrong, and running only one of them allowed a change that broke a module
+outside the one under edit to slip through unnoticed until CI failed.
+
+**Decision.** `scripts/test.sh` runs the full validation in one invocation:
+a gofmt check, the build, the unit suite (`go test -count=1 ./...`), and the
+integration/E2E suite (`go test -count=1 -tags integration ./...`), stopping
+on the first failure. It resolves the module directory relative to the script
+so it works from any working directory, uses `-count=1` to defeat caching so
+a claimed pass reflects the current tree, and relies on the existing
+`internal/testutil` prerequisite checks to skip integration tests gracefully
+when a prerequisite is unavailable. Agents and contributors are instructed to
+use it (see `AGENTS.md` "Common commands" and `docs/IMPLEMENTER.md` §5) for
+full validation rather than assembling the long `go test` commands by hand.
+
+**Consequence.** A single `scripts/test.sh` gives a complete validation pass,
+so a change that breaks a module outside the one under edit is never missed.
+The integration suites still skip gracefully without Docker, preserving the
+hermetic default run from ADR #15.
