@@ -58,7 +58,7 @@ func (t *Target) Health(ctx context.Context) (*health.Health, error) {
 		if err != nil {
 			return nil, err
 		}
-		h := healthFromRuntime(runtime, time.Now())
+		h := HealthFromRuntime(runtime, time.Now())
 		if !hasStarting(h) {
 			return h, nil
 		}
@@ -77,10 +77,15 @@ func (t *Target) Health(ctx context.Context) (*health.Health, error) {
 // so tests can shorten it.
 var healthPollInterval = 2 * time.Second
 
-// healthFromRuntime maps a RuntimeState to a health.Health. Each service's
+// HealthFromRuntime maps a RuntimeState to a health.Health. Each service's
 // Docker healthcheck status is translated to a health.Status; services with
 // no healthcheck are reported as unknown.
-func healthFromRuntime(runtime *state.RuntimeState, checkedAt time.Time) *health.Health {
+//
+// It is exported so callers outside the compose package (for example the
+// `accorda status` CLI command) can derive the current per-service and
+// aggregate health from a runtime state read via Target.Current, matching the
+// same mapping the reconcile loop's Health phase uses (docs/ACCORDA.md §19).
+func HealthFromRuntime(runtime *state.RuntimeState, checkedAt time.Time) *health.Health {
 	h := health.New(checkedAt)
 	if runtime == nil {
 		return &h

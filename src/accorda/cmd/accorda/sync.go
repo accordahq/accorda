@@ -88,12 +88,13 @@ func runSync(cmd *cobra.Command, dir string) error {
 	return nil
 }
 
-// previousFromHistory returns the last known-healthy deployment read from the
-// receipt journal, used as the rollback target (docs/ACCORDA.md §20). It scans
-// the receipts for the most recent OutcomeHealthy row and reconstructs its
-// deployed state from the recorded commit and per-service images. When history
-// is empty (or has no healthy deployment), it returns nil so the reconciler
-// treats rollback as unsafe and lets the failure stand.
+// previousFromHistory returns the last known-healthy deployment state read
+// from the receipt journal, used as the rollback target
+// (docs/ACCORDA.md §20). It scans the receipts for the most recent
+// OutcomeHealthy row and reconstructs its deployed state from the recorded
+// commit and branch. When history is empty (or has no healthy deployment), it
+// returns nil so the reconciler treats rollback as unsafe and lets the
+// failure stand.
 //
 // The previous services carry only the image reference recorded in the
 // receipt (the history model records image + digest per service); the
@@ -103,33 +104,47 @@ func runSync(cmd *cobra.Command, dir string) error {
 //
 // A store read error is reported to warn (so an operator can distinguish "no
 // prior healthy deployment" from "history could not be read") and treated as
-// no rollback target, honoring the "where safely possible" qualifier in §20.
+// no rollback target, honoring the last safely possible qualifier in §20.
 func previousFromHistory(store history.Store, warn io.Writer) *state.DeployedState {
-	if store == nil {
+	rc, err := lastHealthyReceipt(store)
+	if err != nil && warn != nil {
+		fmt.Fprintf(warn, "sync: warning: could not read deployment history for rollback: %v\n", err)
+	}
+	if rc == nil {
 		return nil
+	}
+	services := make(map[string]state.Service, len(rc.Services))
+	for name, svc := range rc.Services {
+		services[name] = state.Service{Image: svc.Image}
+	}
+	return &state.DeployedState{
+		DeploymentID: rc.DeploymentID,
+		Commit:       rc.Commit,
+		Services:     services,
+	}
+}
+
+// lastHealthyReceipt returns the most recent OutcomeHealthy receipt from the
+// journal, or nil when the store has no healthy deployment. It returns a
+// non-nil error only when the store cannot be read. It is shared by the sync
+// command (rollback target) and the status command (last-deploy / deployed
+// commit), so both surfaces agree on what the last healthy deployment was
+// (docs/ACCORDA.md §7, §20).
+func lastHealthyReceipt(store history.Store) (*history.Receipt, error) {
+	if store == nil {
+		return nil, nil
 	}
 	receipts, err := store.List(context.Background())
 	if err != nil {
-		if warn != nil {
-			fmt.Fprintf(warn, "sync: warning: could not read deployment history for rollback: %v\n", err)
-		}
-		return nil
+		return nil, err
 	}
 	for _, rc := range slices.Backward(receipts) {
-		if rc.Result != history.OutcomeHealthy {
-			continue
-		}
-		services := make(map[string]state.Service, len(rc.Services))
-		for name, svc := range rc.Services {
-			services[name] = state.Service{Image: svc.Image}
-		}
-		return &state.DeployedState{
-			DeploymentID: rc.DeploymentID,
-			Commit:       rc.Commit,
-			Services:     services,
+		if rc.Result == history.OutcomeHealthy {
+			cp := rc
+			return &cp, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // buildTarget constructs the deployment target from the project's target
