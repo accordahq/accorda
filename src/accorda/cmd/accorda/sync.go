@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -12,6 +14,7 @@ import (
 	"accorda/internal/core/events"
 	"accorda/internal/core/history"
 	"accorda/internal/core/reconcile"
+	"accorda/internal/core/state"
 	"accorda/internal/sources/git"
 	"accorda/internal/targets/compose"
 )
@@ -61,17 +64,71 @@ func runSync(cmd *cobra.Command, dir string) error {
 		return err
 	}
 
+	store := history.NewFileStore(receiptPath(dir))
 	r := reconcile.New(src, tgt, events.NewBus()).
 		WithDriftPolicy(driftPolicy(proj.Reconcile.Drift)).
 		WithEnvironment(proj.Environment).
-		WithReceiptStore(history.NewFileStore(receiptPath(dir)))
+		WithReceiptStore(store).
+		WithPrevious(previousFromHistory(store, cmd.ErrOrStderr()))
 	res := r.Reconcile(context.Background())
 
 	if res.Phase == reconcile.PhaseFailed {
+		if res.RolledBack {
+			// A failed deployment was rolled back to a known previous commit.
+			// Report the rollback clearly so a user sees what was restored and
+			// why the active state is healthy (docs/ACCORDA.md §20).
+			fmt.Fprintf(cmd.OutOrStdout(), "sync: %s\n", res.Phase)
+			fmt.Fprintf(cmd.OutOrStdout(), "rollback: restored to commit %s\n", res.RolledBackTo)
+			return fmt.Errorf("reconciliation failed and was rolled back: %w", res.Err)
+		}
 		return fmt.Errorf("reconciliation failed: %w", res.Err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "sync: %s\n", res.Phase)
 	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", res.Comparison.String())
+	return nil
+}
+
+// previousFromHistory returns the last known-healthy deployment read from the
+// receipt journal, used as the rollback target (docs/ACCORDA.md §20). It scans
+// the receipts for the most recent OutcomeHealthy row and reconstructs its
+// deployed state from the recorded commit and per-service images. When history
+// is empty (or has no healthy deployment), it returns nil so the reconciler
+// treats rollback as unsafe and lets the failure stand.
+//
+// The previous services carry only the image reference recorded in the
+// receipt (the history model records image + digest per service); the
+// reconciler restores the full previous service model by reading the desired
+// state at the previous commit from the source, so the on-disk Compose file
+// reflects the complete previous deployment rather than just the image.
+//
+// A store read error is reported to warn (so an operator can distinguish "no
+// prior healthy deployment" from "history could not be read") and treated as
+// no rollback target, honoring the "where safely possible" qualifier in §20.
+func previousFromHistory(store history.Store, warn io.Writer) *state.DeployedState {
+	if store == nil {
+		return nil
+	}
+	receipts, err := store.List(context.Background())
+	if err != nil {
+		if warn != nil {
+			fmt.Fprintf(warn, "sync: warning: could not read deployment history for rollback: %v\n", err)
+		}
+		return nil
+	}
+	for _, rc := range slices.Backward(receipts) {
+		if rc.Result != history.OutcomeHealthy {
+			continue
+		}
+		services := make(map[string]state.Service, len(rc.Services))
+		for name, svc := range rc.Services {
+			services[name] = state.Service{Image: svc.Image}
+		}
+		return &state.DeployedState{
+			DeploymentID: rc.DeploymentID,
+			Commit:       rc.Commit,
+			Services:     services,
+		}
+	}
 	return nil
 }
 

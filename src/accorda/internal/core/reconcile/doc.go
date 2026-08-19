@@ -25,9 +25,24 @@
 // Successful and failed deployments are recorded as deployment receipts
 // (docs/ACCORDA.md §7, §11) through the history.Store configured via
 // WithReceiptStore: a changed, SYNCED deployment records an OutcomeHealthy
-// receipt with the runtime digests and changed services, and a deploy or
-// health-verification failure records an OutcomeFailed receipt. Recording is
-// best-effort; healthy receipts are gated on the plan changing the target.
+// receipt with the runtime digests and changed services, a deploy or
+// health-verification failure records an OutcomeFailed receipt, and a
+// successful rollback records an OutcomeRolledBack receipt carrying the
+// restored commit (docs/ACCORDA.md §20). Recording is best-effort; healthy
+// receipts are gated on the plan changing the target.
+//
+// Rollback restores the last known-healthy deployment when a deploy or
+// health-verification phase fails (docs/ACCORDA.md §20). The previous
+// deployment is supplied via WithPrevious; the full previous service model is
+// restored by reading the desired state at the previous commit from the
+// source, falling back to the recorded image-only services when the source
+// cannot be read. A target that additionally implements the desiredApplier
+// capability (for example the Compose target, which materializes the desired
+// services into the on-disk Compose file) is restored by applying the
+// previous desired state directly, so the on-disk artifact reflects the
+// restored services rather than the failed ones. When there is no previous
+// deployment, the failure stands and no rollback is attempted (the "where
+// safely possible" qualifier in §20).
 //
 // See docs/ACCORDA.md §6 (Reconciliation Lifecycle), §7 (Deployment Receipts),
 // §11 (history), §20 (Rollback), and §5.3 (Runtime State) for the

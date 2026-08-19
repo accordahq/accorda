@@ -24,6 +24,7 @@ Use Reviewer mode for requests to review, audit, assess, or comment on a pull re
 
 - The repository is read-only with respect to PR and repository history: do not edit files, apply fixes, create commits, push, merge, or otherwise alter local or remote repository state. The reviewer may pull the PR branch into an isolated worktree to run tests, linters, and type checks, and must `git reset --hard` / remove the worktree afterward so nothing persists.
 - Read-only inspection and validation are allowed, including running the relevant test suite and validation commands on the PR branch. Do not run formatters with autofix, generators, dependency additions, migrations, or cleanup commands. Never commit reviewer-side artifacts.
+- Gather the initial context with `scripts/prepare-issue-context.sh <issue>` (fetches the issue, its PRs, diffs, CI, and working-tree state in one read-only call) instead of repeating the `gh`/`git` commands by hand.
 - Report verified, actionable findings; do not fix them.
 - Do not publish GitHub comments or reviews unless the user explicitly asks. When publication is requested, the only permitted remote writes are review comments and the final PR review.
 - Follow [`docs/REVIEWER.md`](docs/REVIEWER.md) for the review workflow, severity model, finding format, and final response.
@@ -33,6 +34,7 @@ Use Reviewer mode for requests to review, audit, assess, or comment on a pull re
 Use Implementer mode for requests to build, change, fix, refactor, or document the project.
 
 - Inspect the worktree first and preserve user changes.
+- Gather the initial context with `scripts/prepare-issue-context.sh <issue>` (fetches the issue, its PRs, diffs, CI, and working-tree state in one read-only call) so the implementation is grounded in the issue and any related PRs.
 - Follow the repository rules and README guidance, including relevant verification.
 - Keep implementation work aligned with the Accorda OSS scope and the project's Go build/test workflow.
 - Do not push or create a pull request without the user's explicit approval.
@@ -132,8 +134,13 @@ The current Go project layout is intentionally simple and source-focused:
 
 | Task | Command |
 | --- | --- |
+| Run full validation (gofmt + build + unit + integration) | `scripts/test.sh` |
 | Format Go code | `cd src/accorda && gofmt -w ./...` |
-| Run Go tests | `cd src/accorda && go test ./...` |
+| Run Go tests (unit only) | `cd src/accorda && go test ./...` |
 | Build the app | `cd src/accorda && go build ./...` |
 | Run the starter app | `cd src/accorda && go run ./cmd/accorda` |
+
+Use `scripts/test.sh` for full validation — it runs the gofmt check, build,
+unit suite, and integration/E2E suite together, so a change that breaks a
+module outside the one under edit is never missed.
 

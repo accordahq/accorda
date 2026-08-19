@@ -3,5 +3,8 @@
 		"build.buildFlags": ["-tags=integration"]
 	},
 	"go.build.tags": "integration",
-	"go.testTags": "integration"
+	"go.testTags": "integration",
+	"chat.tools.terminal.autoApprove": {
+		"./scripts/prepare-issue-context.sh": true
+	}
 }

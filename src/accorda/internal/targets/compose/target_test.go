@@ -1008,6 +1008,83 @@ func TestServiceName_NilLabelsReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestApplyDesired_MaterializesAndApplies(t *testing.T) {
+	// ApplyDesired must materialize the given services into the on-disk
+	// Compose file, then plan and apply them, so the runner operates against
+	// the restored image rather than the file's previous content
+	// (docs/ACCORDA.md §20).
+	path := writeComposeFile(t) // contains api:1
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			summary("compose", "api"),
+		},
+		inspected: map[string]container.InspectResponse{
+			"id-api": inspect("api:2", "running", "none"),
+		},
+	}
+	runner := &fakeRunner{}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithRunner(runner), WithProjectName("compose"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	desired := &state.DesiredState{
+		Repository: "acme/infra",
+		Commit:     "prev123",
+		Services: map[string]state.Service{
+			"api": {Image: "api:1"},
+		},
+	}
+	p, err := tgt.ApplyDesired(context.Background(), desired)
+	if err != nil {
+		t.Fatalf("ApplyDesired: %v", err)
+	}
+	if p == nil {
+		t.Fatal("ApplyDesired returned nil plan")
+	}
+
+	// The on-disk file must now declare api:1 (the restored image).
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read compose: %v", err)
+	}
+	if !strings.Contains(string(data), "api:1") {
+		t.Errorf("compose file after ApplyDesired = %q, want it to contain api:1", data)
+	}
+	// The runner must have issued an `up -d api` against the restored file.
+	if len(runner.calls) == 0 {
+		t.Fatal("runner had no calls, want an up -d")
+	}
+}
+
+func TestApplyDesired_NilDesired(t *testing.T) {
+	path := writeComposeFile(t)
+	tgt := newTarget(t, path, &fakeDockerClient{})
+	if _, err := tgt.ApplyDesired(context.Background(), nil); err == nil {
+		t.Fatal("ApplyDesired(nil) expected error, got nil")
+	}
+}
+
+func TestWriteComposeServices_RoundTripsImage(t *testing.T) {
+	// writeComposeServices must write the image reference into the file so a
+	// later LoadFile reads it back (docs/ACCORDA.md §20).
+	path := filepath.Join(t.TempDir(), "compose.yaml")
+	services := map[string]state.Service{
+		"api": {Image: "busybox:1.36", Command: []string{"sh", "-c", "sleep 300"}},
+	}
+	if err := writeComposeServices(path, services); err != nil {
+		t.Fatalf("writeComposeServices: %v", err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if got := loaded["api"].Image; got != "busybox:1.36" {
+		t.Errorf("api.Image after round-trip = %q, want busybox:1.36", got)
+	}
+}
+
 func TestMergeRuntime_DisagreeIsDegraded(t *testing.T) {
 	cases := []struct {
 		name string

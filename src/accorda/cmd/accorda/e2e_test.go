@@ -130,3 +130,147 @@ func TestE2E_Sync_ConvergesToSynced(t *testing.T) {
 		t.Errorf("sync output = %q, want it to contain SYNCED", out.String())
 	}
 }
+
+// badImageCompose declares a service with a busybox tag that does not exist,
+// so `docker compose up -d` fails to create the container (the e2e project
+// uses images.pull=never, so no image fetch masks the failure).
+const badImageCompose = `services:
+  api:
+    image: busybox:9.9
+    command: ["sh", "-c", "sleep 300"]
+`
+
+// TestE2E_Sync_RollsBackOnFailedDeploy drives the rollback path end-to-end
+// (docs/ACCORDA.md §20): a healthy busybox:1.36 deployment (commit A) is
+// recorded as a receipt, then Git advances to a commit B declaring a
+// nonexistent busybox:9.9; the deploy fails and `accorda sync` rolls back to
+// the last known-healthy commit A, restoring the running service and printing
+// an informative rollback message.
+func TestE2E_Sync_RollsBackOnFailedDeploy(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir := writeE2EProject(t)
+	origin := gitOriginDir(t, dir)
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+
+	// 1. First sync deploys busybox:1.36 and records a healthy receipt.
+	var first bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &first, nil); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if !strings.Contains(first.String(), "SYNCED") {
+		t.Fatalf("first sync output = %q, want SYNCED", first.String())
+	}
+
+	// 2. Advance Git to a commit declaring a nonexistent image, and overwrite
+	// the target Compose file to match, so the forward deploy path attempts
+	// busybox:9.9.
+	if err := os.WriteFile(filepath.Join(origin, testutil.ComposeFile), []byte(badImageCompose), 0o644); err != nil {
+		t.Fatalf("write origin compose (bad image): %v", err)
+	}
+	runGit(t, origin, "add", testutil.ComposeFile)
+	runGit(t, origin, "commit", "-m", "bump to bad image")
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(badImageCompose), 0o644); err != nil {
+		t.Fatalf("write target compose (bad image): %v", err)
+	}
+
+	// 3. Second sync must fail and roll back to the previous healthy commit.
+	var second bytes.Buffer
+	err := run([]string{"sync", "--dir", dir}, &second, nil)
+	if err == nil {
+		t.Fatalf("second sync succeeded, want a failure + rollback: %q", second.String())
+	}
+	if !strings.Contains(second.String(), "rollback: restored to commit") {
+		t.Errorf("second sync output = %q, want an informative rollback message", second.String())
+	}
+
+	// 4. The on-disk Compose file must be restored to busybox:1.36.
+	data, readErr := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if readErr != nil {
+		t.Fatalf("read restored compose: %v", readErr)
+	}
+	if strings.Contains(string(data), "busybox:9.9") {
+		t.Errorf("compose file after rollback = %q, want it restored away from busybox:9.9", data)
+	}
+	if !strings.Contains(string(data), "busybox:1.36") {
+		t.Errorf("compose file after rollback = %q, want it to contain busybox:1.36", data)
+	}
+	// The full previous service model is restored from the source, not just
+	// the image: the command and healthcheck from the original e2eCompose
+	// must be present (docs/ACCORDA.md §20).
+	if !strings.Contains(string(data), "sleep 300") {
+		t.Errorf("compose file after rollback = %q, want the previous command restored", data)
+	}
+	if !strings.Contains(string(data), "healthcheck") {
+		t.Errorf("compose file after rollback = %q, want the previous healthcheck restored", data)
+	}
+}
+
+// TestE2E_Sync_FailureNoHistory_NoRollback verifies the unsafe-to-rollback
+// case (docs/ACCORDA.md §20 "where safely possible"): a first sync against a
+// nonexistent image with no prior healthy deployment in history must fail
+// without a rollback, leaving the on-disk Compose file unchanged.
+func TestE2E_Sync_FailureNoHistory_NoRollback(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir := writeE2EProject(t)
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+
+	// Overwrite Git and the target file to the nonexistent image before any
+	// successful sync, so there is no healthy receipt to roll back to.
+	origin := gitOriginDir(t, dir)
+	if err := os.WriteFile(filepath.Join(origin, testutil.ComposeFile), []byte(badImageCompose), 0o644); err != nil {
+		t.Fatalf("write origin compose (bad image): %v", err)
+	}
+	runGit(t, origin, "add", testutil.ComposeFile)
+	runGit(t, origin, "commit", "-m", "bump to bad image")
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(badImageCompose), 0o644); err != nil {
+		t.Fatalf("write target compose (bad image): %v", err)
+	}
+
+	var out bytes.Buffer
+	err := run([]string{"sync", "--dir", dir}, &out, nil)
+	if err == nil {
+		t.Fatalf("sync succeeded, want a failure with no rollback: %q", out.String())
+	}
+	if strings.Contains(out.String(), "rollback") {
+		t.Errorf("sync output = %q, want no rollback message (empty history)", out.String())
+	}
+	// The on-disk file must be left as the failed image (no rollback wrote it
+	// back).
+	data, readErr := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if readErr != nil {
+		t.Fatalf("read compose: %v", readErr)
+	}
+	if !strings.Contains(string(data), "busybox:9.9") {
+		t.Errorf("compose file = %q, want it unchanged (busybox:9.9)", data)
+	}
+}
+
+// gitOriginDir returns the path of the file:// origin repository declared in
+// the project's accorda.yaml, used to add commits for the rollback scenario.
+func gitOriginDir(t *testing.T, dir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "accorda.yaml"))
+	if err != nil {
+		t.Fatalf("read accorda.yaml: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "url: file://") {
+			return strings.TrimPrefix(line, "url: file://")
+		}
+	}
+	t.Fatalf("no file:// url found in accorda.yaml:\n%s", data)
+	return ""
+}
