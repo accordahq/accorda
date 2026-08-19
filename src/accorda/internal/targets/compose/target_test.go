@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/client"
 
 	"accorda/internal/config"
 	"accorda/internal/core/plan"
@@ -21,8 +22,9 @@ import (
 )
 
 // fakeDockerClient is a test double for the dockerClient seam. It returns
-// canned responses for Ping, ContainerList, ContainerInspect, and ImageList
-// so the Compose target can be exercised without a running Docker daemon.
+// canned responses for Ping, ContainerList, ContainerInspect, ImageList, and
+// ImageInspect so the Compose target can be exercised without a running
+// Docker daemon.
 type fakeDockerClient struct {
 	pingErr    error
 	containers []container.Summary
@@ -31,6 +33,9 @@ type fakeDockerClient struct {
 	listErr    error
 	images     []image.Summary
 	imageErr   error
+	// imageInspected maps an image reference to its InspectResponse, used by
+	// ImageInspect to resolve manifest digests (docs/ACCORDA.md §7).
+	imageInspected map[string]image.InspectResponse
 	// lastOptions captures the full ListOptions passed to ContainerList so
 	// tests can assert the All flag (drift visibility) and the label filter.
 	lastOptions container.ListOptions
@@ -60,6 +65,13 @@ func (f *fakeDockerClient) ImageList(_ context.Context, _ image.ListOptions) ([]
 		return nil, f.imageErr
 	}
 	return f.images, nil
+}
+
+func (f *fakeDockerClient) ImageInspect(_ context.Context, ref string, _ ...client.ImageInspectOption) (image.InspectResponse, error) {
+	if f.imageInspected == nil {
+		return image.InspectResponse{}, nil
+	}
+	return f.imageInspected[ref], nil
 }
 
 // fakeRunner is a test double for the composeRunner seam. It records every
@@ -271,6 +283,59 @@ func TestCurrent_IncludesStoppedContainers(t *testing.T) {
 	}
 	if got := rs.Services["api"].Status; got != "exited" {
 		t.Errorf("api.Status = %q, want exited", got)
+	}
+}
+
+func TestCurrent_ResolvesImageDigest(t *testing.T) {
+	// Current must resolve the manifest digest of each running image so
+	// deployment receipts can record the immutable digest rather than a
+	// mutable tag (docs/ACCORDA.md §7).
+	path := writeComposeFile(t)
+	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			summary(project, "api"),
+		},
+		inspected: map[string]container.InspectResponse{
+			"id-api": inspect("api:1", "running", "healthy"),
+		},
+		imageInspected: map[string]image.InspectResponse{
+			"api:1": {RepoDigests: []string{"ghcr.io/acme/api@sha256:91a"}},
+		},
+	}
+	tgt := newTarget(t, path, cli)
+
+	rs, err := tgt.Current(context.Background())
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if got := rs.Services["api"].Digest; got != "ghcr.io/acme/api@sha256:91a" {
+		t.Errorf("api.Digest = %q, want %q", got, "ghcr.io/acme/api@sha256:91a")
+	}
+}
+
+func TestCurrent_UnresolvableDigest_IsEmpty(t *testing.T) {
+	// An image that cannot be inspected (e.g. locally built, no registry
+	// manifest) must yield an empty digest rather than failing Current.
+	path := writeComposeFile(t)
+	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			summary(project, "api"),
+		},
+		inspected: map[string]container.InspectResponse{
+			"id-api": inspect("api:1", "running", "healthy"),
+		},
+		// No imageInspected entry: ImageInspect returns an empty response.
+	}
+	tgt := newTarget(t, path, cli)
+
+	rs, err := tgt.Current(context.Background())
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if got := rs.Services["api"].Digest; got != "" {
+		t.Errorf("api.Digest = %q, want empty", got)
 	}
 }
 

@@ -177,6 +177,12 @@ type RuntimeService struct {
 	// Image is the image reference actually running, which may differ from
 	// the desired image when drift has occurred.
 	Image string
+	// Digest is the content-addressable manifest digest of the image actually
+	// running, e.g. "sha256:91a...". It is resolved from the target's image
+	// registry metadata and recorded in deployment receipts so Accorda can
+	// answer "exactly which image digest was running at time Y"
+	// (docs/ACCORDA.md §7). It is empty when the target cannot resolve it.
+	Digest string
 }
 
 // Snapshot is a combined view of the three states Accorda reasons about. It

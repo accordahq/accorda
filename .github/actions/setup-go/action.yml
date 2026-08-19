@@ -1,0 +1,32 @@
+# Local composite action that installs the pinned Go toolchain with a
+# correctly-keyed module cache.
+#
+# This deduplicates the setup-go step shared by every CI job. The action
+# assumes the repository is already checked out (a job must run
+# actions/checkout first — a local action's manifest must exist on disk when
+# the job loads, so the action itself cannot perform the checkout). It pins
+# the toolchain explicitly (docs/DECISIONS.md #24): the module's `go`
+# directive stays at the true minimum (1.25.0), while CI needs 1.25.6+ where
+# go-git's `file://` transport works. The cache is keyed on the actual module
+# file (`src/accorda/go.sum`) via `cache-dependency-path` so
+# actions/setup-go can locate the dependency file in this monorepo layout;
+# without it, setup-go warns that no `go.mod` is found at the repo root and
+# the module cache is never restored.
+name: Set up Go
+
+description: Install the pinned Go toolchain with a module cache keyed on the real dependency file.
+
+inputs:
+  go-version:
+    description: Go toolchain version to install.
+    required: true
+    default: "1.25.6"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache-dependency-path: "**/go.sum"

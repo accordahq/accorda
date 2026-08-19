@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"accorda/internal/config"
 	"accorda/internal/core/events"
+	"accorda/internal/core/history"
 	"accorda/internal/core/reconcile"
 	"accorda/internal/sources/git"
 	"accorda/internal/targets/compose"
@@ -59,7 +62,9 @@ func runSync(cmd *cobra.Command, dir string) error {
 	}
 
 	r := reconcile.New(src, tgt, events.NewBus()).
-		WithDriftPolicy(driftPolicy(proj.Reconcile.Drift))
+		WithDriftPolicy(driftPolicy(proj.Reconcile.Drift)).
+		WithEnvironment(proj.Environment).
+		WithReceiptStore(history.NewFileStore(receiptPath(dir)))
 	res := r.Reconcile(context.Background())
 
 	if res.Phase == reconcile.PhaseFailed {
@@ -81,6 +86,28 @@ func buildTarget(p *config.Project) (*compose.Target, error) {
 		compose.WithPullPolicy(p.Images.Pull),
 		compose.WithHealthTimeout(p.Health.Timeout),
 	)
+}
+
+// receiptPath returns the path of the deployment receipt journal for the
+// project directory. Receipts are stored under a global state directory
+// (docs/ACCORDA.md §28 "local filesystem", §42 "local history"), keyed by the
+// project directory so multiple projects do not share a journal. The state
+// directory honors XDG_STATE_HOME when set, falling back to ~/.local/state,
+// and finally ~/.accorda for environments without XDG.
+func receiptPath(dir string) string {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = "."
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	key := filepath.Clean(dir)
+	if key == "." {
+		key = "default"
+	}
+	return filepath.Join(base, "accorda", "receipts", key+".jsonl")
 }
 
 // driftPolicy maps the project's reconcile.drift setting to the reconciler's

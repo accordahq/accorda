@@ -1,0 +1,11 @@
+# Issues Before First Run
+
+- [ ] https://github.com/accordahq/accorda/issues/18
+- [ ] https://github.com/accordahq/accorda/issues/19
+- [ ] https://github.com/accordahq/accorda/issues/17
+- [ ] https://github.com/accordahq/accorda/issues/25
+- [ ] https://github.com/accordahq/accorda/issues/26
+- [ ] https://github.com/accordahq/accorda/issues/28
+- [ ] https://github.com/accordahq/accorda/issues/29
+- [ ] https://github.com/accordahq/accorda/issues/52
+- [ ] https://github.com/accordahq/accorda/issues/68

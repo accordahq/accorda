@@ -2,11 +2,15 @@ package reconcile
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
 	"accorda/internal/core/events"
 	"accorda/internal/core/health"
+	"accorda/internal/core/history"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 	"accorda/internal/sources"
@@ -110,12 +114,37 @@ type Reconciler struct {
 	// driftPolicy selects how the reconciler reacts to runtime drift
 	// (docs/ACCORDA.md §5.3). It defaults to DriftReport.
 	driftPolicy DriftPolicy
+	// environment is the target environment the deployment applies to. It is
+	// recorded in deployment receipts (docs/ACCORDA.md §7).
+	environment string
+	// receipts is the store deployment receipts are written to on a
+	// successful deployment (docs/ACCORDA.md §7). It may be nil, in which
+	// case receipts are not recorded.
+	receipts history.Store
+	// startedAt is when the current reconciliation cycle began. It is set at
+	// the start of Reconcile and used as the receipt's StartedAt timestamp.
+	startedAt time.Time
 }
 
 // New returns a Reconciler that orchestrates src and tgt, publishing events
 // on bus. bus may be nil, in which case events are dropped.
 func New(src sources.Source, tgt targets.Target, bus events.Bus) *Reconciler {
 	return &Reconciler{source: src, target: tgt, bus: bus, driftPolicy: DriftReport}
+}
+
+// WithEnvironment sets the target environment recorded in deployment receipts
+// (docs/ACCORDA.md §7). It is informational and target-agnostic.
+func (r *Reconciler) WithEnvironment(env string) *Reconciler {
+	r.environment = env
+	return r
+}
+
+// WithReceiptStore sets the store deployment receipts are written to on a
+// successful deployment (docs/ACCORDA.md §7). A nil store disables receipt
+// recording.
+func (r *Reconciler) WithReceiptStore(s history.Store) *Reconciler {
+	r.receipts = s
+	return r
 }
 
 // WithDriftPolicy sets how the reconciler reacts to runtime drift
@@ -140,6 +169,7 @@ func (r *Reconciler) WithPrevious(prev *state.DeployedState) *Reconciler {
 // validation failure.
 func (r *Reconciler) Reconcile(ctx context.Context) *Result {
 	res := &Result{Phase: PhaseDetected}
+	r.startedAt = time.Now()
 	r.emit(ctx, events.EventDeploymentDetected, nil)
 
 	if r.source == nil || r.target == nil {
@@ -154,6 +184,14 @@ func (r *Reconciler) Reconcile(ctx context.Context) *Result {
 	p, ok := r.plan(ctx, res, desired, commit)
 	if !ok {
 		return res
+	}
+
+	// Assign the deployment identifier before the deploy phase so the plan,
+	// state transitions, and the eventual receipt all share one identifier
+	// (docs/ACCORDA.md §7). The target's Plan leaves DeploymentID empty; the
+	// reconcile loop owns identifier assignment.
+	if p.DeploymentID == "" {
+		p.DeploymentID = newDeploymentID()
 	}
 
 	if !r.deploy(ctx, res, desired, commit, p) {
@@ -313,8 +351,40 @@ func (r *Reconciler) sync(ctx context.Context, res *Result, desired *state.Desir
 	// misleading. Gate it on the plan changing the target.
 	if p.Changed() {
 		r.emit(ctx, events.EventDeploymentSucceeded, nil)
+		r.recordReceipt(ctx, desired, commit, runtime, p.DeploymentID)
 	}
 	return res
+}
+
+// recordReceipt writes a deployment receipt for a successful deployment
+// (docs/ACCORDA.md §7). It is called only when the plan actually changed the
+// target, so a no-op cycle does not produce a receipt. The receipt records
+// the deployment identifier, repository, environment, commit, start and
+// completion timestamps, and the per-service image reference and resolved
+// manifest digest read back from the runtime.
+//
+// Recording is best-effort: a store failure is not a deployment failure, so
+// the cycle still reports SYNCED. The receipt is built from the runtime state
+// (which carries the resolved digests) rather than the desired state, so the
+// recorded digest reflects what is actually running.
+func (r *Reconciler) recordReceipt(ctx context.Context, desired *state.DesiredState, commit sources.Commit, runtime *state.RuntimeState, deploymentID string) {
+	if r.receipts == nil {
+		return
+	}
+	services := make(map[string]history.ServiceReceipt, len(runtime.Services))
+	for name, svc := range runtime.Services {
+		services[name] = history.ServiceReceipt{Image: svc.Image, Digest: svc.Digest}
+	}
+	receipt := history.Receipt{
+		DeploymentID: deploymentID,
+		Repository:   desired.Repository,
+		Environment:  r.environment,
+		Commit:       commit.SHA,
+		StartedAt:    r.startedAt,
+		CompletedAt:  time.Now(),
+		Services:     services,
+	}
+	_ = r.receipts.Append(ctx, receipt)
 }
 
 // handleDrift reacts to a drifted runtime according to the configured drift
@@ -414,4 +484,18 @@ func (r *Reconciler) emit(ctx context.Context, eventType string, payload any) {
 		return
 	}
 	r.bus.Publish(ctx, events.Event{Type: eventType, Payload: payload})
+}
+
+// newDeploymentID returns a fresh, collision-resistant deployment identifier
+// of the form "dep_<hex>", matching the spec's example "dep_01K..."
+// (docs/ACCORDA.md §7). It is assigned by the reconcile loop, which owns
+// deployment identifier assignment (docs/DECISIONS.md #16).
+func newDeploymentID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is effectively unreachable; fall back to a
+		// time-based suffix so the identifier is still unique in practice.
+		return fmt.Sprintf("dep_%d", time.Now().UnixNano())
+	}
+	return "dep_" + hex.EncodeToString(b[:])
 }

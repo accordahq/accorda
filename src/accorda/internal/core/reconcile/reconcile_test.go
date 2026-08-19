@@ -8,6 +8,7 @@ import (
 
 	"accorda/internal/core/events"
 	"accorda/internal/core/health"
+	"accorda/internal/core/history"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 	"accorda/internal/sources"
@@ -53,6 +54,9 @@ type fakeTarget struct {
 	applied        []*plan.Plan
 	applyCalls     int
 	deployDone     bool
+	// changedPlan makes Plan return a plan with a non-noop action so the
+	// reconciler treats the deployment as changed (and records a receipt).
+	changedPlan bool
 }
 
 func (f *fakeTarget) Validate(context.Context) error { return f.validateErr }
@@ -66,7 +70,11 @@ func (f *fakeTarget) Plan(_ context.Context, desired *state.DesiredState, _ *sta
 	if f.planErr != nil {
 		return nil, f.planErr
 	}
-	return plan.New("dep_1", desired.Repository, desired.Commit, time.Unix(0, 0)), nil
+	p := plan.New("dep_1", desired.Repository, desired.Commit, time.Unix(0, 0))
+	if f.changedPlan {
+		p.AddAction(plan.Action{Kind: plan.ActionRecreate, Service: "api", Image: "api:2"})
+	}
+	return p, nil
 }
 func (f *fakeTarget) Apply(_ context.Context, p *plan.Plan) error {
 	f.applyCalls++
@@ -591,5 +599,169 @@ func TestReconcile_NoopPlan_NoDeploymentEvents(t *testing.T) {
 	}
 	if succeeded != 0 {
 		t.Errorf("deployment.succeeded events = %d, want 0", succeeded)
+	}
+}
+
+// fakeStore is a controllable history.Store for tests.
+type fakeStore struct {
+	appended    []history.Receipt
+	err         error
+	appendCalls int
+}
+
+func (f *fakeStore) Append(_ context.Context, r history.Receipt) error {
+	f.appendCalls++
+	if f.err != nil {
+		return f.err
+	}
+	f.appended = append(f.appended, r)
+	return nil
+}
+func (f *fakeStore) List(context.Context) ([]history.Receipt, error) { return f.appended, nil }
+
+func TestReconcile_RecordsReceiptOnChangedDeployment(t *testing.T) {
+	// A deployment that changes the target must record a receipt carrying
+	// the deployment id, repository, environment, commit, and per-service
+	// image + digest read back from the runtime (docs/ACCORDA.md §7).
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health: healthyHealth(),
+		runtime: &state.RuntimeState{
+			Services: map[string]state.RuntimeService{
+				"api": {Status: "running", Image: "api:2", Digest: "sha256:91a"},
+			},
+		},
+		changedPlan: true,
+	}
+	store := &fakeStore{}
+	r := New(src, tgt, events.NewBus()).
+		WithEnvironment("production").
+		WithReceiptStore(store)
+
+	res := r.Reconcile(context.Background())
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	}
+	if len(store.appended) != 1 {
+		t.Fatalf("appended receipts = %d, want 1", len(store.appended))
+	}
+	rc := store.appended[0]
+	if rc.DeploymentID == "" {
+		t.Error("receipt deployment id is empty")
+	}
+	if rc.Repository != "acme/infra" {
+		t.Errorf("receipt repository = %q, want acme/infra", rc.Repository)
+	}
+	if rc.Environment != "production" {
+		t.Errorf("receipt environment = %q, want production", rc.Environment)
+	}
+	if rc.Commit != "abc123" {
+		t.Errorf("receipt commit = %q, want abc123", rc.Commit)
+	}
+	if rc.StartedAt.IsZero() || rc.CompletedAt.IsZero() {
+		t.Error("receipt timestamps must be set")
+	}
+	if rc.CompletedAt.Before(rc.StartedAt) {
+		t.Errorf("receipt completed_at %v before started_at %v", rc.CompletedAt, rc.StartedAt)
+	}
+	svc, ok := rc.Services["api"]
+	if !ok {
+		t.Fatalf("receipt services missing api: %+v", rc.Services)
+	}
+	if svc.Image != "api:2" {
+		t.Errorf("receipt api image = %q, want api:2", svc.Image)
+	}
+	if svc.Digest != "sha256:91a" {
+		t.Errorf("receipt api digest = %q, want sha256:91a", svc.Digest)
+	}
+}
+
+func TestReconcile_NoopPlan_NoReceipt(t *testing.T) {
+	// A no-op cycle (plan unchanged) must not record a receipt, since nothing
+	// was deployed (docs/ACCORDA.md §7: "every successful deployment").
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health:  healthyHealth(),
+		runtime: healthyRuntime(),
+	}
+	store := &fakeStore{}
+	r := New(src, tgt, events.NewBus()).WithReceiptStore(store)
+
+	res := r.Reconcile(context.Background())
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseSynced)
+	}
+	if len(store.appended) != 0 {
+		t.Errorf("appended receipts = %d, want 0", len(store.appended))
+	}
+}
+
+func TestReconcile_NoStore_NoReceipt(t *testing.T) {
+	// Without a configured store, a changed deployment must not panic and
+	// must not record a receipt. changedPlan is set so the store path (which
+	// is nil here) is actually reached; otherwise the test would pass without
+	// exercising recordReceipt at all.
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health:      healthyHealth(),
+		runtime:     healthyRuntime(),
+		changedPlan: true,
+	}
+	r := New(src, tgt, events.NewBus())
+	res := r.Reconcile(context.Background())
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	}
+}
+
+func TestReconcile_StoreError_StillSynced(t *testing.T) {
+	// A store failure is not a deployment failure: the cycle still reports
+	// SYNCED (receipt recording is best-effort). changedPlan is set so the
+	// store is actually consulted; the assertion that Append was attempted
+	// proves recordReceipt ran despite the nil store path being unreachable.
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health:      healthyHealth(),
+		runtime:     healthyRuntime(),
+		changedPlan: true,
+	}
+	store := &fakeStore{err: errors.New("store boom")}
+	r := New(src, tgt, events.NewBus()).WithReceiptStore(store)
+
+	res := r.Reconcile(context.Background())
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	}
+	if len(store.appended) != 0 {
+		t.Errorf("appended receipts = %d, want 0 (the store errored)", len(store.appended))
+	}
+	if store.appendCalls != 1 {
+		t.Errorf("store append calls = %d, want 1 (recordReceipt must consult the store)", store.appendCalls)
+	}
+}
+
+func TestNewDeploymentID_IsUniqueAndPrefixed(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		id := newDeploymentID()
+		if len(id) < 4 || id[:4] != "dep_" {
+			t.Fatalf("deployment id %q does not start with dep_", id)
+		}
+		if seen[id] {
+			t.Fatalf("deployment id %q collided", id)
+		}
+		seen[id] = true
 	}
 }

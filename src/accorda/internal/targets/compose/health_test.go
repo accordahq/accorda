@@ -10,6 +10,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/client"
 
 	"accorda/internal/config"
 	"accorda/internal/core/health"
@@ -197,6 +198,10 @@ func (f *transitionDockerClient) ContainerInspect(_ context.Context, _ string) (
 
 func (f *transitionDockerClient) ImageList(context.Context, image.ListOptions) ([]image.Summary, error) {
 	return nil, nil
+}
+
+func (f *transitionDockerClient) ImageInspect(context.Context, string, ...client.ImageInspectOption) (image.InspectResponse, error) {
+	return image.InspectResponse{}, nil
 }
 
 func TestHealth_Timeout_ReportsUnhealthy(t *testing.T) {
