@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"accorda/internal/core/history"
 	"accorda/internal/core/state"
 )
 
@@ -140,4 +144,59 @@ func findDiffNode(parent diffNode, label string) *diffNode {
 		}
 	}
 	return nil
+}
+
+// TestHealthcheckString_IncludesStartPeriod verifies that a start_period-only
+// change renders distinct deployed/desired values, so the diff output explains
+// why the healthcheck node exists (review finding).
+func TestHealthcheckString_IncludesStartPeriod(t *testing.T) {
+	base := state.Healthcheck{Test: []string{"CMD", "true"}, Interval: time.Second, Timeout: time.Second, Retries: 3}
+	withStart := base
+	withStart.StartPeriod = 5 * time.Second
+
+	deployed := healthcheckString(base)
+	desired := healthcheckString(withStart)
+	if deployed == desired {
+		t.Fatalf("healthcheckString = %q for both, want start_period to differ", deployed)
+	}
+	if !strings.Contains(desired, "start_period=5s") {
+		t.Errorf("desired healthcheckString = %q, want it to include start_period=5s", desired)
+	}
+}
+
+// TestHealthcheckString_DisabledDistinct verifies a disabled healthcheck
+// renders distinctly from an absent one.
+func TestHealthcheckString_DisabledDistinct(t *testing.T) {
+	disabled := state.Healthcheck{Disable: true}
+	absent := state.Healthcheck{}
+	if got := healthcheckString(disabled); got != "disabled" {
+		t.Errorf("disabled healthcheckString = %q, want \"disabled\"", got)
+	}
+	if got := healthcheckString(absent); got != "" {
+		t.Errorf("absent healthcheckString = %q, want empty", got)
+	}
+}
+
+// errStore is a history.Store that fails every read, used to exercise the
+// deployed-state read-error warning path in deployedAtCommit.
+type errStore struct{}
+
+func (errStore) Append(context.Context, history.Receipt) error { return nil }
+func (errStore) List(context.Context) ([]history.Receipt, error) {
+	return nil, errors.New("journal unreadable")
+}
+
+// TestDeployedAtCommit_ReportsStoreError verifies that a history read error is
+// surfaced to the warning writer (so an operator can distinguish "no prior
+// healthy deployment" from "history could not be read"), mirroring
+// `accorda sync`'s previousFromHistory.
+func TestDeployedAtCommit_ReportsStoreError(t *testing.T) {
+	var warn bytes.Buffer
+	got := deployedAtCommit(context.Background(), &statusTestSource{}, errStore{}, &warn)
+	if got != nil {
+		t.Fatalf("deployedAtCommit = %v, want nil on store error", got)
+	}
+	if !strings.Contains(warn.String(), "could not read deployment history") {
+		t.Errorf("warning = %q, want it to mention the history read failure", warn.String())
+	}
 }

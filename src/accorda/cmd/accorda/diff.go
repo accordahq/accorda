@@ -26,6 +26,7 @@ import (
 	"accorda/internal/core/state"
 	"accorda/internal/sources"
 	"accorda/internal/sources/git"
+	"accorda/internal/targets/compose"
 )
 
 // newDiffCmd builds the `accorda diff` command (docs/ACCORDA.md §11). It
@@ -78,13 +79,20 @@ func runDiff(cmd *cobra.Command, dir string) error {
 	src := git.New(proj.Source)
 	ctx := context.Background()
 
-	desired, err := src.Desired(ctx, nil)
+	// Fetch first so the desired side reflects the current remote tip, not a
+	// stale local cache (the git source's Desired only fetches when the cache
+	// is empty). This matches `accorda plan` and `accorda status`.
+	commit, err := src.Fetch(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch desired state: %w", err)
+	}
+	desired, err := src.Desired(ctx, &commit)
 	if err != nil {
 		return fmt.Errorf("read desired state: %w", err)
 	}
 
 	store := history.NewFileStore(receiptPath(dir))
-	deployed := deployedAtCommit(ctx, src, store)
+	deployed := deployedAtCommit(ctx, src, store, cmd.ErrOrStderr())
 
 	writeDiff(cmd.OutOrStdout(), buildDiff(deployed, desired))
 	return nil
@@ -93,12 +101,22 @@ func runDiff(cmd *cobra.Command, dir string) error {
 // deployedAtCommit returns the desired state at the last healthy deployment's
 // commit, reconstructed from the source. It returns nil when history has no
 // healthy deployment or the source cannot be read at that commit, so diff
-// degrades to "all desired is new".
-func deployedAtCommit(ctx context.Context, src sources.Source, store history.Store) *state.DesiredState {
-	if rc, err := lastHealthyReceipt(store); err == nil && rc != nil {
-		if d, derr := src.Desired(ctx, &sources.Commit{SHA: rc.Commit}); derr == nil && d != nil {
-			return d
+// degrades to "all desired is new". A store read error is reported to warn so
+// an operator can distinguish "no prior healthy deployment" from "history
+// could not be read", mirroring `accorda sync`'s previousFromHistory.
+func deployedAtCommit(ctx context.Context, src sources.Source, store history.Store, warn io.Writer) *state.DesiredState {
+	rc, err := lastHealthyReceipt(store)
+	if err != nil {
+		if warn != nil {
+			fmt.Fprintf(warn, "diff: warning: could not read deployment history: %v\n", err)
 		}
+		return nil
+	}
+	if rc == nil {
+		return nil
+	}
+	if d, derr := src.Desired(ctx, &sources.Commit{SHA: rc.Commit}); derr == nil && d != nil {
+		return d
 	}
 	return nil
 }
@@ -175,8 +193,8 @@ func diffService(d, s state.Service) []diffNode {
 	fields = append(fields, diffScalar("image", d.Image, s.Image)...)
 	fields = append(fields, diffJoined("command", d.Command, s.Command)...)
 	fields = append(fields, diffKV("environment", d.Env, s.Env)...)
-	fields = append(fields, diffJoined("ports", formatPorts(d.Ports), formatPorts(s.Ports))...)
-	fields = append(fields, diffJoined("volumes", formatVolumes(d.Volumes), formatVolumes(s.Volumes))...)
+	fields = append(fields, diffJoined("ports", compose.StringPorts(d.Ports), compose.StringPorts(s.Ports))...)
+	fields = append(fields, diffJoined("volumes", compose.StringVolumes(d.Volumes), compose.StringVolumes(s.Volumes))...)
 	fields = append(fields, diffJoined("networks", d.Networks, s.Networks)...)
 	fields = append(fields, diffKV("labels", d.Labels, s.Labels)...)
 	fields = append(fields, diffHealthcheck(d.Healthcheck, s.Healthcheck)...)
@@ -243,7 +261,11 @@ func diffHealthcheck(d, s state.Healthcheck) []diffNode {
 	return []diffNode{{label: "healthcheck", hasValue: true, deployed: healthcheckString(d), desired: healthcheckString(s)}}
 }
 
-// healthcheckString renders a healthcheck concisely for diff output.
+// healthcheckString renders a healthcheck concisely for diff output. It
+// includes every reconciliation-relevant field (test, interval, timeout,
+// retries, start_period) so a change to any of them is visible in the
+// rendered deployed/desired values, and renders a disabled healthcheck
+// distinctly from an absent one.
 func healthcheckString(h state.Healthcheck) string {
 	if h.Disable {
 		return "disabled"
@@ -251,35 +273,6 @@ func healthcheckString(h state.Healthcheck) string {
 	if len(h.Test) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s (interval=%v timeout=%v retries=%d)", strings.Join(h.Test, " "), h.Interval, h.Timeout, h.Retries)
-}
-
-// formatPorts returns the ports of a service in sorted canonical form so
-// diffJoined can compare them deterministically (docs/DECISIONS.md #12).
-func formatPorts(ps []state.Port) []string {
-	out := make([]string, 0, len(ps))
-	for _, p := range ps {
-		host := p.Host
-		if p.HostIP != "" {
-			host = p.HostIP + ":" + p.Host
-		}
-		out = append(out, fmt.Sprintf("%s:%s/%s", host, p.Container, p.Protocol))
-	}
-	sort.Strings(out)
-	return out
-}
-
-// formatVolumes returns the volumes of a service in a canonical form so
-// diffJoined can compare them deterministically (docs/DECISIONS.md #12).
-func formatVolumes(vs []state.Volume) []string {
-	out := make([]string, 0, len(vs))
-	for _, v := range vs {
-		ro := ""
-		if v.ReadOnly {
-			ro = ":ro"
-		}
-		out = append(out, fmt.Sprintf("%s:%s:%s%s", v.Source, v.Target, v.Type, ro))
-	}
-	sort.Strings(out)
-	return out
+	return fmt.Sprintf("%s (interval=%v timeout=%v retries=%d start_period=%v)",
+		strings.Join(h.Test, " "), h.Interval, h.Timeout, h.Retries, h.StartPeriod)
 }

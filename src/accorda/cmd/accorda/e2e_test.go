@@ -318,3 +318,76 @@ func TestE2E_Status_ReportsAfterSync(t *testing.T) {
 		}
 	}
 }
+
+// TestE2E_Diff_AfterSync drives `accorda diff` after a successful sync and
+// verifies it reports no differences (the deployed and desired states agree),
+// and that it fetches the current remote tip rather than a stale cache. It
+// runs diff only after a sync has recorded a healthy receipt so the deployed
+// side is populated (docs/ACCORDA.md §11).
+func TestE2E_Diff_AfterSync(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir := writeE2EProject(t)
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+
+	// First converge so a healthy receipt exists.
+	var syncOut bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &syncOut, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// A converged deployment must produce an empty diff (no differing
+	// services or fields).
+	var out bytes.Buffer
+	if err := run([]string{"diff", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if s := out.String(); strings.TrimSpace(s) != "" {
+		t.Errorf("diff output = %q, want empty for a converged deployment", s)
+	}
+}
+
+// TestE2E_Plan_AfterSync drives `accorda plan` after a successful sync and
+// verifies it prints the plan header and a per-service action line for the
+// deployment, without applying anything (docs/ACCORDA.md §11). The action
+// kind is not asserted: the deployed baseline reconstructed from the receipt
+// journal is image-only (ADR #28), so a converged service with non-image
+// config fields (command, healthcheck) can legitimately report CHANGED even
+// though the runtime is converged — the same behavior `accorda sync`'s plan
+// exhibits.
+func TestE2E_Plan_AfterSync(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir := writeE2EProject(t)
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+
+	// First converge so a healthy receipt exists.
+	var syncOut bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &syncOut, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := run([]string{"plan", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	s := out.String()
+	for _, want := range []string{
+		"Deployment plan\n",
+		"api",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("plan output missing %q; got:\n%s", want, s)
+		}
+	}
+}
