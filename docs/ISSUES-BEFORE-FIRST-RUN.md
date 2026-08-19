@@ -1,7 +1,7 @@
 # Issues Before First Run
 
 - [x] https://github.com/accordahq/accorda/issues/18
-- [ ] https://github.com/accordahq/accorda/issues/19
+- [x] https://github.com/accordahq/accorda/issues/19
 - [ ] https://github.com/accordahq/accorda/issues/17
 - [ ] https://github.com/accordahq/accorda/issues/25
 - [ ] https://github.com/accordahq/accorda/issues/26

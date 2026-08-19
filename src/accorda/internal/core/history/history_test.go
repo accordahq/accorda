@@ -17,6 +17,8 @@ func TestReceipt_Clone_IsDeepCopy(t *testing.T) {
 		Commit:       "d71b2e4",
 		StartedAt:    time.Unix(1700000000, 0),
 		CompletedAt:  time.Unix(1700000008, 0),
+		Result:       OutcomeHealthy,
+		Changes:      []string{"api"},
 		Services: map[string]ServiceReceipt{
 			"api": {Image: "ghcr.io/acme/api:2.4.1", Digest: "sha256:91a"},
 		},
@@ -24,6 +26,7 @@ func TestReceipt_Clone_IsDeepCopy(t *testing.T) {
 	clone := original.Clone()
 	clone.Services["api"] = ServiceReceipt{Image: "mutated", Digest: "sha256:zzz"}
 	clone.Services["worker"] = ServiceReceipt{Image: "ghcr.io/acme/worker:1.0"}
+	clone.Changes = append(clone.Changes, "worker")
 
 	if got := original.Services["api"].Image; got != "ghcr.io/acme/api:2.4.1" {
 		t.Errorf("original image mutated by clone: got %q", got)
@@ -31,12 +34,18 @@ func TestReceipt_Clone_IsDeepCopy(t *testing.T) {
 	if _, ok := original.Services["worker"]; ok {
 		t.Errorf("original gained service from clone: %v", original.Services)
 	}
+	if want := []string{"api"}; !reflect.DeepEqual(original.Changes, want) {
+		t.Errorf("original Changes mutated by clone: got %v, want %v", original.Changes, want)
+	}
 }
 
 func TestReceipt_Clone_PreservesNilMap(t *testing.T) {
 	var zero Receipt
 	if clone := zero.Clone(); clone.Services != nil {
 		t.Errorf("Clone of zero-value Services = %v, want nil", clone.Services)
+	}
+	if clone := zero.Clone(); clone.Changes != nil {
+		t.Errorf("Clone of zero-value Changes = %v, want nil", clone.Changes)
 	}
 }
 
@@ -63,6 +72,8 @@ func TestFileStore_AppendAndList(t *testing.T) {
 		Commit:       "d71b2e4",
 		StartedAt:    time.Unix(1700000000, 0),
 		CompletedAt:  time.Unix(1700000008, 0),
+		Result:       OutcomeHealthy,
+		Changes:      []string{"api"},
 		Services:     map[string]ServiceReceipt{"api": {Image: "api:2.4.1", Digest: "sha256:91a"}},
 	}
 	r2 := Receipt{
@@ -72,6 +83,8 @@ func TestFileStore_AppendAndList(t *testing.T) {
 		Commit:       "a01fd92",
 		StartedAt:    time.Unix(1700000100, 0),
 		CompletedAt:  time.Unix(1700000108, 0),
+		Result:       OutcomeHealthy,
+		Changes:      []string{"worker"},
 		Services:     map[string]ServiceReceipt{"worker": {Image: "worker:1.0", Digest: "sha256:a42"}},
 	}
 
@@ -123,8 +136,51 @@ func assertReceiptEqual(t *testing.T, got, want Receipt) {
 	if !got.CompletedAt.Equal(want.CompletedAt) {
 		t.Errorf("CompletedAt = %v, want %v", got.CompletedAt, want.CompletedAt)
 	}
+	if got.Result != want.Result {
+		t.Errorf("Result = %q, want %q", got.Result, want.Result)
+	}
+	if !reflect.DeepEqual(got.Changes, want.Changes) {
+		t.Errorf("Changes = %v, want %v", got.Changes, want.Changes)
+	}
 	if !reflect.DeepEqual(got.Services, want.Services) {
 		t.Errorf("Services = %+v, want %+v", got.Services, want.Services)
+	}
+}
+
+func TestFileStore_FailedReceipt_RoundTrip(t *testing.T) {
+	// A failed deployment is recorded as a receipt with OutcomeFailed, no
+	// services (never converged), and no changes; it must survive a JSON
+	// round-trip through the journal (docs/ACCORDA.md §11).
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	store := NewFileStore(path)
+	failed := Receipt{
+		DeploymentID: "dep_fail",
+		Repository:   "acme/backend",
+		Environment:  "production",
+		Commit:       "deadbeef",
+		StartedAt:    time.Unix(1700000200, 0),
+		CompletedAt:  time.Unix(1700000205, 0),
+		Result:       OutcomeFailed,
+	}
+	if err := store.Append(context.Background(), failed); err != nil {
+		t.Fatalf("Append failed receipt: %v", err)
+	}
+	got, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("List len = %d, want 1", len(got))
+	}
+	rc := got[0]
+	if rc.Result != OutcomeFailed {
+		t.Errorf("Result = %q, want %q", rc.Result, OutcomeFailed)
+	}
+	if rc.Services != nil {
+		t.Errorf("failed receipt Services = %v, want nil", rc.Services)
+	}
+	if len(rc.Changes) != 0 {
+		t.Errorf("failed receipt Changes = %v, want empty", rc.Changes)
 	}
 }
 

@@ -22,6 +22,14 @@
 // and re-applies to restore the desired runtime and emits DriftReconciled,
 // and disabled ignores drift entirely.
 //
-// See docs/ACCORDA.md §6 (Reconciliation Lifecycle), §20 (Rollback), and
-// §5.3 (Runtime State) for the authoritative description.
+// Successful and failed deployments are recorded as deployment receipts
+// (docs/ACCORDA.md §7, §11) through the history.Store configured via
+// WithReceiptStore: a changed, SYNCED deployment records an OutcomeHealthy
+// receipt with the runtime digests and changed services, and a deploy or
+// health-verification failure records an OutcomeFailed receipt. Recording is
+// best-effort; healthy receipts are gated on the plan changing the target.
+//
+// See docs/ACCORDA.md §6 (Reconciliation Lifecycle), §7 (Deployment Receipts),
+// §11 (history), §20 (Rollback), and §5.3 (Runtime State) for the
+// authoritative description.
 package reconcile
