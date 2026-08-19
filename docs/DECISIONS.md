@@ -296,6 +296,27 @@ licenses do not apply to Accorda's own code.
 copyleft concerns. The `NOTICE` and `THIRD_PARTY_LICENSES.md` files, plus a
 CI license allowlist, keep the project compliant as dependencies change.
 
+### 15. Integration and end-to-end tests are gated behind the `integration` build tag
+
+**Context.** The testing strategy (docs/ACCORDA.md §55) calls for an
+integration and E2E suite against a real Git repository, Docker daemon, and
+Docker Compose. Those dependencies are not available in the default CI
+environment, and the default `go test ./...` run must stay hermetic.
+
+**Decision.** Integration and E2E tests live in `*_test.go` files guarded by
+the `integration` build tag and skip gracefully (via `t.Skipf`) when a
+prerequisite is unavailable. Shared repository fixtures and prerequisite
+checks are extracted into `internal/testutil` so the git source, compose
+target, and `cmd/accorda` suites do not duplicate setup or skip logic
+(DRY, docs/DECISIONS.md #13). The compose target's integration tests exercise
+the real `dockerClient` and `cliRunner` seams (no injected fakes), and the
+`cmd/accorda` E2E test drives the full lifecycle through `accorda sync`.
+
+**Consequence.** `go test ./...` remains hermetic; the integration suite is
+run explicitly with `go test -tags integration ./...`. New integration tests
+must use the `integration` tag and the `testutil` helpers rather than
+re-implementing fixtures.
+
 ---
 
 ## Decision log (continued)
