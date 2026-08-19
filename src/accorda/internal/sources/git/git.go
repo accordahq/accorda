@@ -228,7 +228,7 @@ func (g *Git) Desired(ctx context.Context, ref *sources.Commit) (*state.DesiredS
 		return nil, err
 	}
 	return &state.DesiredState{
-		Repository: redactURL(g.Source.URL),
+		Repository: RedactURL(g.Source.URL),
 		Branch:     commit.Branch,
 		Commit:     commit.SHA,
 		CommitTime: commit.Time,
@@ -271,7 +271,7 @@ func (g *Git) clone(ctx context.Context, dir string) error {
 	}
 	g.applyClientOptions(&cloneOpts.ClientOptions)
 	if _, err := git.PlainCloneContext(ctx, dir, cloneOpts); err != nil {
-		return fmt.Errorf("git source: clone %q: %w", redactURL(g.Source.URL), err)
+		return fmt.Errorf("git source: clone %q: %w", RedactURL(g.Source.URL), err)
 	}
 	return nil
 }
@@ -599,11 +599,16 @@ func urlUser(rawURL string) (string, bool) {
 	return "", false
 }
 
-// redactURL returns rawURL with any userinfo (credentials) removed so it is
+// RedactURL returns rawURL with any userinfo (credentials) removed so it is
 // safe to use in error messages, DesiredState.Repository, and other
 // loggable identifiers (docs/ACCORDA.md §18, §56). When there is no
 // userinfo, rawURL is returned unchanged.
-func redactURL(rawURL string) string {
+//
+// It is exported so callers outside the git package (for example the
+// `accorda status` CLI command) redact a configured URL identically to the
+// source, keeping credentials out of user-facing output even when the source
+// cannot be read.
+func RedactURL(rawURL string) string {
 	i := strings.Index(rawURL, "://")
 	if i < 0 {
 		return rawURL

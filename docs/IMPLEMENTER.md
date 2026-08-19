@@ -149,6 +149,15 @@ gh pr create --base main --head <branch-name>
 
 Do not merge the PR unless the user separately and explicitly requests it.
 
+### Crafting the PR description
+
+Keep the PR description focused on the change being delivered in this pull
+request. Do not mention tickets or features that are not implemented in the
+current PR, even as "not yet implemented" / "future work" notes in the PR
+body. If such a note is useful context for reviewers, add it as an issue
+comment (on the relevant issue) instead of the PR description, so the PR
+body reflects only what this PR actually delivers. Alwats add `Closes #<issue_number>` to the top of  description.
+
 ### 8. Resolve review feedback
 
 When a reviewer leaves comments on the pull request, resolve them:

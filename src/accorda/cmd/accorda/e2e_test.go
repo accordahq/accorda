@@ -274,3 +274,47 @@ func gitOriginDir(t *testing.T, dir string) string {
 	t.Fatalf("no file:// url found in accorda.yaml:\n%s", data)
 	return ""
 }
+
+// TestE2E_Status_ReportsAfterSync drives `accorda status` after a successful
+// sync and verifies it prints the environment, repository, branch, Git HEAD,
+// deployed commit, sync status, runtime status, and the per-service table
+// (docs/ACCORDA.md §11). It runs status only after a sync has recorded a
+// healthy receipt so the deployed commit and last-deploy line are populated.
+func TestE2E_Status_ReportsAfterSync(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir := writeE2EProject(t)
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+
+	// First converge so a healthy receipt exists.
+	var syncOut bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &syncOut, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := run([]string{"status", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	s := out.String()
+	for _, want := range []string{
+		"Environment   production",
+		"Repository",
+		"Branch",
+		"Git HEAD",
+		"Deployed",
+		"Sync          ",
+		"Runtime",
+		"SERVICE      STATE       HEALTH      IMAGE",
+		"api",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("status output missing %q; got:\n%s", want, s)
+		}
+	}
+}

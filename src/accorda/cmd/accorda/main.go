@@ -11,9 +11,17 @@
 //	accorda sync     run reconciliation
 //	accorda history  show deployment history
 //
+//	accorda init     create an Accorda project/target
+//	accorda status   show environment, repo, branch, Git HEAD, deployed SHA, ...
+//	accorda diff     show deployed vs desired changes
+//	accorda plan     show intended actions without deploying
+//	accorda sync     run reconciliation
+//	accorda history  show deployment history
+//
 // Additional §11 commands (inspect, logs, doctor, version) are registered;
-// version is fully implemented, the rest are recognized but report that they
-// are not yet implemented until the backing core packages land.
+// version is fully implemented and status is implemented in status.go; the
+// rest are recognized but report that they are not yet implemented until the
+// backing core packages land.
 package main
 
 import (
@@ -212,10 +220,6 @@ func stubCmd(name, short string) *cobra.Command {
 			return fmt.Errorf("%s: not yet implemented (see docs/ACCORDA.md §11, §45)", name)
 		},
 	}
-}
-
-func newStatusCmd() *cobra.Command {
-	return stubCmd("status", "show environment, repo, branch, Git HEAD, deployed SHA, sync, runtime, services")
 }
 
 func newDiffCmd() *cobra.Command {

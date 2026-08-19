@@ -809,3 +809,47 @@ full validation rather than assembling the long `go test` commands by hand.
 so a change that breaks a module outside the one under edit is never missed.
 The integration suites still skip gracefully without Docker, preserving the
 hermetic default run from ADR #15.
+
+### 30. `accorda status` is a read-only snapshot of the project posture
+
+**Context.** Issue #25 (§11) requires an `accorda status` command that prints
+the environment, repository, branch, Git HEAD, deployed commit, sync status,
+runtime status, last-deploy time, and a per-service table of state/health/
+image. The underlying data already exists: the Git source exposes HEAD via
+`Fetch` and the redacted repository via `Desired`; deployment receipts
+(`history.Store`) record the last healthy commit and completion time; and the
+Compose target exposes the runtime via `Current`. None of this is persisted
+as a single "status" snapshot, and `status` must not mutate anything.
+
+**Decision.** `cmd/accorda/status.go` implements `accorda status` as a
+read-only projection that composes the existing seams:
+- It calls `src.Fetch` for the Git HEAD and `src.Desired` for the redacted
+  repository/branch and declared services (best-effort; a source failure
+  degrades to "unavailable" rather than aborting the whole report).
+- It redacts the configured URL up front via the exported
+  `git.RedactURL`, so the repository line never echoes an embedded
+  credential even when the source cannot be read (docs/ACCORDA.md §18, §56).
+- It reads the last healthy receipt via a shared `lastHealthyReceipt(store)`
+  helper (extracted from `previousFromHistory` in `sync.go`) for the deployed
+  commit and last-deploy time.
+- It calls `Target.Current` for the runtime state and derives the aggregate
+  runtime and per-service health via the exported `compose.HealthFromRuntime`
+  (the existing health mapping, exported for reuse).
+- The sync label (`SYNCED`/`OUT_OF_SYNC`/`UNKNOWN`) is derived from the Git
+  HEAD vs the last healthy deployed commit and computed before any target
+  read, so the line stays populated when the runtime is unreachable; the
+  runtime label (`HEALTHY`/`UNHEALTHY`/`UNKNOWN`) is derived from the
+  per-service health.
+- Output is a tabular report matching the §11 example, with service rows
+  sorted by name for deterministic output (#12). The `status` command no
+  longer uses the shared stub; it is fully implemented.
+
+**Consequence.** `accorda status` reports the project posture without changing
+anything, reusing the Git source, receipt journal, and Compose runtime seams.
+The runtime→health mapping is now exported (`compose.HealthFromRuntime`) so
+`status` and the reconcile loop's `Health` phase agree; `lastHealthyReceipt`
+is shared with `sync` so both surfaces agree on the last healthy deployment.
+The git source's `redactURL` helper is exported (`git.RedactURL`) so `status`
+redacts a configured URL identically to the source, keeping credentials out of
+user-facing output. A future task may reconcile `status` with the
+deployed-commit semantics of the persisted receipts (#7) as the CLI grows.

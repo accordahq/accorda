@@ -247,8 +247,8 @@ func TestRedactURL(t *testing.T) {
 		{"ssh://git@git.internal/repo", "ssh://git.internal/repo"},
 	}
 	for _, c := range cases {
-		if got := redactURL(c.in); got != c.want {
-			t.Errorf("redactURL(%q) = %q, want %q", c.in, got, c.want)
+		if got := RedactURL(c.in); got != c.want {
+			t.Errorf("RedactURL(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

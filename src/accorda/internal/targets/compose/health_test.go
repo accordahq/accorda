@@ -258,7 +258,7 @@ func TestHealthStatus_Mapping(t *testing.T) {
 }
 
 func TestHealthFromRuntime_NilRuntime(t *testing.T) {
-	h := healthFromRuntime(nil, time.Unix(0, 0))
+	h := HealthFromRuntime(nil, time.Unix(0, 0))
 	if h.Overall != health.StatusUnknown {
 		t.Errorf("Overall = %q, want %q", h.Overall, health.StatusUnknown)
 	}
@@ -271,7 +271,7 @@ func TestHealthFromRuntime_MapsServices(t *testing.T) {
 			"worker": {Health: ""},
 		},
 	}
-	h := healthFromRuntime(runtime, time.Unix(0, 0))
+	h := HealthFromRuntime(runtime, time.Unix(0, 0))
 	if h.Services["api"].Status != health.StatusHealthy {
 		t.Errorf("api = %q, want %q", h.Services["api"].Status, health.StatusHealthy)
 	}

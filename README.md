@@ -6,7 +6,10 @@ This repository intentionally stays focused on the OSS product and does not incl
 
 ## Project status
 
-This repository is being bootstrapped as a Go-based foundation for the Accorda OSS runtime. The CLI (`cmd/accorda`) implements the command surface from `docs/ACCORDA.md` §11 and §45; `accorda version`, `accorda init`, and `accorda sync` are functional, while the remaining reconciliation commands (`status`, `diff`, `plan`, `history`) are wired up and report that they are not yet implemented until the backing core packages land. The unified project format and its loader (`internal/config`) are implemented; see "Project file" below. The core abstractions from `docs/ACCORDA.md` §12 are defined: the `Target` interface (`internal/targets`), the `Source` interface (`internal/sources`), and the typed `state`, `plan`, and `health` structs (`internal/core`), with compile-time interface checks and unit tests for value semantics. The generic Git source adapter (`internal/sources/git`) is implemented: it clones, fetches, checks out, and returns HEAD commit metadata against any Git server over SSH or HTTPS, with no GitHub-specific calls; see "Git source" below. The Docker Compose target driver (`internal/targets/compose`) is implemented through its validate, runtime-state, plan, and apply phases: it parses a Compose file into Accorda's normalized service model, validates required fields, reads the runtime state of the project's containers via the Docker engine SDK, maps them back to Accorda service names and health states, computes a per-service `CHANGED`/`UNCHANGED` plan, and applies it via scoped `docker compose up -d`; see "Compose target" below. Deployment history is recorded as an append-only local journal of deployment receipts (`internal/core/history`), capturing each cycle's commit, result (`healthy`/`failed`), and changed services, stored under `$XDG_STATE_HOME/accorda/receipts/<project>.jsonl` by `accorda sync`.
+This repository is being bootstrapped as a Go-based foundation for the Accorda OSS runtime. The CLI (`cmd/accorda`) implements the command surface from `docs/ACCORDA.md` §11 and §45; `accorda version`, `accorda init`, `accorda sync`, and `accorda status` are functional, while the remaining reconciliation commands (`diff`, `plan`, `history`) are wired up and report that they are not yet implemented until the backing core packages land. The unified project format and its loader (`internal/config`) are implemented; see "Project file" below. The core abstractions from `docs/ACCORDA.md` §12 are defined: the `Target` interface (`internal/targets`), the `Source` interface (`internal/sources`), and the typed `state`, `plan`, and `health` structs (`internal/core`), with compile-time interface checks and unit tests for value semantics. The generic Git source adapter (`internal/sources/git`) is implemented: it clones, fetches, checks out, and returns HEAD commit metadata against any Git server over SSH or HTTPS, with no GitHub-specific calls; see "Git source" below. The Docker Compose target driver (`internal/targets/compose`) is implemented through its validate, runtime-state, plan, and apply phases: it parses a Compose file into Accorda's normalized service model, validates required fields, reads the runtime state of the project's containers via the Docker engine SDK, maps them back to Accorda service names and health states, computes a per-service `CHANGED`/`UNCHANGED` plan, and applies it via scoped `docker compose up -d`; see "Compose target" below. Deployment history is recorded as an append-only local journal of deployment receipts (`internal/core/history`), capturing each cycle's commit, result (`healthy`/`failed`), and changed services, stored under `$XDG_STATE_HOME/accorda/receipts/<project>.jsonl` by `accorda sync`.
+
+The `accorda status` command (`cmd/accorda/status.go`, `docs/ACCORDA.md` §11) prints the project's posture: environment, repository, branch, Git HEAD, deployed commit, sync/runtime status, last deploy time, and a per-service table of state/health/image. It is read-only: it fetches the Git source for the HEAD commit, reads the last healthy deployment receipt from the journal, and reads the target's runtime state, without mutating either.
+
 
 ## Quick start
 
@@ -124,18 +127,18 @@ go test ./internal/targets/compose/
 
 The CLI implements the minimum command set from `docs/ACCORDA.md` §79 Step 6 plus the wider §11 surface:
 
-| Command    | Status                | Description                                              |
-| ---------- | --------------------- | -------------------------------------------------------- |
-| `init`     | implemented           | create an Accorda project/target                         |
-| `version`  | implemented           | print the Accorda version                                |
-| `status`   | not yet implemented   | show environment, repo, branch, Git HEAD, deployed SHA... |
-| `diff`     | not yet implemented   | show deployed vs desired changes                         |
-| `plan`     | not yet implemented   | show intended actions without deploying                  |
-| `sync`     | implemented           | run reconciliation                                       |
-| `history`  | not yet implemented   | show deployment history                                  |
-| `inspect`  | not yet implemented   | show details for a specific deployment                   |
-| `logs`     | not yet implemented   | show logs for a deployment or service                    |
-| `doctor`   | not yet implemented   | check the local Accorda installation and configuration   |
+| Command   | Status              | Description                                               |
+| --------- | ------------------- | --------------------------------------------------------- |
+| `init`    | implemented         | create an Accorda project/target                          |
+| `version` | implemented         | print the Accorda version                                 |
+| `status`  | implemented         | show environment, repo, branch, Git HEAD, deployed SHA... |
+| `diff`    | not yet implemented | show deployed vs desired changes                          |
+| `plan`    | not yet implemented | show intended actions without deploying                   |
+| `sync`    | implemented         | run reconciliation                                        |
+| `history` | not yet implemented | show deployment history                                   |
+| `inspect` | not yet implemented | show details for a specific deployment                    |
+| `logs`    | not yet implemented | show logs for a deployment or service                     |
+| `doctor`  | not yet implemented | check the local Accorda installation and configuration    |
 
 ## Repository layout
 

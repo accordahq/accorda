@@ -32,7 +32,7 @@
 # path, so an agent can read the complete context in one call even when the
 # terminal truncates the inline output. The file is written to the OS temp
 # directory and named with the issue and PR numbers, e.g.
-#   /tmp/accorda-issue-17-pr-73-context.txt
+#   /tmp/accorda-issue-17-pr-73-context.md
 # The agent should read that file (not the truncated terminal output) to get
 # the full issue body, PR metadata, and diffs.
 #
@@ -45,6 +45,69 @@ set -euo pipefail
 
 owner=accordahq
 repo=accorda
+
+# Template fragments shared by the gh issue/pr metadata blocks below. gh
+# renders these Go templates directly, so labels list cleanly, the body stays
+# literal (links, lists, code blocks), and there is no JSON escaping to read
+# past. A template that emits the body in a fenced code block keeps its
+# markdown (headings, tables) from colliding with the rest of the report.
+issue_meta_tpl() {
+  cat <<'EOF'
+**Issue #{{ .number }}: {{ .title }}** ({{ .state }})
+{{ if .labels }}**Labels**: {{ range $i, $l := .labels }}{{ if $i }}, {{ end }}{{ $l.name }}{{ end }}
+{{ end }}{{ with .milestone }}**Milestone**: {{ .title }}
+{{ end }}**URL**: {{ .url }}
+
+**Body**:
+```markdown
+{{ .body }}
+```
+EOF
+}
+
+pr_meta_tpl() {
+  cat <<'EOF'
+**PR #{{ .number }}: {{ .title }}** ({{ .state }})
+**Author**: {{ .author.login }}
+**Base**: {{ .baseRefName }} → **Head**: {{ .headRefName }}
+**URL**: {{ .url }}
+
+**Body**:
+```markdown
+{{ .body }}
+```
+EOF
+}
+
+pr_ref_tpl() {
+  cat <<'EOF'
+**PR #{{ .number }}: {{ .title }}** ({{ .state }}) — {{ .author.login }}, {{ .baseRefName }} → {{ .headRefName }}
+{{ .url }}
+EOF
+}
+
+pr_detail_tpl() {
+  cat <<'EOF'
+**PR #{{ .number }}: {{ .title }}** ({{ .state }})
+**Author**: {{ .author.login }}
+**Base**: {{ .baseRefName }} → **Head**: {{ .headRefName }}
+**URL**: {{ .url }}
+**Commits**:
+{{- range .commits }}
+  - {{ .oid }}
+{{- end }}
+**Files**:
+{{- range .files }}
+  - {{ .path }}
+{{- end }}
+**CI rollup**:
+{{- range .statusCheckRollup }}
+  - {{ .name }}: {{ .status }}/{{ .conclusion }}
+{{- else }}
+  (no checks reported)
+{{- end }}
+EOF
+}
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "error: gh (GitHub CLI) is required" >&2
@@ -83,10 +146,10 @@ fi
 # The file is created in the OS temp directory and named with the issue and
 # PR numbers. The script's own stdout/stderr still go to the terminal so the
 # user sees progress; the file holds the full gathered context.
-outfile="/tmp/accorda-issue-${issue}-context.txt"
+outfile="/tmp/accorda-issue-${issue}-context.md"
 if [[ ${#prs[@]} -gt 0 ]]; then
   prs_slug=$(IFS=-; echo "${prs[*]}")
-  outfile="/tmp/accorda-issue-${issue}-pr-${prs_slug}-context.txt"
+  outfile="/tmp/accorda-issue-${issue}-pr-${prs_slug}-context.md"
 fi
 : > "$outfile"
 
@@ -96,8 +159,9 @@ fi
 echo "======================================================================"
 echo "Issue #$issue"
 echo "======================================================================"
-gh issue view "$issue" --json number,title,body,state,labels,milestone,url \
-  --jq '{number, title, state, url, labels: [.labels[].name], milestone: .milestone.title, body}'
+gh issue view "$issue" \
+  --json number,title,body,state,labels,milestone,url \
+  --template "$(issue_meta_tpl)"
 
 echo
 echo "======================================================================"
@@ -107,8 +171,10 @@ if [[ ${#prs[@]} -eq 0 ]]; then
   echo "(none found)"
 else
   for pr in "${prs[@]}"; do
-    gh pr view "$pr" --json number,title,state,url,author,headRefName,baseRefName \
-      --jq '{number, title, state, url, author: .author.login, baseRefName, headRefName}'
+    gh pr view "$pr" \
+      --json number,title,state,author,baseRefName,headRefName,url \
+      --template "$(pr_ref_tpl)"
+    echo
   done
 fi
 
@@ -117,8 +183,9 @@ for pr in "${prs[@]+"${prs[@]}"}"; do
   echo "======================================================================"
   echo "PR #$pr metadata"
   echo "======================================================================"
-  gh pr view "$pr" --json number,title,body,author,baseRefName,headRefName,url,commits,files,statusCheckRollup \
-    --jq '{number, title, author: .author.login, baseRefName, headRefName, url, commits: [.commits[].oid], files: [.files[].path], statusCheckRollup: [.statusCheckRollup[] | {name, conclusion, status}]}'
+  gh pr view "$pr" \
+    --json number,title,body,state,author,baseRefName,headRefName,url,commits,files,statusCheckRollup \
+    --template "$(pr_detail_tpl)"
 
   echo
   echo "======================================================================"
