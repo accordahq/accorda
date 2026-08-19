@@ -93,8 +93,38 @@ func TestFileStore_AppendAndList(t *testing.T) {
 	if got[0].DeploymentID != "dep_1" || got[1].DeploymentID != "dep_2" {
 		t.Errorf("List order = %v, want [dep_1 dep_2]", []string{got[0].DeploymentID, got[1].DeploymentID})
 	}
-	if !reflect.DeepEqual(got[0], r1) {
-		t.Errorf("List[0] = %+v, want %+v", got[0], r1)
+	// Compare receipts field-by-field using time.Time.Equal: reflect.DeepEqual
+	// on time.Time compares unexported fields (location pointer), which differ
+	// after a JSON round-trip even when the instant is identical.
+	assertReceiptEqual(t, got[0], r1)
+	assertReceiptEqual(t, got[1], r2)
+}
+
+// assertReceiptEqual compares two receipts field-by-field, treating
+// time.Time values with time.Equal so a JSON round-trip location difference
+// does not cause a spurious mismatch.
+func assertReceiptEqual(t *testing.T, got, want Receipt) {
+	t.Helper()
+	if got.DeploymentID != want.DeploymentID {
+		t.Errorf("DeploymentID = %q, want %q", got.DeploymentID, want.DeploymentID)
+	}
+	if got.Repository != want.Repository {
+		t.Errorf("Repository = %q, want %q", got.Repository, want.Repository)
+	}
+	if got.Environment != want.Environment {
+		t.Errorf("Environment = %q, want %q", got.Environment, want.Environment)
+	}
+	if got.Commit != want.Commit {
+		t.Errorf("Commit = %q, want %q", got.Commit, want.Commit)
+	}
+	if !got.StartedAt.Equal(want.StartedAt) {
+		t.Errorf("StartedAt = %v, want %v", got.StartedAt, want.StartedAt)
+	}
+	if !got.CompletedAt.Equal(want.CompletedAt) {
+		t.Errorf("CompletedAt = %v, want %v", got.CompletedAt, want.CompletedAt)
+	}
+	if !reflect.DeepEqual(got.Services, want.Services) {
+		t.Errorf("Services = %+v, want %+v", got.Services, want.Services)
 	}
 }
 
