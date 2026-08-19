@@ -386,10 +386,18 @@ func serviceName(labels map[string]string) string {
 // RuntimeService. The Status field uses Docker's ContainerState string
 // ("running", "exited", ...); the Health field uses the healthcheck status
 // ("healthy", "unhealthy", "starting") or "" when there is no healthcheck.
+//
+// The Image field is set from the image reference the operator passed to the
+// engine (Config.Image), not the resolved image ID (ContainerJSONBase.Image).
+// The desired state carries image references (e.g. "busybox:1.36"), so the
+// runtime image must be a reference for the desired-vs-runtime comparison to
+// agree; comparing against the image ID would always report drift. Config.Image
+// is preferred when present; ContainerJSONBase.Image is used only as a
+// fallback for engine responses that omit Config (docs/ACCORDA.md §5.3).
 func toRuntimeService(c container.InspectResponse) state.RuntimeService {
 	svc := state.RuntimeService{}
 	if c.ContainerJSONBase != nil {
-		svc.Image = c.ContainerJSONBase.Image
+		svc.Image = imageReference(c)
 		if c.ContainerJSONBase.State != nil {
 			svc.Status = string(c.ContainerJSONBase.State.Status)
 			if c.ContainerJSONBase.State.Health != nil {
@@ -403,6 +411,22 @@ func toRuntimeService(c container.InspectResponse) state.RuntimeService {
 		}
 	}
 	return svc
+}
+
+// imageReference returns the image reference of the container for comparison
+// against desired state. It prefers Config.Image (the reference the operator
+// passed, e.g. "busybox:1.36") and falls back to ContainerJSONBase.Image (the
+// resolved image ID, e.g. "sha256:91a...") only when Config is absent. The
+// desired state models image references (docs/ACCORDA.md §8), so comparing
+// against a reference keeps desired and runtime comparable.
+func imageReference(c container.InspectResponse) string {
+	if c.Config != nil && c.Config.Image != "" {
+		return c.Config.Image
+	}
+	if c.ContainerJSONBase != nil {
+		return c.ContainerJSONBase.Image
+	}
+	return ""
 }
 
 // degradedStatus is the runtime status reported for a service whose replicas

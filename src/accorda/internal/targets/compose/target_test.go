@@ -109,13 +109,47 @@ func summary(project, service string) container.Summary {
 }
 
 // inspect builds a container.InspectResponse with the given image, state,
-// and health status.
+// and health status. It sets both Config.Image (the image reference the
+// operator passed) and ContainerJSONBase.Image (the resolved image ID), as
+// a real Docker inspect response does, so the runtime-state reader exercises
+// its reference-preferring lookup.
 func inspect(image, state, health string) container.InspectResponse {
 	return container.InspectResponse{
 		ContainerJSONBase: &container.ContainerJSONBase{
 			Image: image,
 			State: &container.State{Status: state, Health: &container.Health{Status: health}},
 		},
+		Config: &container.Config{Image: image},
+	}
+}
+
+func TestImageReference_PrefersConfigImage(t *testing.T) {
+	// The runtime image must be the reference the operator passed (Config.Image,
+	// e.g. "busybox:1.36"), not the resolved image ID (ContainerJSONBase.Image,
+	// e.g. "sha256:91a..."), so desired-vs-runtime comparison agrees
+	// (docs/ACCORDA.md §5.3, §8).
+	got := imageReference(container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{Image: "sha256:91a"},
+		Config:            &container.Config{Image: "busybox:1.36"},
+	})
+	if got != "busybox:1.36" {
+		t.Errorf("imageReference = %q, want %q", got, "busybox:1.36")
+	}
+}
+
+func TestImageReferenceFallsBackToImageID(t *testing.T) {
+	// When Config is absent (some engine responses), fall back to the image ID.
+	got := imageReference(container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{Image: "sha256:91a"},
+	})
+	if got != "sha256:91a" {
+		t.Errorf("imageReference = %q, want %q", got, "sha256:91a")
+	}
+}
+
+func TestImageReferenceEmpty(t *testing.T) {
+	if got := imageReference(container.InspectResponse{}); got != "" {
+		t.Errorf("imageReference = %q, want empty", got)
 	}
 }
 
