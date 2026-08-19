@@ -2,7 +2,7 @@
 src/accorda/accorda
 
 # Accorda project file written by `accorda init`
-src/accorda/accorda.env
+src/accorda/accorda.yaml
 
 # Go test/coverage output
 *.out
