@@ -9,17 +9,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out code
-        uses: actions/checkout@v7
-
       - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          # Pin the toolchain explicitly rather than via go-version-file: the
-          # module's go directive stays at the true minimum (1.25.0), while CI
-          # needs 1.25.6+ where go-git's file:// transport works
-          # (docs/DECISIONS.md #24).
-          go-version: '1.25.6'
+        uses: ./.github/actions/setup-go
 
       - name: Check formatting
         run: |
@@ -39,13 +30,8 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out code
-        uses: actions/checkout@v7
-
       - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.25.6'
+        uses: ./.github/actions/setup-go
 
       - name: Start Docker daemon
         run: |
