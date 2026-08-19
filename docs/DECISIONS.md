@@ -914,9 +914,14 @@ the stand-in. The reconciler does not overwrite `p.Environment` after
 identity (§31: "deterministic enough to be hashed and signed"), so the target
 is the single source of authority for that field, just as it is for `Commit`
 and `CreatedAt`. The reconciler retains its own `r.environment` for the
-separate concern of receipt recording (§7). When the project has no
-environment set, `Plan.Environment` is empty rather than a repository
-stand-in; a future config-validation change can require the field if wanted.
+separate concern of receipt recording (§7). Config validation already
+requires `config.Project.Environment` to be non-empty (`config.validateVersion`
+returns "environment is required"), so the `config.Load` → `buildTarget`
+path always carries a real environment into `WithEnvironment`. An empty
+`Plan.Environment` is therefore only reachable via direct target
+construction (for example tests that bypass `config.Load`); it is empty
+rather than a repository stand-in, which is the behavior the direct-
+construction tests exercise.
 
 **Consequence.** `Plan.Environment` now matches the spec's project-level
 environment concept, and `accorda plan`/`accorda sync` output and any future

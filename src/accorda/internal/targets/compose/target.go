@@ -116,9 +116,12 @@ func WithHealthTimeout(d time.Duration) Option {
 // target generates (docs/ACCORDA.md §25, §31). The environment is a
 // top-level project field in accorda.yaml, not a Git-declared desired-state
 // field, so it is threaded from config.Project.Environment by the sync and
-// plan commands rather than derived from the desired state. An empty value
-// is left as-is: the generated plan's Environment is empty rather than a
-// repository stand-in.
+// plan commands rather than derived from the desired state. Config
+// validation requires the field to be non-empty, so the production
+// config.Load → buildTarget path always supplies a real environment. An
+// empty value is left as-is (only reachable via direct construction, e.g.
+// tests that bypass config.Load): the generated plan's Environment is empty
+// rather than a repository stand-in.
 func WithEnvironment(env string) Option {
 	return func(t *Target) { t.environment = env }
 }
