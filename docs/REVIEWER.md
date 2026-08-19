@@ -36,10 +36,11 @@ additions, migrations, or cleanup commands.
 When local validation is genuinely necessary (CI provides no evidence for the
 change, as described above), the reviewer may pull the PR branch into an
 isolated worktree (or a clean working tree with the user's consent) and run
-read-only validation against it: the relevant Go test suite, formatting check,
-build validation, and any repo-approved tooling required for the change. These
-commands may create transient artifacts such as local caches; never commit
-them.
+read-only validation against it. Use the same full-validation script the
+implementer uses — `scripts/test.sh` — which runs the gofmt check, the build,
+the unit suite, and the integration/E2E suite together, so a change that breaks
+a module outside the one under edit is never missed. These commands may create
+transient artifacts such as local caches; never commit them.
 
 When the review is finished, undo everything the reviewer did locally: run
 `git reset --hard` and `git clean -fd` on the review worktree (or remove the
@@ -225,8 +226,10 @@ Claim a CI check passed only when its run was actually observed (conclusion,
 run ID, and head commit). If a relevant check is missing from CI (the repo has
 no CI, the workflow does not cover the change, or the run is stale and does not
 reflect the current head commit), fall back to local validation: pull the PR
-branch into an isolated worktree and run the relevant local checks against it —
-the test suite, linters, and type checks listed in the Reviewer boundary.
+branch into an isolated worktree and run the full validation script against it —
+`scripts/test.sh` (gofmt check, build, unit suite, and integration/E2E suite),
+the same command the implementer uses, so a change that breaks a module outside
+the one under edit is never missed.
 Never claim a test, check, or scanner passed unless its result was observed:
 record the exact command, the branch and commit it ran on, and the exit code or
 output excerpt. State what could not be inspected, including inaccessible

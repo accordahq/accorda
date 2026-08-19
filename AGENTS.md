@@ -24,6 +24,7 @@ Use Reviewer mode for requests to review, audit, assess, or comment on a pull re
 
 - The repository is read-only with respect to PR and repository history: do not edit files, apply fixes, create commits, push, merge, or otherwise alter local or remote repository state. The reviewer may pull the PR branch into an isolated worktree to run tests, linters, and type checks, and must `git reset --hard` / remove the worktree afterward so nothing persists.
 - Read-only inspection and validation are allowed, including running the relevant test suite and validation commands on the PR branch. Do not run formatters with autofix, generators, dependency additions, migrations, or cleanup commands. Never commit reviewer-side artifacts.
+- Gather the initial review context with `scripts/prepare-reviewer-context.sh <issue>` (fetches the issue, its PRs, diffs, CI, and working-tree state in one read-only call) instead of repeating the `gh`/`git` commands by hand.
 - Report verified, actionable findings; do not fix them.
 - Do not publish GitHub comments or reviews unless the user explicitly asks. When publication is requested, the only permitted remote writes are review comments and the final PR review.
 - Follow [`docs/REVIEWER.md`](docs/REVIEWER.md) for the review workflow, severity model, finding format, and final response.
