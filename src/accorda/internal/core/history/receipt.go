@@ -5,11 +5,16 @@ import (
 	"time"
 )
 
-// Receipt is the immutable record of a successful deployment
-// (docs/ACCORDA.md §7). It captures the deployment identifier, the Git
+// Receipt is the immutable record of a deployment
+// (docs/ACCORDA.md §7, §11). It captures the deployment identifier, the Git
 // repository and commit that were deployed, the environment, the start and
-// completion timestamps, and the per-service image reference and resolved
-// manifest digest.
+// completion timestamps, the deployment outcome, the services that changed,
+// and the per-service image reference and resolved manifest digest.
+//
+// A receipt records both successful and failed deployments so the deployment
+// history (the `accorda history` surface, docs/ACCORDA.md §11) can show the
+// RESULT of every cycle: a receipt for a failed deployment carries
+// Result == OutcomeFailed and no digest data (the deployment never converged).
 //
 // The digest is the point of the receipt: Git may declare a mutable tag
 // (e.g. "ghcr.io/acme/api:latest"), but Accorda records the immutable digest
@@ -30,12 +35,35 @@ type Receipt struct {
 	Commit string `json:"commit"`
 	// StartedAt is when the deployment began.
 	StartedAt time.Time `json:"started_at"`
-	// CompletedAt is when the deployment completed successfully.
+	// CompletedAt is when the deployment finished (successfully or not).
 	CompletedAt time.Time `json:"completed_at"`
+	// Result is the deployment outcome (docs/ACCORDA.md §11), either
+	// OutcomeHealthy or OutcomeFailed.
+	Result Outcome `json:"result"`
+	// Changes lists the service names the deployment changed, in sorted
+	// order. It records the services the plan intended to change, so it is
+	// populated even for a failed deployment (docs/ACCORDA.md §11 shows the
+	// affected services on a failed row). It is empty only when the plan is
+	// a no-op.
+	Changes []string `json:"changes,omitempty"`
 	// Services records, per service name, the image reference and resolved
-	// manifest digest that were deployed.
-	Services map[string]ServiceReceipt `json:"services"`
+	// manifest digest that were deployed. It is nil for a failed deployment.
+	Services map[string]ServiceReceipt `json:"services,omitempty"`
 }
+
+// Outcome is the result of a deployment cycle as recorded in the deployment
+// history (docs/ACCORDA.md §11: "✓ healthy" / "✗ failed").
+type Outcome string
+
+const (
+	// OutcomeHealthy marks a deployment that converged and is healthy.
+	OutcomeHealthy Outcome = "healthy"
+	// OutcomeFailed marks a deployment that failed during apply or health
+	// verification. Failures earlier in the lifecycle (fetch, validate,
+	// plan) return before a deployment is attempted and do not record a
+	// receipt.
+	OutcomeFailed Outcome = "failed"
+)
 
 // ServiceReceipt records the image reference and resolved manifest digest for
 // a single deployed service (docs/ACCORDA.md §7).
@@ -57,6 +85,9 @@ func (r Receipt) Clone() Receipt {
 		for k, v := range r.Services {
 			out.Services[k] = v
 		}
+	}
+	if r.Changes != nil {
+		out.Changes = append([]string(nil), r.Changes...)
 	}
 	return out
 }

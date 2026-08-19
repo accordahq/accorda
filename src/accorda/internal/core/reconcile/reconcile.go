@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"accorda/internal/core/events"
@@ -259,6 +260,7 @@ func (r *Reconciler) deploy(ctx context.Context, res *Result, desired *state.Des
 	}
 	if err := r.target.Apply(ctx, p); err != nil {
 		r.fail(ctx, res, PhaseDeploying, commit.SHA, p.DeploymentID, err)
+		r.recordReceipt(ctx, desired, commit, nil, p, history.OutcomeFailed)
 		r.rollback(ctx, res, desired)
 		return false
 	}
@@ -274,6 +276,7 @@ func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.Des
 	if err != nil {
 		if !errors.Is(err, targets.ErrNotImplemented) {
 			r.fail(ctx, res, PhaseVerifying, commit.SHA, p.DeploymentID, err)
+			r.recordReceipt(ctx, desired, commit, nil, p, history.OutcomeFailed)
 			r.rollback(ctx, res, desired)
 			return nil, false
 		}
@@ -304,6 +307,7 @@ func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.Des
 	if h.Overall == health.StatusUnhealthy {
 		r.fail(ctx, res, PhaseVerifying, commit.SHA, p.DeploymentID,
 			fmt.Errorf("reconcile: health check failed: %s", h.Overall))
+		r.recordReceipt(ctx, desired, commit, nil, p, history.OutcomeFailed)
 		r.rollback(ctx, res, desired)
 		return nil, false
 	}
@@ -351,40 +355,68 @@ func (r *Reconciler) sync(ctx context.Context, res *Result, desired *state.Desir
 	// misleading. Gate it on the plan changing the target.
 	if p.Changed() {
 		r.emit(ctx, events.EventDeploymentSucceeded, nil)
-		r.recordReceipt(ctx, desired, commit, runtime, p.DeploymentID)
+		r.recordReceipt(ctx, desired, commit, runtime, p, history.OutcomeHealthy)
 	}
 	return res
 }
 
-// recordReceipt writes a deployment receipt for a successful deployment
-// (docs/ACCORDA.md §7). It is called only when the plan actually changed the
-// target, so a no-op cycle does not produce a receipt. The receipt records
-// the deployment identifier, repository, environment, commit, start and
-// completion timestamps, and the per-service image reference and resolved
-// manifest digest read back from the runtime.
+// recordReceipt writes a deployment receipt for a deployment
+// (docs/ACCORDA.md §7, §11). A healthy receipt is recorded only when the plan
+// actually changed the target, so a no-op cycle does not produce one; a failed
+// receipt is always recorded, because the deploy phase was attempted and
+// failed (a no-op plan never reaches a failure path). For a healthy deployment
+// the receipt carries OutcomeHealthy, the changed service names, and the
+// per-service image reference and resolved manifest digest read back from the
+// runtime. For a failed deployment it carries OutcomeFailed and no digest data,
+// so the history reflects the cycle that did not converge (docs/ACCORDA.md §11).
 //
 // Recording is best-effort: a store failure is not a deployment failure, so
-// the cycle still reports SYNCED. The receipt is built from the runtime state
-// (which carries the resolved digests) rather than the desired state, so the
-// recorded digest reflects what is actually running.
-func (r *Reconciler) recordReceipt(ctx context.Context, desired *state.DesiredState, commit sources.Commit, runtime *state.RuntimeState, deploymentID string) {
-	if r.receipts == nil {
+// the cycle still reports its real outcome. The receipt is built from the
+// runtime state (which carries the resolved digests) rather than the desired
+// state, so the recorded digest reflects what is actually running.
+func (r *Reconciler) recordReceipt(ctx context.Context, desired *state.DesiredState, commit sources.Commit, runtime *state.RuntimeState, p *plan.Plan, result history.Outcome) {
+	if r.receipts == nil || (result == history.OutcomeHealthy && !p.Changed()) {
 		return
 	}
-	services := make(map[string]history.ServiceReceipt, len(runtime.Services))
-	for name, svc := range runtime.Services {
-		services[name] = history.ServiceReceipt{Image: svc.Image, Digest: svc.Digest}
+	var services map[string]history.ServiceReceipt
+	if runtime != nil {
+		services = make(map[string]history.ServiceReceipt, len(runtime.Services))
+		for name, svc := range runtime.Services {
+			services[name] = history.ServiceReceipt{Image: svc.Image, Digest: svc.Digest}
+		}
 	}
 	receipt := history.Receipt{
-		DeploymentID: deploymentID,
+		DeploymentID: p.DeploymentID,
 		Repository:   desired.Repository,
 		Environment:  r.environment,
 		Commit:       commit.SHA,
 		StartedAt:    r.startedAt,
 		CompletedAt:  time.Now(),
+		Result:       result,
+		Changes:      changedServices(p),
 		Services:     services,
 	}
 	_ = r.receipts.Append(ctx, receipt)
+}
+
+// changedServices returns the sorted, unique service names the plan changes
+// (every action that is not a noop), so a receipt's Changes field is
+// deterministic regardless of action order or duplicates
+// (docs/ACCORDA.md §11, docs/DECISIONS.md #12).
+func changedServices(p *plan.Plan) []string {
+	seen := make(map[string]struct{})
+	for _, a := range p.Actions {
+		if a.Kind == plan.ActionNoop {
+			continue
+		}
+		seen[a.Service] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // handleDrift reacts to a drifted runtime according to the configured drift

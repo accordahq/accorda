@@ -710,3 +710,30 @@ Receipt recording is best-effort — a store failure is not a deployment
 failure. The `history.Store` seam leaves room for a future durable/durable
 bus or SQL backend without changing core. A follow-up will surface receipts
 via `accorda history` (issue #28) and rollback recording (§20).
+
+### 27. Deployment history records result and changes for healthy and failed cycles
+
+**Context.** Issue #19 (§11) requires a local append-only journal of
+deployments carrying `commit`, `result`, and `changes` — the `accorda history`
+table shows a `RESULT` column (`✓ healthy` / `✗ failed`) and a `CHANGES`
+column (the affected services). The receipt journal introduced in ADR #26
+records only successful, SYNCED deployments and carries neither a result nor
+a changed-services list, so the history could not show failed cycles or which
+services each deployment touched.
+
+**Decision.** Extend `history.Receipt` with two fields: `Result` (`Outcome`
+= `healthy` or `failed`, docs/ACCORDA.md §11) and `Changes` (the sorted,
+unique service names the deployment changed, from the plan's non-noop
+actions, deterministic per docs/DECISIONS.md #12). The reconcile loop records
+an `OutcomeHealthy` receipt at the end of a changed, SYNCED deployment
+(carrying the runtime digests) and an `OutcomeFailed` receipt on a deploy or
+health-verification failure (carrying no services, since the deployment never
+converged). Recording remains best-effort and preserves the ADR #26 gate for
+healthy receipts (a no-op cycle records nothing); a failed receipt is always
+recorded, because a no-op plan never reaches a failure path.
+
+**Consequence.** The deployment history now reflects both healthy and failed
+cycles with their changed services, matching the §11 table. Failed receipts
+omit digest data because the runtime was never read. A store failure still
+never changes the reported cycle outcome. `accorda history` (issue #28) can
+now render the §11 columns directly from the journal.

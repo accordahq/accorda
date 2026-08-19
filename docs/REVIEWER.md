@@ -19,11 +19,27 @@ Do not modify repository files, the index, commits, local Git configuration,
 or pull request metadata. Do not run formatters with autofix, generators,
 dependency additions, migrations, or cleanup commands.
 
-The reviewer may pull the PR branch into an isolated worktree (or a clean
-working tree with the user's consent) and run read-only validation against it:
-the relevant Go test suite, formatting check, build validation, and any repo-
-approved tooling required for the change. These commands may create transient
-artifacts such as local caches; never commit them.
+The reviewer trusts the PR's CI checks as the authoritative validation
+evidence. When the relevant GitHub Actions runs are green on the current head
+commit, the reviewer does not re-run the test suite, linters, formatters, or
+builds locally — CI already executes the same checks, so a local re-run adds
+no evidence and only risks stale-state or leftover artifacts. Prefer
+`gh pr checks`/`gh run view` over local re-runs: CI runs against the exact head
+commit, needs no reviewer-side setup, and leaves no artifacts. Local
+validation is used only when CI provides no evidence for the change: there is
+no workflow for it, the relevant run is stale (predates the current head
+commit) or incomplete for the change, or CI is otherwise unavailable.
+The reviewer never modifies repository files, the index, commits, or local Git
+configuration, and never runs formatters with autofix, generators, dependency
+additions, migrations, or cleanup commands.
+
+When local validation is genuinely necessary (CI provides no evidence for the
+change, as described above), the reviewer may pull the PR branch into an
+isolated worktree (or a clean working tree with the user's consent) and run
+read-only validation against it: the relevant Go test suite, formatting check,
+build validation, and any repo-approved tooling required for the change. These
+commands may create transient artifacts such as local caches; never commit
+them.
 
 When the review is finished, undo everything the reviewer did locally: run
 `git reset --hard` and `git clean -fd` on the review worktree (or remove the
@@ -193,7 +209,10 @@ safeguards before claiming that a contract is broken.
 
 ### 3. Inspect available validation
 
-Inspect the PR's CI state and investigate relevant failures when accessible:
+Treat the PR's CI state as the authoritative validation evidence. When the
+relevant GitHub Actions runs are green on the current head commit, the
+reviewer does not run the test suite, linters, or builds locally. Inspect the
+CI state and investigate relevant failures when accessible:
 
 ```bash
 gh pr checks <PR>
@@ -202,14 +221,17 @@ gh run view <RUN_ID>
 gh run view <RUN_ID> --log-failed
 ```
 
-When CI is unavailable or insufficient, pull the PR branch into an isolated
-worktree and run the relevant local checks against it — the test suite,
-linters, and type checks listed in the Reviewer boundary. Never claim a test,
-check, or scanner passed unless its result was observed: record the exact
-command, the branch and commit it ran on, and the exit code or output excerpt.
-State what could not be inspected, including inaccessible external analysis
-such as Sonar or deployment previews. When done, reset the review worktree as
-described in the Reviewer boundary.
+Claim a CI check passed only when its run was actually observed (conclusion,
+run ID, and head commit). If a relevant check is missing from CI (the repo has
+no CI, the workflow does not cover the change, or the run is stale and does not
+reflect the current head commit), fall back to local validation: pull the PR
+branch into an isolated worktree and run the relevant local checks against it —
+the test suite, linters, and type checks listed in the Reviewer boundary.
+Never claim a test, check, or scanner passed unless its result was observed:
+record the exact command, the branch and commit it ran on, and the exit code or
+output excerpt. State what could not be inspected, including inaccessible
+external analysis such as Sonar or deployment previews. When done, reset the
+review worktree as described in the Reviewer boundary.
 
 ### 4. Verify candidate findings
 

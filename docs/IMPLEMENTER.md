@@ -82,6 +82,13 @@ the change's scope and risk. Typical evidence includes:
 - build or packaging validation;
 - manual inspection of generated or user-facing output.
 
+Before publishing a pull request, run **both** the unit test suite and the
+integration/E2E suite (`go test ./...` and `go test -tags integration ...`), not
+just one of them, so behavior changes are verified against a real Git
+repository, Docker daemon, and Docker Compose when available. Re-run with
+`-count=1` when the result is cached so a claimed pass reflects the current
+working tree.
+
 Do not claim a check passed unless its result was observed. If a relevant check
 cannot run because of environment, dependency, credential, or infrastructure
 limitations, report what was attempted and what remains unverified.
@@ -98,7 +105,8 @@ Before committing or requesting permission to publish:
 3. Check for accidental secrets, debug output, generated artifacts, and stale
    documentation.
 4. Revisit important callers, interfaces, and failure paths.
-5. Run `git diff --check` and the relevant validation.
+5. Run `git diff --check`, the unit suite, and the integration suite (see step
+   5) so the published PR has been validated on both.
 6. Confirm the worktree contains only understood changes.
 
 Create focused commits with clear messages on the implementation branch.

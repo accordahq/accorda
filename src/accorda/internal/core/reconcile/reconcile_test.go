@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -667,6 +668,12 @@ func TestReconcile_RecordsReceiptOnChangedDeployment(t *testing.T) {
 	if rc.CompletedAt.Before(rc.StartedAt) {
 		t.Errorf("receipt completed_at %v before started_at %v", rc.CompletedAt, rc.StartedAt)
 	}
+	if rc.Result != history.OutcomeHealthy {
+		t.Errorf("receipt result = %q, want %q", rc.Result, history.OutcomeHealthy)
+	}
+	if want := []string{"api"}; !reflect.DeepEqual(rc.Changes, want) {
+		t.Errorf("receipt changes = %v, want %v", rc.Changes, want)
+	}
 	svc, ok := rc.Services["api"]
 	if !ok {
 		t.Fatalf("receipt services missing api: %+v", rc.Services)
@@ -749,6 +756,101 @@ func TestReconcile_StoreError_StillSynced(t *testing.T) {
 	}
 	if store.appendCalls != 1 {
 		t.Errorf("store append calls = %d, want 1 (recordReceipt must consult the store)", store.appendCalls)
+	}
+}
+
+func TestReconcile_ApplyFailure_RecordsFailedReceipt(t *testing.T) {
+	// A deployment that fails during apply must be recorded as OutcomeFailed
+	// in the history, even when no runtime digest is available (docs/ACCORDA.md
+	// §11: a failed cycle is part of the deployment history).
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{applyErr: errors.New("apply boom")}
+	store := &fakeStore{}
+	r := New(src, tgt, events.NewBus()).
+		WithEnvironment("production").
+		WithReceiptStore(store)
+
+	res := r.Reconcile(context.Background())
+	if res.Phase != PhaseFailed {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
+	}
+	if len(store.appended) != 1 {
+		t.Fatalf("appended receipts = %d, want 1", len(store.appended))
+	}
+	rc := store.appended[0]
+	if rc.Result != history.OutcomeFailed {
+		t.Errorf("receipt result = %q, want %q", rc.Result, history.OutcomeFailed)
+	}
+	if rc.Repository != "acme/infra" {
+		t.Errorf("receipt repository = %q, want acme/infra", rc.Repository)
+	}
+	if rc.Environment != "production" {
+		t.Errorf("receipt environment = %q, want production", rc.Environment)
+	}
+	if rc.Commit != "abc123" {
+		t.Errorf("receipt commit = %q, want abc123", rc.Commit)
+	}
+	if rc.StartedAt.IsZero() || rc.CompletedAt.IsZero() {
+		t.Error("receipt timestamps must be set")
+	}
+	if len(rc.Services) != 0 {
+		t.Errorf("failed receipt services = %v, want empty (never converged)", rc.Services)
+	}
+}
+
+func TestReconcile_HealthFailure_RecordsFailedReceipt(t *testing.T) {
+	// A deployment that fails health verification is recorded as OutcomeFailed,
+	// since the cycle did not converge (docs/ACCORDA.md §11).
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	unhealthy := health.New(time.Unix(0, 0))
+	unhealthy.SetService("api", health.StatusUnhealthy, "exit 1")
+	unhealthy.Summarize()
+	tgt := &fakeTarget{health: &unhealthy, changedPlan: true}
+	store := &fakeStore{}
+	r := New(src, tgt, events.NewBus()).
+		WithEnvironment("production").
+		WithReceiptStore(store)
+
+	res := r.Reconcile(context.Background())
+	if res.Phase != PhaseFailed {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
+	}
+	if len(store.appended) != 1 {
+		t.Fatalf("appended receipts = %d, want 1", len(store.appended))
+	}
+	if rc := store.appended[0]; rc.Result != history.OutcomeFailed {
+		t.Errorf("receipt result = %q, want %q", rc.Result, history.OutcomeFailed)
+	}
+}
+
+func TestChangedServices_SortedAndDeduped(t *testing.T) {
+	// changedServices returns the sorted, unique changed service names
+	// regardless of action order or duplicates (docs/DECISIONS.md #12). The
+	// raw order must be asserted (not re-sorted after the fact) so a
+	// non-deterministic helper fails the test.
+	p := plan.New("dep_1", "acme/infra", "abc123", time.Unix(0, 0)).
+		AddAction(plan.Action{Kind: plan.ActionRecreate, Service: "worker"}).
+		AddAction(plan.Action{Kind: plan.ActionNoop, Service: "redis"}).
+		AddAction(plan.Action{Kind: plan.ActionPull, Service: "api"}).
+		AddAction(plan.Action{Kind: plan.ActionRecreate, Service: "api"})
+	want := []string{"api", "worker"}
+	if got := changedServices(p); !reflect.DeepEqual(got, want) {
+		t.Errorf("changedServices = %v, want %v", got, want)
+	}
+}
+
+func TestChangedServices_Empty(t *testing.T) {
+	// A no-op plan has no changed services.
+	p := plan.New("dep_1", "acme/infra", "abc123", time.Unix(0, 0)).
+		AddAction(plan.Action{Kind: plan.ActionNoop, Service: "api"})
+	if got := changedServices(p); len(got) != 0 {
+		t.Errorf("changedServices(noop) = %v, want empty", got)
 	}
 }
 
