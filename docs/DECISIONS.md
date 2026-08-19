@@ -664,12 +664,49 @@ Docker plugins / authorization plugins are unaffected.
 because no fixed `github.com/docker/docker` release exists (the fixes landed
 only in the restructured `github.com/moby/moby/v2` module, ≥ v2.0.0-beta.8).
 Accorda uses the SDK only as a client (Ping, ContainerList, ContainerInspect,
-ImageList) and never installs plugins or drives the daemon's plugin/AuthZ
-flow, so the reported attack surface is not reachable from Accorda's usage.
-Migrating the dependency to `moby/moby/v2` is tracked as future work rather
-than a current change.
+ImageList, ImageInspect) and never installs plugins or drives the daemon's
+plugin/AuthZ flow, so the reported attack surface is not reachable from
+Accorda's usage. Migrating the dependency to `moby/moby/v2` is tracked as
+future work rather than a current change.
 
 **Consequence.** The `dockerClient` seam (docs/DECISIONS.md #15) stays on
 `github.com/docker/docker`; the advisories are documented as accepted,
 unreachable risk. A dependency migration to `github.com/moby/moby/v2` would be
 the way to clear them and should be revisited when that module stabilizes.
+
+### 26. Deployment receipts are recorded in an append-only JSON-lines journal
+
+**Context.** Issue #18 (§7) requires every successful deployment to create a
+deployment receipt recording the deployment ID, repository, environment,
+commit, start/completion timestamps, and per-service image reference and
+resolved manifest digest. The spec's storage mechanism is underspecified; it
+consistently describes a "local journal" (§21), "local history" (§42), and
+the agent owning the "local filesystem" (§28), with the agent remaining
+functional without Accorda Cloud (§4). The runtime state already carries each
+running service's image reference (docs/DECISIONS.md #24); it does not yet
+carry the resolved digest.
+
+**Decision.** Add a `Digest` field to `state.RuntimeService`, populated by
+the Compose target's `Current` via a new `ImageInspect` method on the
+`dockerClient` seam (reading the image's `RepoDigests[0]`, best-effort —
+unresolvable images keep an empty digest). Record receipts through a new
+`history.Store` interface, whose default `history.FileStore` writes an
+append-only JSON-lines journal (one receipt per line, flushed on append) on
+the local filesystem, adding no dependency beyond the standard library
+(docs/DECISIONS.md #1). Receipts are written by the reconcile loop at the end
+of a changed, SYNCED deployment (`recordReceipt`), gated on the plan actually
+changing the target so a no-op cycle produces no receipt. The loop assigns
+the deployment ID (`dep_<hex>`, docs/ACCORDA.md §7) when the target's plan
+leaves it empty. The `sync` command wires the store and environment, storing
+receipts under `$XDG_STATE_HOME/accorda/receipts/<project>.jsonl` (falling
+back to `~/.local/state`), keyed by project directory.
+
+**Consequence.** Accorda can now answer "exactly which commit and image
+digest was running on target X at time Y?" (docs/ACCORDA.md §7). The JSON-lines
+journal is crash-safe (append + fsync) and preserves the audit-trail property
+that a receipt is never mutated once written. The `dockerClient` seam grows
+`ImageInspect` (still a subset of the Docker SDK, confined to the adapter).
+Receipt recording is best-effort — a store failure is not a deployment
+failure. The `history.Store` seam leaves room for a future durable/durable
+bus or SQL backend without changing core. A follow-up will surface receipts
+via `accorda history` (issue #28) and rollback recording (§20).
