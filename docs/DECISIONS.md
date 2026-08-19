@@ -193,18 +193,26 @@ or `{provider: sops}` via a custom `UnmarshalYAML`.
 **Consequence.** The loader is strict and user-friendly; new config fields
 require an explicit validator update.
 
-### 11. Current state: `accorda init` writes `accorda.env`, not `accorda.yaml`
+### 11. `accorda init` writes the unified `accorda.yaml` format
 
-**Context.** The CLI `init` command predates the full `accorda.yaml` loader.
+**Context.** The CLI `init` command originally wrote a minimal `accorda.env`
+dotenv file while `accorda sync` read the canonical `accorda.yaml`
+(docs/ACCORDA.md §25), so the primary onboarding path was broken (issue #68).
 
-**Decision.** `cmd/accorda` `init` writes a minimal `accorda.env` dotenv file
-(const `projectFile = "accorda.env"`). The `accorda.yaml` loader
-(`internal/config`) is the canonical project format for the loader path.
-This divergence is a current-state decision, not a final design.
+**Decision.** `cmd/accorda` `init` now writes `accorda.yaml`
+(const `config.File`) using `config.MarshalProject`, the inverse of
+`config.Parse`. The written file carries the schema version, environment,
+git source, and Compose target, with optional sections omitted via yaml
+`omitempty` so the output is minimal and round-trips through the strict
+loader. `init` applies `config.ApplyDefaults` and `config.Validate` before
+marshaling so the file is immediately consumable by `accorda sync`. The
+dotenv format is no longer produced; `.gitignore` ignores `accorda.yaml`
+instead of `accorda.env`.
 
-**Consequence.** A future task should reconcile `init` to write
-`accorda.yaml`; until then, both paths coexist and the divergence is
-documented here and in the README.
+**Consequence.** `init` and `sync` share the unified project format
+(docs/ACCORDA.md §25), and the README Quick Start works end-to-end. The
+`config` package exports `MarshalProject` and `ApplyDefaults` so the CLI can
+produce a valid project file without re-implementing defaults or encoding.
 
 ### 12. Deterministic comparison and plan output
 
@@ -617,9 +625,8 @@ from the CLI, and the previously test-only seams (`WithDriftPolicy`,
 `WithPullPolicy`, `WithHealthTimeout`) are exercised by a production caller.
 The `sync` command performs a single pass, not the §11 loop; the loop and
 deployment-history persistence remain future work (issue #14's follow-up).
-The `init` command still writes `accorda.env` (docs/DECISIONS.md #11), so a
-user must author `accorda.yaml` by hand (or via a future `init` update) for
-`sync` to run.
+`init` now writes `accorda.yaml` (docs/DECISIONS.md #11, issue #68), so the
+Quick Start produces a project file `sync` can load directly.
 
 ### 24. Integration tests run in CI and surfaced real bugs
 

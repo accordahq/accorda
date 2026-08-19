@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"accorda/internal/config"
 )
 
 func TestRun_NoArgs(t *testing.T) {
@@ -78,15 +80,19 @@ func TestRun_Init_CreatesProjectFile(t *testing.T) {
 		t.Fatalf("run(init) error = %v", e)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, projectFile))
+	got, err := os.ReadFile(filepath.Join(dir, config.File))
 	if err != nil {
 		t.Fatalf("read project file: %v", err)
 	}
 	s := string(got)
 	for _, want := range []string{
-		"ACCORDA_ENV=production",
-		"ACCORDA_REPO=git@github.com:acme/backend.git",
-		"ACCORDA_BRANCH=main",
+		"version: 1",
+		"environment: production",
+		"type: git",
+		"url: git@github.com:acme/backend.git",
+		"branch: main",
+		"type: compose",
+		"file: compose.yaml",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("project file missing %q; got %s", want, s)
@@ -95,27 +101,50 @@ func TestRun_Init_CreatesProjectFile(t *testing.T) {
 	if !strings.Contains(out.String(), "Initialized Accorda project") {
 		t.Fatalf("expected init success message, got %q", out.String())
 	}
+
+	// The file must be consumable by config.Load so `accorda sync` works
+	// (issue #68): init and sync share the unified project format.
+	proj, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("config.Load after init: %v", err)
+	}
+	if proj.Environment != "production" || proj.Source.URL != "git@github.com:acme/backend.git" {
+		t.Fatalf("loaded project = %+v, want production/git@github.com:acme/backend.git", proj)
+	}
 }
 
 func TestRun_Init_Defaults(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
-	if e := run([]string{"init", "--dir", dir}, &out, nil); e != nil {
+	// --repo is required (source.url), so supply one; env and file default.
+	if e := run([]string{"init", "--dir", dir, "--repo", "git@github.com:acme/backend.git"}, &out, nil); e != nil {
 		t.Fatalf("run(init) error = %v", e)
 	}
-	got, err := os.ReadFile(filepath.Join(dir, projectFile))
+	got, err := os.ReadFile(filepath.Join(dir, config.File))
 	if err != nil {
 		t.Fatalf("read project file: %v", err)
 	}
 	s := string(got)
-	if !strings.Contains(s, "ACCORDA_ENV=default") {
+	if !strings.Contains(s, "environment: default") {
 		t.Fatalf("expected default env, got %s", s)
 	}
-	if strings.Contains(s, "ACCORDA_REPO") {
-		t.Fatalf("repo should be omitted by default, got %s", s)
-	}
-	if !strings.Contains(s, "ACCORDA_BRANCH=main") {
+	if !strings.Contains(s, "branch: main") {
 		t.Fatalf("expected default branch, got %s", s)
+	}
+	if !strings.Contains(s, "file: compose.yaml") {
+		t.Fatalf("expected default compose file, got %s", s)
+	}
+}
+
+func TestRun_Init_MissingRepo(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	e := run([]string{"init", "--dir", dir}, &out, nil)
+	if e == nil {
+		t.Fatal("expected error for missing --repo, got nil")
+	}
+	if !strings.Contains(e.Error(), "source.url is required") {
+		t.Fatalf("unexpected error %v", e)
 	}
 }
 

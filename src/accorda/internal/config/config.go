@@ -55,12 +55,12 @@ type Project struct {
 	Environment   string        `yaml:"environment"`
 	Source        Source        `yaml:"source"`
 	Target        Target        `yaml:"target"`
-	Sync          Sync          `yaml:"sync"`
-	Images        Images        `yaml:"images"`
-	Reconcile     Reconcile     `yaml:"reconcile"`
-	Health        Health        `yaml:"health"`
-	Secrets       Secrets       `yaml:"secrets"`
-	Notifications Notifications `yaml:"notifications"`
+	Sync          Sync          `yaml:"sync,omitempty"`
+	Images        Images        `yaml:"images,omitempty"`
+	Reconcile     Reconcile     `yaml:"reconcile,omitempty"`
+	Health        Health        `yaml:"health,omitempty"`
+	Secrets       Secrets       `yaml:"secrets,omitempty"`
+	Notifications Notifications `yaml:"notifications,omitempty"`
 }
 
 // Source describes the Git source to reconcile from (docs/ACCORDA.md §13).
@@ -68,8 +68,8 @@ type Source struct {
 	Type   string `yaml:"type"`
 	URL    string `yaml:"url"`
 	Branch string `yaml:"branch"`
-	Path   string `yaml:"path"`
-	Auth   Auth   `yaml:"auth"`
+	Path   string `yaml:"path,omitempty"`
+	Auth   Auth   `yaml:"auth,omitempty"`
 }
 
 // Auth describes how the Git source authenticates to its remote
@@ -108,30 +108,30 @@ type Auth struct {
 // require a Path.
 type Target struct {
 	Type string `yaml:"type"`
-	Path string `yaml:"path"`
-	File string `yaml:"file"`
+	Path string `yaml:"path,omitempty"`
+	File string `yaml:"file,omitempty"`
 }
 
 // Sync controls the reconciliation cadence (docs/ACCORDA.md §45, §47).
 type Sync struct {
-	Interval time.Duration `yaml:"interval"`
+	Interval time.Duration `yaml:"interval,omitempty"`
 }
 
 // Images controls the image pull policy (docs/ACCORDA.md §9).
 type Images struct {
-	Pull string `yaml:"pull"`
+	Pull string `yaml:"pull,omitempty"`
 }
 
 // Reconcile controls drift handling and orphan removal
 // (docs/ACCORDA.md §5, §47).
 type Reconcile struct {
-	Drift         string `yaml:"drift"`
-	RemoveOrphans *bool  `yaml:"remove_orphans"`
+	Drift         string `yaml:"drift,omitempty"`
+	RemoveOrphans *bool  `yaml:"remove_orphans,omitempty"`
 }
 
 // Health controls health verification (docs/ACCORDA.md §19).
 type Health struct {
-	Timeout time.Duration `yaml:"timeout"`
+	Timeout time.Duration `yaml:"timeout,omitempty"`
 }
 
 // Secrets holds secret references. The spec shows two shapes for this field
@@ -191,11 +191,11 @@ func (s *Secrets) UnmarshalYAML(value *yaml.Node) error {
 
 // Notifications enables notification channels (docs/ACCORDA.md §21, §39).
 type Notifications struct {
-	GitHub  bool `yaml:"github"`
-	Webhook bool `yaml:"webhook"`
-	Slack   bool `yaml:"slack"`
-	Discord bool `yaml:"discord"`
-	Ntfy    bool `yaml:"ntfy"`
+	GitHub  bool `yaml:"github,omitempty"`
+	Webhook bool `yaml:"webhook,omitempty"`
+	Slack   bool `yaml:"slack,omitempty"`
+	Discord bool `yaml:"discord,omitempty"`
+	Ntfy    bool `yaml:"ntfy,omitempty"`
 }
 
 // Load reads the Accorda project file from dir and returns the validated
@@ -224,6 +224,27 @@ func Parse(data []byte) (*Project, error) {
 	return &p, nil
 }
 
+// MarshalProject encodes a Project as the canonical accorda.yaml document
+// (docs/ACCORDA.md §25). It is the inverse of Parse: a Project produced by
+// Parse round-trips through MarshalProject back to an equivalent document.
+// Optional sections that are at their zero value are omitted so the output
+// is minimal and matches what a user would author by hand.
+//
+// MarshalProject does not validate p; callers that need a valid document
+// (for example `accorda init`) should construct a Project the loader would
+// accept. The marshaled document uses the same yaml tags as Parse, so the
+// strict loader round-trips it.
+func MarshalProject(p *Project) ([]byte, error) {
+	if p == nil {
+		return nil, errors.New("config: project is nil")
+	}
+	out, err := yaml.Marshal(p)
+	if err != nil {
+		return nil, fmt.Errorf("config: marshal %q: %w", File, err)
+	}
+	return out, nil
+}
+
 // applyDefaults fills in values that the spec considers optional but which
 // have a defined default behavior. Defaults are only applied when the field
 // is at its zero value, so an explicit zero (for example `interval: 0s`) is
@@ -247,6 +268,15 @@ func applyDefaults(p *Project) {
 	if p.Sync.Interval == 0 {
 		p.Sync.Interval = 30 * time.Second
 	}
+}
+
+// ApplyDefaults fills in optional fields with their defined default values.
+// It is exported so callers that construct a Project directly (for example
+// `accorda init`) can produce a project the loader would accept before
+// validating and marshaling it. It is the same logic Parse runs after
+// decoding.
+func ApplyDefaults(p *Project) {
+	applyDefaults(p)
 }
 
 // Validate reports the first concrete configuration error, with a field-oriented

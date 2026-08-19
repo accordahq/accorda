@@ -8,4 +8,4 @@
 - [ ] https://github.com/accordahq/accorda/issues/28
 - [ ] https://github.com/accordahq/accorda/issues/29
 - [x] https://github.com/accordahq/accorda/issues/52
-- [ ] https://github.com/accordahq/accorda/issues/68
+- [x] https://github.com/accordahq/accorda/issues/68

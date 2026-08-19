@@ -31,9 +31,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"strings"
 
 	"github.com/spf13/cobra"
+
+	"accorda/internal/config"
 )
 
 var errUsage = errors.New("usage: accorda <command> [flags]")
@@ -161,26 +162,33 @@ func vcsVersion() string {
 
 // --- init -----------------------------------------------------------------
 
-const projectFile = "accorda.env"
+// initComposeFile is the default Compose file path written into the project
+// file when the user does not override it. It matches the §8 example and
+// the default the Compose target resolves against the working directory.
+const initComposeFile = "compose.yaml"
 
 func newInitCmd() *cobra.Command {
 	var (
-		dir    string
-		env    string
-		repo   string
-		branch string
+		dir      string
+		env      string
+		repo     string
+		branch   string
+		file     string
+		authType string
+		authKey  string
 	)
 	c := &cobra.Command{
 		Use:   "init",
 		Short: "Create an Accorda project/target",
-		Long: "Create a minimal Accorda project file in the target directory.\n" +
-			"The file records the environment name and the Git source to\n" +
-			"reconcile from, matching the §11 `accorda init` purpose.",
+		Long: "Create an Accorda project file (accorda.yaml) in the target\n" +
+			"directory. The file records the environment name, the Git source\n" +
+			"to reconcile from, and the Compose target, matching the §11\n" +
+			"`accorda init` purpose and the unified project format in §25.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := initProject(dir, env, repo, branch); err != nil {
+			if err := initProject(dir, env, repo, branch, file, authType, authKey); err != nil {
 				return fmt.Errorf("init: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Initialized Accorda project in %s\n", filepath.Join(dir, projectFile))
+			fmt.Fprintf(cmd.OutOrStdout(), "Initialized Accorda project in %s\n", filepath.Join(dir, config.File))
 			return nil
 		},
 	}
@@ -188,23 +196,61 @@ func newInitCmd() *cobra.Command {
 	c.Flags().StringVar(&env, "env", "default", "environment name")
 	c.Flags().StringVar(&repo, "repo", "", "Git source repository URL")
 	c.Flags().StringVar(&branch, "branch", "main", "Git branch to reconcile")
+	c.Flags().StringVar(&file, "file", initComposeFile, "Compose target file path")
+	c.Flags().StringVar(&authType, "auth-type", "", "Git auth type: ssh or https (default: ambient)")
+	c.Flags().StringVar(&authKey, "auth-key", "", "SSH private key path (for --auth-type=ssh)")
 	return c
 }
 
-// initProject writes a minimal Accorda project file. The format is dotenv so
-// it is trivially consumable by later phases without a parser dependency.
-func initProject(dir, env, repo, branch string) error {
+// initProject writes a minimal Accorda project file in the canonical
+// accorda.yaml format (docs/ACCORDA.md §25) so that `accorda sync` can load
+// it. The file is the unified project format consumed by the config loader
+// (internal/config), aligning `init` with the rest of the CLI
+// (docs/DECISIONS.md #11).
+func initProject(dir, env, repo, branch, file, authType, authKey string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "# Accorda project configuration\n")
-	fmt.Fprintf(&b, "ACCORDA_ENV=%s\n", env)
-	if repo != "" {
-		fmt.Fprintf(&b, "ACCORDA_REPO=%s\n", repo)
+	proj := &config.Project{
+		Version:     config.SchemaVersion,
+		Environment: env,
+		Source: config.Source{
+			Type:   "git",
+			URL:    repo,
+			Branch: branch,
+			Auth:   initAuth(authType, authKey),
+		},
+		Target: config.Target{
+			Type: config.TargetCompose,
+			File: file,
+		},
 	}
-	fmt.Fprintf(&b, "ACCORDA_BRANCH=%s\n", branch)
-	return os.WriteFile(filepath.Join(dir, projectFile), []byte(b.String()), 0o644)
+	config.ApplyDefaults(proj)
+	if err := config.Validate(proj); err != nil {
+		return err
+	}
+	data, err := config.MarshalProject(proj)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, config.File), data, 0o644)
+}
+
+// initAuth builds the source.auth configuration from the init flags. An empty
+// authType means "use the ambient Git environment" and produces a zero Auth,
+// which the loader and the git source both accept (docs/ACCORDA.md §15).
+func initAuth(authType, authKey string) config.Auth {
+	switch authType {
+	case config.AuthSSH:
+		return config.Auth{Type: config.AuthSSH, Key: authKey}
+	case config.AuthHTTPS:
+		// The token is not supplied via a flag to avoid recording it in the
+		// project file or shell history; the user edits accorda.yaml to add
+		// source.auth.token after init.
+		return config.Auth{Type: config.AuthHTTPS}
+	default:
+		return config.Auth{}
+	}
 }
 
 // --- stub commands --------------------------------------------------------
