@@ -212,10 +212,11 @@ func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.Des
 			r.rollback(ctx, res, desired)
 			return nil, false
 		}
-		// Health verification is not yet implemented by the target
-		// (docs/ACCORDA.md §19; tracked by issue #15). Treat the deployment
-		// as healthy so the lifecycle can proceed to SYNCED; the health gate
-		// becomes active once the target implements Health.
+		// Health verification is not implemented by this target (for example
+		// the Stub, or a driver that has not yet landed its Health method).
+		// Treat the deployment as healthy so the lifecycle can proceed to
+		// SYNCED; the health gate is active for targets that implement
+		// Health (docs/ACCORDA.md §19).
 		return &health.Health{Deployed: true, Healthy: true}, true
 	}
 	if h == nil {

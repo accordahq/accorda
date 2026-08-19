@@ -238,8 +238,8 @@ func TestReconcile_HealthFailure_RollsBack(t *testing.T) {
 }
 
 func TestReconcile_HealthNotImplemented_Proceeds(t *testing.T) {
-	// When the target has not yet implemented Health (issue #15), the
-	// lifecycle treats the deployment as healthy and proceeds to SYNCED.
+	// When the target has not implemented Health (returns ErrNotImplemented),
+	// the lifecycle treats the deployment as healthy and proceeds to SYNCED.
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
