@@ -186,7 +186,12 @@ func (r *Reconciler) plan(ctx context.Context, res *Result, desired *state.Desir
 func (r *Reconciler) deploy(ctx context.Context, res *Result, desired *state.DesiredState, commit sources.Commit, p *plan.Plan) bool {
 	r.transition(ctx, PhasePlanning, PhasePulling, commit.SHA, p.DeploymentID, nil)
 	r.transition(ctx, PhasePulling, PhaseDeploying, commit.SHA, p.DeploymentID, nil)
-	r.emit(ctx, events.EventDeploymentStarted, nil)
+	// A no-op plan (only noop actions) performs no deployment work, so a
+	// "deployment started" event would be misleading to consumers. Gate the
+	// event on the plan actually changing the target (docs/DECISIONS.md #16).
+	if p.Changed() {
+		r.emit(ctx, events.EventDeploymentStarted, nil)
+	}
 	if err := r.target.Apply(ctx, p); err != nil {
 		r.fail(ctx, res, PhaseDeploying, commit.SHA, p.DeploymentID, err)
 		r.rollback(ctx, res, desired)
@@ -214,7 +219,11 @@ func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.Des
 		return &health.Health{Deployed: true, Healthy: true}, true
 	}
 	if h == nil {
-		h = &health.Health{}
+		// A nil Health with no error means the target has no health data to
+		// report (for example no healthchecks are declared). Treat it as
+		// healthy so a target without health checks is not failed and rolled
+		// back; this mirrors the ErrNotImplemented bypass above.
+		return &health.Health{Deployed: true, Healthy: true}, true
 	}
 	h.Deployed = true
 	h.Summarize()
@@ -244,14 +253,28 @@ func (r *Reconciler) sync(ctx context.Context, res *Result, desired *state.Desir
 	}
 	res.Comparison = state.Compare(desired, deployed, runtime)
 	res.Health = h
-	if res.Comparison.Result != state.ResultSynced {
+	switch res.Comparison.Result {
+	case state.ResultDrifted:
+		// Drift is an observable outcome (§5.3, §21): surface it so
+		// consumers can distinguish "healthy and synced" from "healthy but
+		// drifted". Repair is a later milestone, so only the detected event
+		// is emitted here.
+		r.emit(ctx, events.EventDriftDetected, res.Comparison)
+		res.Phase = PhaseHealthy
+		return res
+	case state.ResultOutOfSync:
 		res.Phase = PhaseHealthy
 		return res
 	}
 	h.Synced = true
 	res.Phase = PhaseSynced
 	r.transition(ctx, PhaseHealthy, PhaseSynced, commit.SHA, p.DeploymentID, nil)
-	r.emit(ctx, events.EventDeploymentSucceeded, nil)
+	// A no-op cycle (plan unchanged) still converges to SYNCED, but nothing
+	// was actually deployed, so a "deployment succeeded" event would be
+	// misleading. Gate it on the plan changing the target.
+	if p.Changed() {
+		r.emit(ctx, events.EventDeploymentSucceeded, nil)
+	}
 	return res
 }
 
@@ -288,6 +311,10 @@ func (r *Reconciler) rollback(ctx context.Context, res *Result, failed *state.De
 	}
 	res.RolledBack = true
 	r.emit(ctx, events.EventDeploymentRolledBack, nil)
+	// Note: §20 requires "Rollback events must be recorded in deployment
+	// history", and internal/core/history documents that obligation. History
+	// is not yet wired into the reconciler; when it is, this is where the
+	// rollback record must be written (tracked by issue #14's follow-up).
 }
 
 // transition emits a state-transition event on the bus.

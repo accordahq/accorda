@@ -280,3 +280,101 @@ func TestReconcile_NoBus_DoesNotPanic(t *testing.T) {
 		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseSynced)
 	}
 }
+
+func TestReconcile_NilHealth_TreatedAsHealthy(t *testing.T) {
+	// A target returning (nil, nil) from Health means "no health data"
+	// (e.g. no healthchecks declared). It must not be failed and rolled
+	// back.
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health:  nil,
+		runtime: healthyRuntime(),
+	}
+	r := New(src, tgt, events.NewBus())
+
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	}
+	if res.RolledBack {
+		t.Error("RolledBack = true, want false")
+	}
+}
+
+func TestReconcile_Drift_EmitsDriftDetected(t *testing.T) {
+	// When the runtime has drifted (desired == deployed but runtime differs),
+	// the reconciler must emit EventDriftDetected and not report SYNCED.
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	// api is stopped at runtime: drift.
+	tgt := &fakeTarget{
+		health: healthyHealth(),
+		runtime: &state.RuntimeState{
+			Services: map[string]state.RuntimeService{
+				"api": {Status: "exited", Image: "api:2"},
+			},
+		},
+	}
+	bus := events.NewBus()
+	var driftEvents int
+	bus.Subscribe(func(_ context.Context, e events.Event) {
+		if e.Type == events.EventDriftDetected {
+			driftEvents++
+		}
+	})
+
+	r := New(src, tgt, bus)
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseHealthy {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseHealthy)
+	}
+	if res.Comparison.Result != state.ResultDrifted {
+		t.Fatalf("Comparison.Result = %q, want %q", res.Comparison.Result, state.ResultDrifted)
+	}
+	if driftEvents != 1 {
+		t.Errorf("drift events = %d, want 1", driftEvents)
+	}
+}
+
+func TestReconcile_NoopPlan_NoDeploymentEvents(t *testing.T) {
+	// A no-op plan (only noop actions) must not emit deployment.started or
+	// deployment.succeeded, since nothing was deployed.
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health:  healthyHealth(),
+		runtime: healthyRuntime(),
+	}
+	bus := events.NewBus()
+	var started, succeeded int
+	bus.Subscribe(func(_ context.Context, e events.Event) {
+		switch e.Type {
+		case events.EventDeploymentStarted:
+			started++
+		case events.EventDeploymentSucceeded:
+			succeeded++
+		}
+	})
+
+	r := New(src, tgt, bus)
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseSynced)
+	}
+	if started != 0 {
+		t.Errorf("deployment.started events = %d, want 0", started)
+	}
+	if succeeded != 0 {
+		t.Errorf("deployment.succeeded events = %d, want 0", succeeded)
+	}
+}
