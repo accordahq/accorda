@@ -604,11 +604,13 @@ func TestReconcile_NoopPlan_NoDeploymentEvents(t *testing.T) {
 
 // fakeStore is a controllable history.Store for tests.
 type fakeStore struct {
-	appended []history.Receipt
-	err      error
+	appended    []history.Receipt
+	err         error
+	appendCalls int
 }
 
 func (f *fakeStore) Append(_ context.Context, r history.Receipt) error {
+	f.appendCalls++
 	if f.err != nil {
 		return f.err
 	}
@@ -702,32 +704,38 @@ func TestReconcile_NoopPlan_NoReceipt(t *testing.T) {
 
 func TestReconcile_NoStore_NoReceipt(t *testing.T) {
 	// Without a configured store, a changed deployment must not panic and
-	// must not record a receipt.
+	// must not record a receipt. changedPlan is set so the store path (which
+	// is nil here) is actually reached; otherwise the test would pass without
+	// exercising recordReceipt at all.
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
 	}
 	tgt := &fakeTarget{
-		health:  healthyHealth(),
-		runtime: healthyRuntime(),
+		health:      healthyHealth(),
+		runtime:     healthyRuntime(),
+		changedPlan: true,
 	}
 	r := New(src, tgt, events.NewBus())
 	res := r.Reconcile(context.Background())
 	if res.Phase != PhaseSynced {
-		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseSynced)
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
 	}
 }
 
 func TestReconcile_StoreError_StillSynced(t *testing.T) {
 	// A store failure is not a deployment failure: the cycle still reports
-	// SYNCED (receipt recording is best-effort).
+	// SYNCED (receipt recording is best-effort). changedPlan is set so the
+	// store is actually consulted; the assertion that Append was attempted
+	// proves recordReceipt ran despite the nil store path being unreachable.
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
 	}
 	tgt := &fakeTarget{
-		health:  healthyHealth(),
-		runtime: healthyRuntime(),
+		health:      healthyHealth(),
+		runtime:     healthyRuntime(),
+		changedPlan: true,
 	}
 	store := &fakeStore{err: errors.New("store boom")}
 	r := New(src, tgt, events.NewBus()).WithReceiptStore(store)
@@ -735,6 +743,12 @@ func TestReconcile_StoreError_StillSynced(t *testing.T) {
 	res := r.Reconcile(context.Background())
 	if res.Phase != PhaseSynced {
 		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	}
+	if len(store.appended) != 0 {
+		t.Errorf("appended receipts = %d, want 0 (the store errored)", len(store.appended))
+	}
+	if store.appendCalls != 1 {
+		t.Errorf("store append calls = %d, want 1 (recordReceipt must consult the store)", store.appendCalls)
 	}
 }
 
