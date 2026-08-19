@@ -80,7 +80,8 @@ case "$mode" in
     esac
     if [[ "$verdict" != "comment" && "$(me)" == "$(author_login)" ]]; then
       echo "note: authenticated account is the PR author; GitHub rejects $flag, falling back to --comment" >&2
-      body="**Intended verdict: ${verdict^^}** (submitted as COMMENT because the authenticated account is the PR author)."$'\n\n'"$body"
+      upper=$(printf '%s' "$verdict" | tr '[:lower:]' '[:upper:]')
+      body="**Intended verdict: $upper** (submitted as COMMENT because the authenticated account is the PR author)."$'\n\n'"$body"
       flag=--comment
     fi
     tmp=$(mktemp)
