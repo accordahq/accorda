@@ -98,8 +98,12 @@ func WithPullPolicy(policy string) Option {
 }
 
 // WithHealthTimeout sets the maximum time Health waits for services to become
-// healthy (docs/ACCORDA.md §19). It defaults to defaultHealthTimeout; the
-// reconcile loop supplies it from the project's health.timeout setting.
+// healthy (docs/ACCORDA.md §19). It defaults to defaultHealthTimeout. It is
+// primarily intended for tests and for callers that construct a Target
+// directly from a config.Target without a full config.Project; the reconcile
+// loop will supply it from the project's health.timeout setting once it
+// constructs targets from a config.Project (the sync command is still a
+// stub, so no production caller wires it yet).
 func WithHealthTimeout(d time.Duration) Option {
 	return func(t *Target) { t.healthTimeout = d }
 }

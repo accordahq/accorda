@@ -274,3 +274,30 @@ func TestHealthFromRuntime_MapsServices(t *testing.T) {
 		t.Errorf("worker = %q, want %q", h.Services["worker"].Status, health.StatusUnknown)
 	}
 }
+
+func TestWithHealthTimeout_OverridesDefault(t *testing.T) {
+	// WithHealthTimeout must be honored through New so a caller can supply a
+	// non-default health.timeout (docs/ACCORDA.md §19).
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithHealthTimeout(300*time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if tgt.healthTimeout != 300*time.Second {
+		t.Errorf("healthTimeout = %v, want %v", tgt.healthTimeout, 300*time.Second)
+	}
+}
+
+func TestNew_DefaultHealthTimeout(t *testing.T) {
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path}, WithDockerClient(cli))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if tgt.healthTimeout != defaultHealthTimeout {
+		t.Errorf("healthTimeout = %v, want %v", tgt.healthTimeout, defaultHealthTimeout)
+	}
+}

@@ -305,6 +305,34 @@ func TestReconcile_NilHealth_TreatedAsHealthy(t *testing.T) {
 	}
 }
 
+func TestReconcile_UnknownHealth_Proceeds(t *testing.T) {
+	// A target whose services have no healthchecks reports Overall ==
+	// StatusUnknown. This is not a failure: DEPLOYED, HEALTHY, and SYNCED are
+	// distinct outcomes (docs/ACCORDA.md §19), so a no-healthcheck deployment
+	// must proceed to SYNCED rather than be rolled back.
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	unknown := health.New(time.Unix(0, 0))
+	unknown.SetService("api", health.StatusUnknown, "")
+	unknown.Summarize()
+	tgt := &fakeTarget{
+		health:  &unknown,
+		runtime: healthyRuntime(),
+	}
+	r := New(src, tgt, events.NewBus())
+
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	}
+	if res.RolledBack {
+		t.Error("RolledBack = true, want false")
+	}
+}
+
 func TestReconcile_Drift_EmitsDriftDetected(t *testing.T) {
 	// When the runtime has drifted (desired == deployed but runtime differs),
 	// the reconciler must emit EventDriftDetected and not report SYNCED.

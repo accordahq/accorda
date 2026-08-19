@@ -228,7 +228,15 @@ func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.Des
 	}
 	h.Deployed = true
 	h.Summarize()
-	if !h.Healthy {
+	// Only a genuinely unhealthy deployment fails verification and triggers
+	// rollback. A deployment whose services have no healthchecks reports
+	// Overall == StatusUnknown, which is not a failure: DEPLOYED, HEALTHY,
+	// and SYNCED are distinct outcomes (docs/ACCORDA.md §19), and a target
+	// without healthchecks is deployed but not health-verifiable, so it must
+	// proceed rather than be rolled back. StatusStarting is likewise not a
+	// failure; the target's Health is responsible for waiting out the
+	// starting window (and reporting unhealthy on timeout).
+	if h.Overall == health.StatusUnhealthy {
 		r.fail(ctx, res, PhaseVerifying, commit.SHA, p.DeploymentID,
 			fmt.Errorf("reconcile: health check failed: %s", h.Overall))
 		r.rollback(ctx, res, desired)
