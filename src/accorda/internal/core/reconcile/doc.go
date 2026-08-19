@@ -11,6 +11,11 @@
 // only; the actual work against a deployment target is performed through the
 // Target interface and target drivers under internal/targets.
 //
+// The Reconciler walks the lifecycle phases (DETECTED → FETCHING →
+// VALIDATING → PLANNING → PULLING → DEPLOYING → VERIFYING → HEALTHY →
+// SYNCED) and handles the failure paths to FAILED and rollback, emitting
+// state transitions and deployment events on an events.Bus.
+//
 // See docs/ACCORDA.md §6 (Reconciliation Lifecycle) and §20 (Rollback) for
 // the authoritative description.
 package reconcile
