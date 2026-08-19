@@ -223,7 +223,53 @@ func (t *Target) Current(ctx context.Context) (*state.RuntimeState, error) {
 		}
 		services[name] = rs
 	}
+	// Resolve the manifest digest for each running image so deployment
+	// receipts can record the immutable digest rather than a mutable tag
+	// (docs/ACCORDA.md §7). Resolution is best-effort: a service whose image
+	// cannot be inspected keeps an empty digest rather than failing Current.
+	resolveDigests(ctx, t.docker, services)
 	return &state.RuntimeState{Services: services}, nil
+}
+
+// resolveDigests fills in the Digest field of each runtime service by
+// inspecting the service's image on the engine and reading its manifest
+// digest (RepoDigests). It is best-effort: an image that cannot be inspected
+// (for example a locally built image with no registry manifest) keeps an
+// empty digest. Results are cached per image reference so a multi-replica
+// service or a shared image is inspected only once.
+func resolveDigests(ctx context.Context, docker dockerClient, services map[string]state.RuntimeService) {
+	cache := make(map[string]string)
+	for name, svc := range services {
+		if svc.Image == "" {
+			continue
+		}
+		digest, ok := cache[svc.Image]
+		if !ok {
+			digest = imageDigest(ctx, docker, svc.Image)
+			cache[svc.Image] = digest
+		}
+		svc.Digest = digest
+		services[name] = svc
+	}
+}
+
+// imageDigest returns the manifest digest of the given image reference, or ""
+// when it cannot be resolved. The digest is read from the image's
+// RepoDigests, which Docker populates when the image was pulled from (or
+// pushed to) a registry; a locally built image has no manifest digest and
+// yields "".
+func imageDigest(ctx context.Context, docker dockerClient, ref string) string {
+	if docker == nil {
+		return ""
+	}
+	inspected, err := docker.ImageInspect(ctx, ref)
+	if err != nil {
+		return ""
+	}
+	if len(inspected.RepoDigests) == 0 {
+		return ""
+	}
+	return inspected.RepoDigests[0]
 }
 
 // Plan computes the deployment plan that reconciles desired state with the
