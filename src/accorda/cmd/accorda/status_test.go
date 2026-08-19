@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	"time"
 
+	"accorda/internal/config"
 	"accorda/internal/core/health"
 	"accorda/internal/core/state"
+	"accorda/internal/sources"
 	"accorda/internal/targets/compose"
 )
 
@@ -175,5 +178,74 @@ func TestWriteStatus_ContainsExpectedColumns(t *testing.T) {
 		if !bytes.Contains([]byte(out), []byte(want)) {
 			t.Errorf("output missing %q; got:\n%s", want, out)
 		}
+	}
+}
+
+// statusTestSource is a controllable Source used to exercise the redaction
+// and unreachable-runtime paths without a live Git repository.
+type statusTestSource struct {
+	fetchErr error
+	commit   sources.Commit
+	desired  *state.DesiredState
+}
+
+func (s *statusTestSource) Validate(context.Context) error { return nil }
+func (s *statusTestSource) Fetch(context.Context) (sources.Commit, error) {
+	if s.fetchErr != nil {
+		return sources.Commit{}, s.fetchErr
+	}
+	return s.commit, nil
+}
+func (s *statusTestSource) Desired(_ context.Context, _ *sources.Commit) (*state.DesiredState, error) {
+	return s.desired, nil
+}
+
+// TestCollectStatus_RedactsURLWhenDesiredFails verifies that a configured URL
+// carrying credentials is redacted even when the desired state cannot be read
+// (review finding 1): the repository line must never echo the embedded token
+// (docs/ACCORDA.md §18, §56).
+func TestCollectStatus_RedactsURLWhenDesiredFails(t *testing.T) {
+	src := &statusTestSource{
+		commit: sources.Commit{SHA: "abc1234abcd", Branch: "main"},
+		// DesiredState is nil, simulating a Desired failure that leaves the
+		// repository field unset, so the fallback to the configured URL is
+		// what prints.
+		desired: nil,
+	}
+	proj := &config.Project{
+		Environment: "production",
+		Source: config.Source{
+			URL:    "https://oauth2:secret-token@git.internal/acme/repo.git",
+			Branch: "main",
+		},
+	}
+	info := collectStatus(context.Background(), proj, src, nil, nil)
+	if info.Repository != "https://git.internal/acme/repo.git" {
+		t.Errorf("Repository = %q, want the redacted URL without the token", info.Repository)
+	}
+	if bytes.Contains([]byte(info.Repository), []byte("secret-token")) {
+		t.Errorf("Repository %q leaks the credential token", info.Repository)
+	}
+}
+
+// TestCollectStatus_SyncLabelPopulatedWhenRuntimeUnreachable verifies the sync
+// line is still computed when the runtime cannot be read (review finding 2),
+// keeping the partial report self-consistent.
+func TestCollectStatus_SyncLabelPopulatedWhenRuntimeUnreachable(t *testing.T) {
+	src := &statusTestSource{
+		commit: sources.Commit{SHA: "abc1234abcd", Branch: "main"},
+	}
+	proj := &config.Project{
+		Environment: "production",
+		Source:      config.Source{URL: "https://git.internal/acme/repo.git", Branch: "main"},
+	}
+	// A nil target is the simplest "runtime unavailable" case; collectStatus
+	// reports Runtime unknown and must still fill Sync.
+	info := collectStatus(context.Background(), proj, src, nil, nil)
+	if info.Sync != "OUT_OF_SYNC" {
+		t.Errorf("Sync = %q, want OUT_OF_SYNC (no deployed commit yet)", info.Sync)
+	}
+	if info.Runtime != "unknown" {
+		t.Errorf("Runtime = %q, want unknown", info.Runtime)
 	}
 }

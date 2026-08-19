@@ -104,8 +104,12 @@ func runStatus(cmd *cobra.Command, dir string) error {
 func collectStatus(ctx context.Context, proj *config.Project, src sources.Source, tgt *compose.Target, store history.Store) statusInfo {
 	info := statusInfo{
 		Environment: proj.Environment,
-		Repository:  proj.Source.URL,
-		Branch:      proj.Source.Branch,
+		// Redact the configured URL up front so a raw embedded token is never
+		// surfaced, even when the source cannot be read and Desired never
+		// overrides it (docs/ACCORDA.md §18, §56). This mirrors the same
+		// redaction the git source applies to DesiredState.Repository.
+		Repository: git.RedactURL(proj.Source.URL),
+		Branch:     proj.Source.Branch,
 	}
 
 	// Fetch the Git HEAD so the report shows the commit Git declares. This
@@ -127,6 +131,12 @@ func collectStatus(ctx context.Context, proj *config.Project, src sources.Source
 		info.LastDeploy = rc.CompletedAt.UTC().Format("2006-01-02 15:04:05")
 	}
 
+	// The Sync label is derivable purely from the Git HEAD and the deployed
+	// commit, so it is computed before any target read. This keeps the line
+	// populated even when the runtime is unreachable, consistent with the
+	// best-effort partial-report design.
+	info.Sync = syncLabel(info.GitHead, info.Deployed)
+
 	// The runtime and its health are read from the target. If the target is
 	// unreachable, report the runtime as unavailable and skip the service
 	// table so the command still prints the configuration-level status.
@@ -145,12 +155,11 @@ func collectStatus(ctx context.Context, proj *config.Project, src sources.Source
 	// "healthy" means (docs/ACCORDA.md §19).
 	hc := compose.HealthFromRuntime(runtime, time.Now())
 	info.Runtime = healthLabel(hc)
-	info.Sync = syncLabel(info.GitHead, info.Deployed)
 
 	// The desired state from Git supplies the redacted repository and the
 	// service table's declared images. It is best-effort: on failure the
-	// runtime table is still printed and the repository falls back to the
-	// configured URL.
+	// runtime table is still printed and the repository stays redacted from
+	// the configured URL.
 	desired, desiredErr := src.Desired(ctx, nil)
 	if desiredErr == nil && desired != nil {
 		if desired.Repository != "" {
@@ -210,6 +219,23 @@ func healthLabel(hc *health.Health) string {
 // desired-but-not-running service. Rows are sorted by service name for
 // deterministic output (docs/DECISIONS.md #12).
 func buildRows(desired *state.DesiredState, runtime *state.RuntimeState, hc *health.Health) []statusService {
+	names := unionServiceNames(desired, runtime)
+	sorted := make([]string, 0, len(names))
+	for n := range names {
+		sorted = append(sorted, n)
+	}
+	sort.Strings(sorted)
+
+	rows := make([]statusService, 0, len(sorted))
+	for _, n := range sorted {
+		rows = append(rows, buildRow(n, desired, runtime, hc))
+	}
+	return rows
+}
+
+// unionServiceNames returns the set of service names across the desired and
+// runtime states.
+func unionServiceNames(desired *state.DesiredState, runtime *state.RuntimeState) map[string]struct{} {
 	names := map[string]struct{}{}
 	if desired != nil {
 		for n := range desired.Services {
@@ -221,43 +247,63 @@ func buildRows(desired *state.DesiredState, runtime *state.RuntimeState, hc *hea
 			names[n] = struct{}{}
 		}
 	}
-	sorted := make([]string, 0, len(names))
-	for n := range names {
-		sorted = append(sorted, n)
-	}
-	sort.Strings(sorted)
+	return names
+}
 
-	rows := make([]statusService, 0, len(sorted))
-	for _, n := range sorted {
-		row := statusService{name: n}
-		if runtime != nil {
-			if svc, ok := runtime.Services[n]; ok {
-				row.state = svc.Status
-				row.image = svc.Image
-				if hc != nil {
-					if sh, ok := hc.Services[n]; ok {
-						row.health = string(sh.Status)
-					}
-				}
-			}
+// buildRow derives a single service row. State and image come from the
+// running container when present; the declared image from Git fills in when
+// the service is not running. Missing fields get a stable placeholder.
+func buildRow(n string, desired *state.DesiredState, runtime *state.RuntimeState, hc *health.Health) statusService {
+	row := statusService{name: n}
+	if svc, ok := runtimeService(runtime, n); ok {
+		row.state = svc.Status
+		row.image = svc.Image
+		if sh, ok := healthService(hc, n); ok {
+			row.health = string(sh.Status)
 		}
-		if row.image == "" && desired != nil {
-			if svc, ok := desired.Services[n]; ok {
-				row.image = svc.Image
-			}
-		}
-		if row.state == "" {
-			row.state = "absent"
-		}
-		if row.health == "" {
-			row.health = "-"
-		}
-		if row.image == "" {
-			row.image = "-"
-		}
-		rows = append(rows, row)
 	}
-	return rows
+	if row.image == "" {
+		if svc, ok := desiredService(desired, n); ok {
+			row.image = svc.Image
+		}
+	}
+	if row.state == "" {
+		row.state = "absent"
+	}
+	if row.health == "" {
+		row.health = "-"
+	}
+	if row.image == "" {
+		row.image = "-"
+	}
+	return row
+}
+
+// runtimeService returns the running service for name, if present.
+func runtimeService(runtime *state.RuntimeState, name string) (state.RuntimeService, bool) {
+	if runtime == nil {
+		return state.RuntimeService{}, false
+	}
+	svc, ok := runtime.Services[name]
+	return svc, ok
+}
+
+// healthService returns the health for name, if present.
+func healthService(hc *health.Health, name string) (health.ServiceHealth, bool) {
+	if hc == nil {
+		return health.ServiceHealth{}, false
+	}
+	sh, ok := hc.Services[name]
+	return sh, ok
+}
+
+// desiredService returns the declared service for name, if present.
+func desiredService(desired *state.DesiredState, name string) (state.Service, bool) {
+	if desired == nil {
+		return state.Service{}, false
+	}
+	svc, ok := desired.Services[name]
+	return svc, ok
 }
 
 // writeStatus prints the status report in the tabular format shown in
