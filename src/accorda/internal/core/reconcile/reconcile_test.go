@@ -41,12 +41,18 @@ type fakeTarget struct {
 	validateErr error
 	planErr     error
 	applyErr    error
-	healthErr   error
-	currentErr  error
-	health      *health.Health
-	runtime     *state.RuntimeState
-	applied     []*plan.Plan
-	applyCalls  int
+	// repairApplyErr fails the repair-phase Apply (the Apply that follows a
+	// successful deploy-phase Apply) so a failed drift repair can be
+	// exercised. It is keyed off deployDone rather than a call count so the
+	// test does not depend on the exact ordering of Apply calls.
+	repairApplyErr error
+	healthErr      error
+	currentErr     error
+	health         *health.Health
+	runtime        *state.RuntimeState
+	applied        []*plan.Plan
+	applyCalls     int
+	deployDone     bool
 }
 
 func (f *fakeTarget) Validate(context.Context) error { return f.validateErr }
@@ -67,7 +73,11 @@ func (f *fakeTarget) Apply(_ context.Context, p *plan.Plan) error {
 	if f.applyErr != nil && f.applyCalls == 1 {
 		return f.applyErr
 	}
+	if f.repairApplyErr != nil && f.deployDone {
+		return f.repairApplyErr
+	}
 	f.applied = append(f.applied, p)
+	f.deployDone = true
 	return nil
 }
 func (f *fakeTarget) Health(context.Context) (*health.Health, error) {
@@ -368,6 +378,183 @@ func TestReconcile_Drift_EmitsDriftDetected(t *testing.T) {
 	}
 	if driftEvents != 1 {
 		t.Errorf("drift events = %d, want 1", driftEvents)
+	}
+}
+
+func TestReconcile_DriftRepair_EmitsDetectedAndReconciled(t *testing.T) {
+	// With DriftRepair, a drifted runtime must emit DriftDetected, re-plan and
+	// re-apply to restore the desired runtime, then emit DriftReconciled.
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health: healthyHealth(),
+		runtime: &state.RuntimeState{
+			Services: map[string]state.RuntimeService{
+				"api": {Status: "exited", Image: "api:2"},
+			},
+		},
+	}
+	bus := events.NewBus()
+	var detected, reconciled int
+	bus.Subscribe(func(_ context.Context, e events.Event) {
+		switch e.Type {
+		case events.EventDriftDetected:
+			detected++
+		case events.EventDriftReconciled:
+			reconciled++
+		}
+	})
+
+	r := New(src, tgt, bus).WithDriftPolicy(DriftRepair)
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseHealthy {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseHealthy)
+	}
+	if res.Comparison.Result != state.ResultDrifted {
+		t.Fatalf("Comparison.Result = %q, want %q", res.Comparison.Result, state.ResultDrifted)
+	}
+	if detected != 1 {
+		t.Errorf("drift.detected events = %d, want 1", detected)
+	}
+	if reconciled != 1 {
+		t.Errorf("drift.reconciled events = %d, want 1", reconciled)
+	}
+	// Repair re-plans and re-applies: one Apply from the deploy phase plus
+	// one from the repair.
+	if tgt.applyCalls != 2 {
+		t.Errorf("apply calls = %d, want 2 (deploy + repair)", tgt.applyCalls)
+	}
+}
+
+func TestReconcile_DriftDisabled_NoEventsNoRepair(t *testing.T) {
+	// With DriftDisabled, drift is ignored entirely: no events and no repair.
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health: healthyHealth(),
+		runtime: &state.RuntimeState{
+			Services: map[string]state.RuntimeService{
+				"api": {Status: "exited", Image: "api:2"},
+			},
+		},
+	}
+	bus := events.NewBus()
+	var detected, reconciled int
+	bus.Subscribe(func(_ context.Context, e events.Event) {
+		switch e.Type {
+		case events.EventDriftDetected:
+			detected++
+		case events.EventDriftReconciled:
+			reconciled++
+		}
+	})
+
+	r := New(src, tgt, bus).WithDriftPolicy(DriftDisabled)
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseHealthy {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseHealthy)
+	}
+	if detected != 0 {
+		t.Errorf("drift.detected events = %d, want 0", detected)
+	}
+	if reconciled != 0 {
+		t.Errorf("drift.reconciled events = %d, want 0", reconciled)
+	}
+	// Only the deploy-phase Apply runs; no repair Apply.
+	if tgt.applyCalls != 1 {
+		t.Errorf("apply calls = %d, want 1 (deploy only)", tgt.applyCalls)
+	}
+}
+
+func TestReconcile_DriftReport_DetectedOnly(t *testing.T) {
+	// The default policy (DriftReport) emits DriftDetected but does not repair.
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health: healthyHealth(),
+		runtime: &state.RuntimeState{
+			Services: map[string]state.RuntimeService{
+				"api": {Status: "exited", Image: "api:2"},
+			},
+		},
+	}
+	bus := events.NewBus()
+	var detected, reconciled int
+	bus.Subscribe(func(_ context.Context, e events.Event) {
+		switch e.Type {
+		case events.EventDriftDetected:
+			detected++
+		case events.EventDriftReconciled:
+			reconciled++
+		}
+	})
+
+	r := New(src, tgt, bus)
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseHealthy {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseHealthy)
+	}
+	if detected != 1 {
+		t.Errorf("drift.detected events = %d, want 1", detected)
+	}
+	if reconciled != 0 {
+		t.Errorf("drift.reconciled events = %d, want 0", reconciled)
+	}
+	if tgt.applyCalls != 1 {
+		t.Errorf("apply calls = %d, want 1 (deploy only)", tgt.applyCalls)
+	}
+}
+
+func TestReconcile_DriftRepair_ApplyFails_NoReconciled(t *testing.T) {
+	// A failed repair (Apply error) must not emit DriftReconciled and must
+	// leave the result DRIFTED (docs/DECISIONS.md #22).
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health: healthyHealth(),
+		runtime: &state.RuntimeState{
+			Services: map[string]state.RuntimeService{
+				"api": {Status: "exited", Image: "api:2"},
+			},
+		},
+		repairApplyErr: errors.New("repair boom"),
+	}
+	bus := events.NewBus()
+	var detected, reconciled int
+	bus.Subscribe(func(_ context.Context, e events.Event) {
+		switch e.Type {
+		case events.EventDriftDetected:
+			detected++
+		case events.EventDriftReconciled:
+			reconciled++
+		}
+	})
+
+	r := New(src, tgt, bus).WithDriftPolicy(DriftRepair)
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseHealthy {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseHealthy)
+	}
+	if res.Comparison.Result != state.ResultDrifted {
+		t.Fatalf("Comparison.Result = %q, want %q", res.Comparison.Result, state.ResultDrifted)
+	}
+	if detected != 1 {
+		t.Errorf("drift.detected events = %d, want 1", detected)
+	}
+	if reconciled != 0 {
+		t.Errorf("drift.reconciled events = %d, want 0", reconciled)
 	}
 }
 

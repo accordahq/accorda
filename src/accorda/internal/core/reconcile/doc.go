@@ -16,6 +16,12 @@
 // SYNCED) and handles the failure paths to FAILED and rollback, emitting
 // state transitions and deployment events on an events.Bus.
 //
-// See docs/ACCORDA.md §6 (Reconciliation Lifecycle) and §20 (Rollback) for
-// the authoritative description.
+// When the runtime has drifted (desired == deployed but the runtime diverged,
+// docs/ACCORDA.md §5.3), the Reconciler reacts according to its drift policy
+// (WithDriftPolicy): report emits DriftDetected, repair additionally re-plans
+// and re-applies to restore the desired runtime and emits DriftReconciled,
+// and disabled ignores drift entirely.
+//
+// See docs/ACCORDA.md §6 (Reconciliation Lifecycle), §20 (Rollback), and
+// §5.3 (Runtime State) for the authoritative description.
 package reconcile
