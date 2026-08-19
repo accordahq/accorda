@@ -41,8 +41,10 @@ type fakeTarget struct {
 	validateErr error
 	planErr     error
 	applyErr    error
-	// repairApplyErr fails the repair-phase Apply (the second Apply call,
-	// after the deploy phase) so a failed drift repair can be exercised.
+	// repairApplyErr fails the repair-phase Apply (the Apply that follows a
+	// successful deploy-phase Apply) so a failed drift repair can be
+	// exercised. It is keyed off deployDone rather than a call count so the
+	// test does not depend on the exact ordering of Apply calls.
 	repairApplyErr error
 	healthErr      error
 	currentErr     error
@@ -50,6 +52,7 @@ type fakeTarget struct {
 	runtime        *state.RuntimeState
 	applied        []*plan.Plan
 	applyCalls     int
+	deployDone     bool
 }
 
 func (f *fakeTarget) Validate(context.Context) error { return f.validateErr }
@@ -70,10 +73,11 @@ func (f *fakeTarget) Apply(_ context.Context, p *plan.Plan) error {
 	if f.applyErr != nil && f.applyCalls == 1 {
 		return f.applyErr
 	}
-	if f.repairApplyErr != nil && f.applyCalls == 2 {
+	if f.repairApplyErr != nil && f.deployDone {
 		return f.repairApplyErr
 	}
 	f.applied = append(f.applied, p)
+	f.deployDone = true
 	return nil
 }
 func (f *fakeTarget) Health(context.Context) (*health.Health, error) {
