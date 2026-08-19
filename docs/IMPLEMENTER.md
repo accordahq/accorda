@@ -22,6 +22,11 @@ not authorize unrelated cleanup, deployment, or remote GitHub mutations.
 - Read `docs/ISSUES-BEFORE-FIRST-RUN.md` if you got the issue from the list mark it as checked when implemented. Issues are run in the order i want them to be implemented. If not specific issue requested grab first non implemented issue from the list
 - Read `docs/DECISIONS.md` before non-trivial changes; append a decision
   entry when the change introduces or alters a durable design choice.
+- Gather the initial context with `scripts/prepare-issue-context.sh <issue>`
+  (fetches the issue, its PRs, diffs, CI, and working-tree state in one
+  read-only call) so the implementation is grounded in the issue and any
+  related PRs. Redirect the output to a file to load it into session memory:
+  `scripts/prepare-issue-context.sh <ISSUE> > /tmp/ctx.txt`.
 - Inspect the worktree and current branch. Treat existing modifications and
   untracked files as user-owned unless the task clearly says otherwise.
 - If existing work prevents a safe branch switch or overlaps the requested

@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Gather the initial context a reviewer needs for an issue and its related
-# pull requests in one read-only call, so the agent does not repeat the same
-# gh/git commands for every review.
+# Gather the initial context for an issue and its related pull requests in one
+# read-only call, so an agent does not repeat the same gh/git commands for
+# every issue. It is used by both the Reviewer (to establish review scope) and
+# the Implementer (to understand the issue before working on it).
 #
 # Usage:
-#   scripts/prepare-reviewer-context.sh <issue> [pr...]
+#   scripts/prepare-issue-context.sh <issue> [pr...]
 #
-# <issue> the issue number to review (e.g. 17).
+# <issue> the issue number to work on or review. It may be given as a bare
+#         number (17), a GitHub issue URL
+#         (https://github.com/accordahq/accorda/issues/17), or a #-prefixed
+#         number (#17); the script normalizes all three to the bare number.
 # [pr...] optional explicit PR numbers. When omitted, the script finds the
 #         pull requests that reference the issue (via the issue timeline) and
 #         gathers context for each.
@@ -25,7 +29,7 @@
 # head branch (e.g. into an isolated worktree) after seeing the state.
 #
 # To capture the output for the agent's session memory, redirect it, e.g.:
-#   scripts/prepare-reviewer-context.sh 17 > /tmp/ctx.txt
+#   scripts/prepare-issue-context.sh 17 > /tmp/ctx.txt
 #
 # Requires the GitHub CLI (gh) authenticated against the repository and a git
 # remote named `origin`.
@@ -48,6 +52,16 @@ if [[ $# -lt 1 ]]; then
 fi
 issue=$1
 shift
+
+# Normalize the issue argument: accept a bare number (17), a GitHub issue URL
+# (https://github.com/accordahq/accorda/issues/17), or a #-prefixed number
+# (#17), and reduce all three to the bare number.
+issue="${issue#https://github.com/$owner/$repo/issues/}"
+issue="${issue#\#}"
+if [[ ! "$issue" =~ ^[0-9]+$ ]]; then
+  echo "error: invalid issue argument '$issue' (expected a number, #number, or a GitHub issue URL)" >&2
+  exit 2
+fi
 
 # Resolve the PRs that reference the issue when none were passed explicitly.
 prs=("$@")
@@ -78,7 +92,7 @@ else
   done
 fi
 
-for pr in "${prs[@]}"; do
+for pr in "${prs[@]+"${prs[@]}"}"; do
   echo
   echo "======================================================================"
   echo "PR #$pr metadata"

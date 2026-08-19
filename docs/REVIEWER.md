@@ -170,6 +170,17 @@ that it could not be posted to GitHub.
 - Read the complete diff and enough surrounding implementation, tests, and
   documentation to understand the change in context.
 
+Gather the initial context with the bundled `scripts/prepare-issue-context.sh`
+instead of repeating the `gh`/`git` commands by hand. Pass the issue number; the
+script fetches the issue, finds the PRs that reference it, and prints the PR
+metadata, diff, CI checks, the local diff of each head branch against its base,
+and whether the working tree is on the PR head — all in one read-only call.
+Redirect the output to a file so the agent can load it into session memory:
+
+```bash
+scripts/prepare-issue-context.sh <ISSUE> > /tmp/ctx.txt
+```
+
 Useful read-only commands include:
 
 ```bash
