@@ -535,3 +535,34 @@ unchanged (health is read from the existing `ContainerInspect` path). The
 health timeout is a target-level concern, consistent with the pull policy
 (docs/DECISIONS.md #18); the reconcile loop must thread `health.timeout` into
 the target when it constructs the driver.
+
+### 22. Drift repair is a reconciler-level policy
+
+**Context.** Issue #16 (§5.3) requires drift detection and repair: when the
+runtime diverges from the desired state while Git is unchanged, Accorda must
+emit `DriftDetected` and, when `reconcile.drift: repair` is configured,
+restore the desired runtime and emit `DriftReconciled`. The config loader
+already models the three drift policies (`repair`, `report`, `disabled`) and
+defaults to `report` (docs/DECISIONS.md #10), and the reconciler already
+detects drift in its `sync` phase via `state.Compare` and emits
+`DriftDetected` (docs/DECISIONS.md #20).
+
+**Decision.** `internal/core/reconcile` gains a `DriftPolicy` type
+(`DriftReport`, `DriftRepair`, `DriftDisabled`) carried on the `Reconciler`
+and settable via `WithDriftPolicy`, defaulting to `DriftReport`. The `sync`
+phase's drift branch delegates to `handleDrift`, which emits `DriftDetected`
+unless the policy is `disabled`, and, when the policy is `repair`, re-plans
+(`Target.Plan`) and re-applies (`Target.Apply`) the desired state against the
+synthesized deployed state, then emits `DriftReconciled` on success. Repair
+reuses the existing `Plan`/`Apply` path rather than a bespoke drift path, so
+the same `plan.DriftActions` diff (docs/DECISIONS.md #16) drives both initial
+deployment and drift repair. A failed repair is silent (no event) and leaves
+the result as `DRIFTED`, matching the report-only behavior.
+
+**Consequence.** Drift repair is implemented in core without a concrete
+provider, honoring docs/DECISIONS.md #3. The `reconcile.drift` config value
+is not yet threaded into the reconciler because the `sync` command is still a
+stub and no production caller constructs a `Reconciler` from a
+`config.Project`; the `WithDriftPolicy` seam is the wiring point for that
+future work, mirroring the `WithHealthTimeout`/`WithPullPolicy` seams on the
+Compose target.

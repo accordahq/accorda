@@ -42,6 +42,22 @@ const (
 	PhaseFailed Phase = "FAILED"
 )
 
+// DriftPolicy selects how the reconciler reacts to runtime drift
+// (docs/ACCORDA.md §5.3). Drift is the situation where Git and Accorda agree
+// but the runtime has diverged (for example a service was stopped manually).
+type DriftPolicy string
+
+const (
+	// DriftReport emits DriftDetected but does not repair. It is the default,
+	// mirroring the config default (docs/ACCORDA.md §5.3).
+	DriftReport DriftPolicy = "report"
+	// DriftRepair emits DriftDetected, re-plans and re-applies to restore the
+	// desired runtime, then emits DriftReconciled.
+	DriftRepair DriftPolicy = "repair"
+	// DriftDisabled ignores drift entirely: no events, no repair.
+	DriftDisabled DriftPolicy = "disabled"
+)
+
 // StateTransition is the payload of an EventStateTransition event. It records
 // a lifecycle phase change so consumers can observe the reconciliation
 // progress (docs/ACCORDA.md §6, §21).
@@ -91,12 +107,23 @@ type Reconciler struct {
 	// when a deployment fails (docs/ACCORDA.md §20). It may be nil when
 	// there is no prior deployment.
 	previous *state.DeployedState
+	// driftPolicy selects how the reconciler reacts to runtime drift
+	// (docs/ACCORDA.md §5.3). It defaults to DriftReport.
+	driftPolicy DriftPolicy
 }
 
 // New returns a Reconciler that orchestrates src and tgt, publishing events
 // on bus. bus may be nil, in which case events are dropped.
 func New(src sources.Source, tgt targets.Target, bus events.Bus) *Reconciler {
-	return &Reconciler{source: src, target: tgt, bus: bus}
+	return &Reconciler{source: src, target: tgt, bus: bus, driftPolicy: DriftReport}
+}
+
+// WithDriftPolicy sets how the reconciler reacts to runtime drift
+// (docs/ACCORDA.md §5.3). It accepts DriftReport, DriftRepair, or
+// DriftDisabled. The default is DriftReport, mirroring the config default.
+func (r *Reconciler) WithDriftPolicy(policy DriftPolicy) *Reconciler {
+	r.driftPolicy = policy
+	return r
 }
 
 // WithPrevious sets the last successfully deployed state used for rollback
@@ -271,12 +298,8 @@ func (r *Reconciler) sync(ctx context.Context, res *Result, desired *state.Desir
 	res.Health = h
 	switch res.Comparison.Result {
 	case state.ResultDrifted:
-		// Drift is an observable outcome (§5.3, §21): surface it so
-		// consumers can distinguish "healthy and synced" from "healthy but
-		// drifted". Repair is a later milestone, so only the detected event
-		// is emitted here.
-		r.emit(ctx, events.EventDriftDetected, res.Comparison)
 		res.Phase = PhaseHealthy
+		r.handleDrift(ctx, res, desired, deployed)
 		return res
 	case state.ResultOutOfSync:
 		res.Phase = PhaseHealthy
@@ -292,6 +315,39 @@ func (r *Reconciler) sync(ctx context.Context, res *Result, desired *state.Desir
 		r.emit(ctx, events.EventDeploymentSucceeded, nil)
 	}
 	return res
+}
+
+// handleDrift reacts to a drifted runtime according to the configured drift
+// policy (docs/ACCORDA.md §5.3). Drift is an observable outcome (§21), so
+// the DriftDetected event is emitted unless the policy is disabled; when the
+// policy is repair, the desired runtime is restored and DriftReconciled is
+// emitted on success.
+func (r *Reconciler) handleDrift(ctx context.Context, res *Result, desired *state.DesiredState, deployed *state.DeployedState) {
+	switch r.driftPolicy {
+	case DriftDisabled:
+		return
+	case DriftRepair:
+		r.emit(ctx, events.EventDriftDetected, res.Comparison)
+		if r.repairDrift(ctx, desired, deployed) {
+			r.emit(ctx, events.EventDriftReconciled, res.Comparison)
+		}
+	default: // DriftReport
+		r.emit(ctx, events.EventDriftDetected, res.Comparison)
+	}
+}
+
+// repairDrift re-plans and re-applies to restore the desired runtime after
+// drift was detected (docs/ACCORDA.md §5.3). It returns true when the repair
+// was applied successfully.
+func (r *Reconciler) repairDrift(ctx context.Context, desired *state.DesiredState, deployed *state.DeployedState) bool {
+	p, err := r.target.Plan(ctx, desired, deployed)
+	if err != nil {
+		return false
+	}
+	if err := r.target.Apply(ctx, p); err != nil {
+		return false
+	}
+	return true
 }
 
 // fail records a failure, emits the transition to PhaseFailed and the
