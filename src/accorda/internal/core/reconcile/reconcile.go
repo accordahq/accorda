@@ -322,6 +322,13 @@ func (r *Reconciler) sync(ctx context.Context, res *Result, desired *state.Desir
 // the DriftDetected event is emitted unless the policy is disabled; when the
 // policy is repair, the desired runtime is restored and DriftReconciled is
 // emitted on success.
+//
+// res.Comparison reflects the drift that was detected before repair ran: a
+// successful repair applies the plan but does not re-read the runtime, so the
+// Result still reports DRIFTED even though DriftReconciled was emitted. The
+// repair is applied asynchronously (e.g. `docker compose up -d` returns before
+// containers are running), so convergence is confirmed on the next
+// reconciliation cycle rather than asserted here.
 func (r *Reconciler) handleDrift(ctx context.Context, res *Result, desired *state.DesiredState, deployed *state.DeployedState) {
 	switch r.driftPolicy {
 	case DriftDisabled:
@@ -331,7 +338,8 @@ func (r *Reconciler) handleDrift(ctx context.Context, res *Result, desired *stat
 		if r.repairDrift(ctx, desired, deployed) {
 			r.emit(ctx, events.EventDriftReconciled, res.Comparison)
 		}
-	default: // DriftReport
+	default: // DriftReport; any unknown value degrades to report-only (the
+		// config loader validates the policy upstream, so this is defensive).
 		r.emit(ctx, events.EventDriftDetected, res.Comparison)
 	}
 }
