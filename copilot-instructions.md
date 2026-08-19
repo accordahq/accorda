@@ -25,6 +25,12 @@ This repository is the open-source Accorda OSS project described in `docs/ACCORD
 - Add a `doc.go` per package describing its responsibility and citing the spec sections it implements.
 - Guard interfaces with compile-time checks (`var _ Interface = (*Stub)(nil)`).
 
+## Publication expectations
+
+- An explicit request to implement an issue or feature authorizes committing,
+  pushing the implementation branch, and creating the pull request. Merging
+  still requires a separate explicit request.
+
 ## Review expectations
 
 - Keep review work read-only unless the user explicitly asks for an implementation change.

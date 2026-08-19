@@ -134,20 +134,20 @@ Before any push or pull request creation:
 
 - finish the implementation and verification;
 - prepare a concise PR title and description;
-- summarize the changed behavior and validation;
-- obtain the user's explicit approval to push and create the PR.
+- summarize the changed behavior and validation.
 
-Approval to implement is not approval to publish. Do not push, force-push, or
-call `gh pr create` until the user approves those remote mutations.
+An explicit request to implement an issue or feature is approval to commit,
+push the implementation branch, and create the pull request. Do not
+force-push or merge without a separate explicit request.
 
-After approval:
+After the implement request:
 
 ```bash
 git push -u origin <branch-name>
 gh pr create --base main --head <branch-name>
 ```
 
-Do not merge the PR unless the user separately and explicitly requests it.
+Never merge the PR.
 
 ### Crafting the PR description
 
@@ -203,5 +203,5 @@ The final handoff should include:
 - affected files or components;
 - validation performed and any remaining limitations;
 - the commit or branch when useful;
-- the pull request URL, or a clear request for publication approval when the
-  work is only local.
+- the pull request URL, or a clear statement that the work is only local
+  (for example when GitHub access is unavailable).
