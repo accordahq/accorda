@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/src/accorda"
+    schedule:
+      interval: "daily"
+    ignore:
+      - dependency-name: "github.com/docker/docker"
+        # Security vulnerability (e.g., ... ) is an accepted risk 
+        # because Accorda only uses the SDK as a client and does not 
+        # interact with the vulnerable plugin/AuthZ surfaces. 
+        # See docs/DECISIONS.md #25.
