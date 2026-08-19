@@ -28,8 +28,13 @@
 # pushes, or alters PR metadata. The agent decides whether to check out the
 # head branch (e.g. into an isolated worktree) after seeing the state.
 #
-# To capture the output for the agent's session memory, redirect it, e.g.:
-#   scripts/prepare-issue-context.sh 17 > /tmp/ctx.txt
+# The script writes its full output to a deterministic file and prints that
+# path, so an agent can read the complete context in one call even when the
+# terminal truncates the inline output. The file is written to the OS temp
+# directory and named with the issue and PR numbers, e.g.
+#   /tmp/accorda-issue-17-pr-73-context.txt
+# The agent should read that file (not the truncated terminal output) to get
+# the full issue body, PR metadata, and diffs.
 #
 # Requires the GitHub CLI (gh) authenticated against the repository and a git
 # remote named `origin`.
@@ -73,6 +78,31 @@ if [[ ${#prs[@]} -eq 0 ]]; then
     --jq '.[] | select(.event=="cross-referenced" and .source.issue.pull_request) | .source.issue.number')
 fi
 
+# Resolve the PRs that reference the issue when none were passed explicitly.
+prs=("$@")
+if [[ ${#prs[@]} -eq 0 ]]; then
+  prs=()
+  while IFS= read -r pr; do
+    prs+=("$pr")
+  done < <(gh api "repos/$owner/$repo/issues/$issue/timeline" \
+    --jq '.[] | select(.event=="cross-referenced" and .source.issue.pull_request) | .source.issue.number')
+fi
+
+# Write the full output to a deterministic file so an agent can read the
+# complete context in one call even when the terminal truncates inline output.
+# The file is created in the OS temp directory and named with the issue and
+# PR numbers. The script's own stdout/stderr still go to the terminal so the
+# user sees progress; the file holds the full gathered context.
+outfile="/tmp/accorda-issue-${issue}-context.txt"
+if [[ ${#prs[@]} -gt 0 ]]; then
+  prs_slug=$(IFS=-; echo "${prs[*]}")
+  outfile="/tmp/accorda-issue-${issue}-pr-${prs_slug}-context.txt"
+fi
+: > "$outfile"
+
+# Run the rest of the script with stdout redirected to the context file, then
+# print the path prominently so the agent knows where to read the full output.
+{
 echo "======================================================================"
 echo "Issue #$issue"
 echo "======================================================================"
@@ -166,3 +196,10 @@ for pr in "${prs[@]+"${prs[@]}"}"; do
     echo "To review the working tree, check out the head branch into an isolated worktree."
   fi
 done
+} > "$outfile" 2>&1
+
+echo
+echo "======================================================================"
+echo "Context written to: $outfile"
+echo "Read this file for the full issue body, PR metadata, and diffs."
+echo "======================================================================"
