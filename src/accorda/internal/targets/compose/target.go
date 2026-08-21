@@ -19,6 +19,7 @@ import (
 // Compile-time interface check: Target satisfies targets.Target here so a
 // missing method is caught at build time, not at runtime.
 var _ targets.Target = (*Target)(nil)
+var _ targets.LogTarget = (*Target)(nil)
 
 // Target is the Docker Compose target driver (docs/ACCORDA.md §8). It
 // reconciles the desired state declared in a Compose file against the

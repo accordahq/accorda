@@ -8,15 +8,18 @@
 package compose
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"accorda/internal/config"
 	"accorda/internal/core/health"
 	"accorda/internal/core/state"
+	"accorda/internal/targets"
 	"accorda/internal/testutil"
 )
 
@@ -27,7 +30,7 @@ import (
 const integrationCompose = `services:
   api:
     image: busybox:1.36
-    command: ["sh", "-c", "sleep 300"]
+    command: ["sh", "-c", "echo accorda-log-ready; sleep 300"]
     healthcheck:
       test: ["CMD", "true"]
       interval: 1s
@@ -126,6 +129,16 @@ func TestComposeTarget_ApplyCurrentHealthLifecycle(t *testing.T) {
 	}
 	if api.Status != state.RunningStatus {
 		t.Errorf("api.Status = %q, want %q", api.Status, state.RunningStatus)
+	}
+
+	// Logs must fetch the service's real container output through the Docker
+	// API and decode it before returning it to the caller.
+	var logs bytes.Buffer
+	if err := tgt.Logs(ctx, "api", targets.LogOptions{}, &logs, &logs); err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+	if !strings.Contains(logs.String(), "accorda-log-ready") {
+		t.Errorf("Logs output = %q, want startup marker", logs.String())
 	}
 
 	// Health must converge to healthy (the healthcheck reports healthy).

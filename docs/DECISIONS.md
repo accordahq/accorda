@@ -987,3 +987,27 @@ reflects the plan's `Changes` list, so the inspect view is accurate without
 re-reading Git or the runtime. An unknown commit or an empty journal is
 reported as an error so an operator can distinguish "no such deployment"
 from "nothing deployed yet".
+
+### 33. Service logs are an optional target capability
+
+**Context.** Issue #29 (§11) requires `accorda logs` to fetch or stream
+service logs through the target driver. The five-method `Target` interface is
+the reconciliation lifecycle contract from §12; adding an operational method
+to it would force logging onto targets and core test doubles that do not use
+it. Docker also returns non-TTY stdout/stderr in a multiplexed stream that a
+generic CLI should not need to understand.
+
+**Decision.** `internal/targets` defines the focused `LogTarget` capability
+with `Logs(ctx, service, LogOptions, stdout, stderr)`. The Compose target
+implements it through the Docker engine API: containers are selected by both
+Compose project and service labels, stopped containers are included, snapshot
+reads are ordered by container ID, and followed replicas are streamed
+concurrently. The adapter detects TTY streams and otherwise decodes Docker's
+multiplexed framing with `stdcopy`, keeping Docker-specific transport details
+inside `internal/targets/compose`. The CLI requires one service argument and
+exposes `--tail` plus `--follow`/`-f`.
+
+**Consequence.** `accorda logs SERVICE` can fetch or follow Compose service
+logs without changing the reconciliation interface. Future target drivers can
+opt into the same capability without changing core, while drivers that cannot
+provide logs continue to implement only `Target`.

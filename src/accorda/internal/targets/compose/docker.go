@@ -2,6 +2,7 @@ package compose
 
 import (
 	"context"
+	"io"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -28,8 +29,17 @@ type dockerClient interface {
 	ImageInspect(ctx context.Context, imageID string, inspectOpts ...client.ImageInspectOption) (image.InspectResponse, error)
 }
 
+// dockerLogClient is the additional Docker capability used only by the logs
+// command. Keeping it separate means runtime-state test doubles and future
+// read-only clients do not need to implement an operation outside the core
+// reconciliation path.
+type dockerLogClient interface {
+	ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
+}
+
 // Compile-time check: the Docker SDK client satisfies dockerClient.
 var _ dockerClient = (*client.Client)(nil)
+var _ dockerLogClient = (*client.Client)(nil)
 
 // newDockerClient returns a real Docker engine client configured from the
 // environment with automatic API version negotiation. It is used by the
@@ -61,5 +71,12 @@ const composeServiceLabel = "com.docker.compose.service"
 func projectFilters(project string) filters.Args {
 	args := filters.NewArgs()
 	args.Add("label", composeProjectLabel+"="+project)
+	return args
+}
+
+// serviceFilters narrows the project container set to one Compose service.
+func serviceFilters(project, service string) filters.Args {
+	args := projectFilters(project)
+	args.Add("label", composeServiceLabel+"="+service)
 	return args
 }
