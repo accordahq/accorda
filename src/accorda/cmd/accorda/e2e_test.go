@@ -423,3 +423,129 @@ func TestE2E_Plan_AfterSync(t *testing.T) {
 		}
 	}
 }
+
+// TestE2E_History_ReportsAfterSync drives `accorda history` after a successful
+// sync and verifies it prints the §11 deployment table with the header and at
+// least one healthy row for the converged cycle (docs/ACCORDA.md §11).
+func TestE2E_History_ReportsAfterSync(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir := writeE2EProject(t)
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+
+	// First converge so a healthy receipt is recorded.
+	var syncOut bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &syncOut, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := run([]string{"history", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	s := out.String()
+	for _, want := range []string{
+		"TIME                 COMMIT     RESULT         CHANGES\n",
+		"✓ healthy",
+		"api",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("history output missing %q; got:\n%s", want, s)
+		}
+	}
+}
+
+// TestE2E_Inspect_AfterSync drives `accorda inspect` (no commit) after a
+// successful sync and verifies it prints the per-service §11 inspect view for
+// the most recent deployment: the deployed digest, recreated flag, and a
+// passed health result (docs/ACCORDA.md §11).
+func TestE2E_Inspect_AfterSync(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir := writeE2EProject(t)
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+
+	// First converge so a healthy receipt with a resolved digest is recorded.
+	var syncOut bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &syncOut, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := run([]string{"inspect", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	s := out.String()
+	for _, want := range []string{
+		"api\n",
+		"  deployed digest    ",
+		"  recreated          yes\n",
+		"  health             passed\n",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("inspect output missing %q; got:\n%s", want, s)
+		}
+	}
+}
+
+// TestE2E_History_RecordsFailure verifies `accorda history` records both
+// healthy and failed cycles: after a healthy sync, a second sync against a
+// nonexistent image fails and `history` must show both rows (the healthy
+// cycle and the failed one) (docs/ACCORDA.md §11).
+func TestE2E_History_RecordsFailure(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir := writeE2EProject(t)
+	origin := gitOriginDir(t, dir)
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+
+	// First converge so a healthy receipt exists (rollback has a target).
+	var first bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &first, nil); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	// Advance Git to a nonexistent image so the deploy fails (rollback is
+	// applied, recording an OutcomeFailed receipt before the rollback).
+	if err := os.WriteFile(filepath.Join(origin, testutil.ComposeFile), []byte(badImageCompose), 0o644); err != nil {
+		t.Fatalf("write origin compose (bad image): %v", err)
+	}
+	runGit(t, origin, "add", testutil.ComposeFile)
+	runGit(t, origin, "commit", "-m", "bump to bad image")
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(badImageCompose), 0o644); err != nil {
+		t.Fatalf("write target compose (bad image): %v", err)
+	}
+
+	// Second sync fails (with rollback), recording the failed cycle.
+	var second bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &second, nil); err == nil {
+		t.Fatalf("second sync succeeded, want failure: %q", second.String())
+	}
+
+	var out bytes.Buffer
+	if err := run([]string{"history", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "✓ healthy") {
+		t.Errorf("history output missing healthy row; got:\n%s", s)
+	}
+	if !strings.Contains(s, "✗ failed") {
+		t.Errorf("history output missing failed row; got:\n%s", s)
+	}
+}
