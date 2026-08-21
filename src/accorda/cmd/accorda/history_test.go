@@ -86,6 +86,62 @@ func TestCollectHistory_Order(t *testing.T) {
 	}
 }
 
+// TestCollectHistory_SameMinutePreservesAppendOrder verifies that two
+// deployments in the same minute keep their chronological (append) order
+// instead of being reordered by a non-stable sort on the truncated HH:MM
+// column. A failed cycle and its rollback often land in the same minute.
+func TestCollectHistory_SameMinutePreservesAppendOrder(t *testing.T) {
+	store := &memStore{receipts: []history.Receipt{
+		{Commit: "fail", CompletedAt: time.Unix(1700000000, 0), Result: history.OutcomeFailed, Changes: []string{"api"}},
+		{Commit: "back", CompletedAt: time.Unix(1700000001, 0), Result: history.OutcomeRolledBack, Changes: []string{"api"}},
+	}}
+	rows, err := collectHistory(context.Background(), store)
+	if err != nil {
+		t.Fatalf("collectHistory: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	// Newest first: the rollback (appended second) must be at the top.
+	if rows[0].commit != "back" {
+		t.Errorf("rows[0].commit = %q, want back (rollback, appended last)", rows[0].commit)
+	}
+	if rows[1].commit != "fail" {
+		t.Errorf("rows[1].commit = %q, want fail (failed, appended first)", rows[1].commit)
+	}
+	if rows[0].time != rows[1].time {
+		t.Errorf("same-minute rows have different time columns: %q vs %q", rows[0].time, rows[1].time)
+	}
+}
+
+// TestCollectHistory_CrossMidnight verifies that an earlier-in-the-night
+// deploy sorts below a later-in-the-night deploy even though a naive HH:MM
+// string sort would place a 00:10 (next morning) row above a 23:50 row. The
+// 00:10 receipt is appended first (happened earlier), the 23:50 receipt
+// second (happened later that night), so 23:50 must appear first (newest).
+func TestCollectHistory_CrossMidnight(t *testing.T) {
+	day := time.Unix(1700000000, 0).UTC().Truncate(24 * time.Hour)
+	early := day.Add(10 * time.Minute)             // 00:10 that day (earlier)
+	late := day.Add(23*time.Hour + 50*time.Minute) // 23:50 that day (later)
+	store := &memStore{receipts: []history.Receipt{
+		{Commit: "early", CompletedAt: early, Result: history.OutcomeHealthy, Changes: []string{"api"}},
+		{Commit: "late", CompletedAt: late, Result: history.OutcomeHealthy, Changes: []string{"api"}},
+	}}
+	rows, err := collectHistory(context.Background(), store)
+	if err != nil {
+		t.Fatalf("collectHistory: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	// Append order is chronological: "late" (23:50) appended after "early"
+	// (00:10), so it must be first (newest). A HH:MM string sort would have
+	// put "00:10" first because "00:10" > "23:50" lexicographically.
+	if rows[0].commit != "late" {
+		t.Errorf("rows[0].commit = %q, want late (appended after early)", rows[0].commit)
+	}
+}
+
 // TestCollectHistory_ResultAndChanges verifies the result glyph and changes
 // column are derived from the receipt.
 func TestCollectHistory_ResultAndChanges(t *testing.T) {

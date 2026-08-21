@@ -74,6 +74,26 @@ func TestFindReceipt_Empty(t *testing.T) {
 	}
 }
 
+// TestFindReceipt_PrefixMostRecent verifies that when a commit was deployed
+// more than once (a rollback that restored a prior commit records a second
+// receipt for the same SHA), a short prefix resolves to the most recent
+// cycle, not the oldest. A user copies the 7-char prefix from the history
+// table and expects the latest deployment for that commit.
+func TestFindReceipt_PrefixMostRecent(t *testing.T) {
+	receipts := []history.Receipt{
+		{Commit: "d71b2e4abc", Result: history.OutcomeHealthy},
+		{Commit: "a01fd92000", Result: history.OutcomeFailed},
+		{Commit: "d71b2e4abc", Result: history.OutcomeRolledBack}, // restored prior commit
+	}
+	idx, err := findReceipt(receipts, "d71b2e4")
+	if err != nil {
+		t.Fatalf("findReceipt: %v", err)
+	}
+	if idx != 2 {
+		t.Errorf("idx = %d, want 2 (most recent match)", idx)
+	}
+}
+
 // TestPreviousHealthyBefore verifies it returns the most recent healthy
 // receipt strictly before the given index.
 func TestPreviousHealthyBefore(t *testing.T) {

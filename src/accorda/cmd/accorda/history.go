@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -81,9 +80,13 @@ func runHistory(cmd *cobra.Command, dir string) error {
 }
 
 // collectHistory reads the receipt journal and builds the history rows. The
-// journal is appended in chronological order (oldest first); history is
-// printed newest first to match the §11 example (most recent cycle at the
-// top), so the receipts are reversed. A nil store yields no rows.
+// journal is appended in chronological order (oldest first; history.Store.List
+// returns append order, which is the order reconcile recorded the receipts),
+// so history is printed newest first simply by reversing the receipts rather
+// than sorting. Sorting by the truncated HH:MM time column would reorder
+// same-minute deployments non-deterministically and misorder cross-midnight
+// deployments; reversing preserves the true chronological order for both
+// (docs/ACCORDA.md §11 most-recent-at-top). A nil store yields no rows.
 func collectHistory(ctx context.Context, store history.Store) ([]historyRow, error) {
 	if store == nil {
 		return nil, nil
@@ -93,7 +96,8 @@ func collectHistory(ctx context.Context, store history.Store) ([]historyRow, err
 		return nil, fmt.Errorf("read history: %w", err)
 	}
 	rows := make([]historyRow, 0, len(receipts))
-	for _, rc := range receipts {
+	for i := len(receipts) - 1; i >= 0; i-- {
+		rc := receipts[i]
 		rows = append(rows, historyRow{
 			time:    rc.CompletedAt.UTC().Format(historyTimeFormat),
 			commit:  shortSHA(rc.Commit),
@@ -101,10 +105,6 @@ func collectHistory(ctx context.Context, store history.Store) ([]historyRow, err
 			changes: joinChanges(rc.Changes),
 		})
 	}
-	// Newest first, matching the §11 example.
-	sort.Slice(rows, func(i, j int) bool {
-		return rows[i].time > rows[j].time
-	})
 	return rows, nil
 }
 

@@ -137,7 +137,10 @@ func collectInspect(ctx context.Context, store history.Store, commit string) ([]
 
 // findReceipt returns the index of the receipt matching commit. When commit
 // is empty it returns the most recent receipt (last in append order). The
-// commit may be a full SHA or a short prefix of the receipt's full SHA.
+// commit may be a full SHA or a short prefix of the receipt's full SHA. When
+// multiple receipts match a prefix (a commit can be deployed more than once,
+// for example a rollback that restored a prior commit), the most recent match
+// is returned so `inspect <short>` reflects the latest cycle for that commit.
 func findReceipt(receipts []history.Receipt, commit string) (int, error) {
 	if len(receipts) == 0 {
 		return -1, fmt.Errorf("no deployments recorded")
@@ -146,9 +149,10 @@ func findReceipt(receipts []history.Receipt, commit string) (int, error) {
 		return len(receipts) - 1, nil
 	}
 	// Match either the full SHA or a short prefix, so a user can pass the
-	// 7-character SHA the history/inspect tables display.
-	for i, rc := range receipts {
-		if rc.Commit == commit || strings.HasPrefix(rc.Commit, commit) {
+	// 7-character SHA the history/inspect tables display. Iterate newest
+	// first so a commit deployed more than once resolves to its latest cycle.
+	for i := len(receipts) - 1; i >= 0; i-- {
+		if receipts[i].Commit == commit || strings.HasPrefix(receipts[i].Commit, commit) {
 			return i, nil
 		}
 	}
