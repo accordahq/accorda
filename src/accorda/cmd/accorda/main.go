@@ -11,11 +11,12 @@
 //	accorda sync     run reconciliation
 //	accorda history  show deployment history
 //	accorda inspect  show per-service detail for a specific deployment
+//	accorda logs     fetch or follow logs for a service
 //
-// version is fully implemented, and status, diff, plan, history, and inspect
-// are implemented in their eponymous files. The remaining §11 commands
-// (logs, doctor) are recognized but report that they are not yet implemented
-// until their backing core packages land.
+// version is fully implemented, and status, diff, plan, history, inspect, and
+// logs are implemented in their eponymous files. The remaining §11 command
+// (doctor) is recognized but reports that it is not yet implemented until its
+// backing package lands.
 package main
 
 import (
@@ -278,13 +279,6 @@ func stubCmd(name, short string) *cobra.Command {
 			return fmt.Errorf("%s: not yet implemented (see docs/ACCORDA.md §11, §45)", name)
 		},
 	}
-}
-
-// The history and inspect commands are implemented in history.go and
-// inspect.go. logs and doctor remain stubs until their backing packages land.
-
-func newLogsCmd() *cobra.Command {
-	return stubCmd("logs", "show logs for a deployment or service")
 }
 
 func newDoctorCmd() *cobra.Command {

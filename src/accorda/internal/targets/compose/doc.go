@@ -30,4 +30,7 @@
 // (docs/DECISIONS.md #3). The Health phase verifies the health of the
 // deployed workloads by mapping each service's Docker healthcheck status to a
 // health.Status and waiting up to the health timeout (docs/ACCORDA.md §19).
+// Target also implements the optional targets.LogTarget capability, fetching
+// or following per-service container logs through the Docker API and decoding
+// Docker's stdout/stderr framing (docs/ACCORDA.md §11).
 package compose

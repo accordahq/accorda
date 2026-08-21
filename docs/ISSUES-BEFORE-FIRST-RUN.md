@@ -6,6 +6,6 @@
 - [x] https://github.com/accordahq/accorda/issues/25
 - [x] https://github.com/accordahq/accorda/issues/26
 - [x] https://github.com/accordahq/accorda/issues/28
-- [ ] https://github.com/accordahq/accorda/issues/29
+- [x] https://github.com/accordahq/accorda/issues/29
 - [x] https://github.com/accordahq/accorda/issues/52
 - [x] https://github.com/accordahq/accorda/issues/68

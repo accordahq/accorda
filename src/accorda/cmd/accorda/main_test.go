@@ -275,11 +275,11 @@ func TestRun_Init_UnknownFlag(t *testing.T) {
 }
 
 // TestRun_StubCommands verifies the commands still awaiting their backing
-// core packages report a clear not-implemented message. history and inspect
-// are now implemented (history.go, inspect.go) and are exercised by their
-// own test suites; logs and doctor remain stubs.
+// core packages report a clear not-implemented message. history, inspect,
+// and logs are implemented in their own files and exercised by their own
+// test suites; doctor remains a stub.
 func TestRun_StubCommands(t *testing.T) {
-	for _, cmd := range []string{"logs", "doctor"} {
+	for _, cmd := range []string{"doctor"} {
 		var out bytes.Buffer
 		e := run([]string{cmd}, &out, nil)
 		if e == nil {
