@@ -274,8 +274,12 @@ func TestRun_Init_UnknownFlag(t *testing.T) {
 	}
 }
 
+// TestRun_StubCommands verifies the commands still awaiting their backing
+// core packages report a clear not-implemented message. history and inspect
+// are now implemented (history.go, inspect.go) and are exercised by their
+// own test suites; logs and doctor remain stubs.
 func TestRun_StubCommands(t *testing.T) {
-	for _, cmd := range []string{"history", "inspect", "logs", "doctor"} {
+	for _, cmd := range []string{"logs", "doctor"} {
 		var out bytes.Buffer
 		e := run([]string{cmd}, &out, nil)
 		if e == nil {
@@ -283,6 +287,22 @@ func TestRun_StubCommands(t *testing.T) {
 		}
 		if !strings.Contains(e.Error(), "not yet implemented") {
 			t.Fatalf("run(%q): unexpected error %v", cmd, e)
+		}
+	}
+}
+
+// TestRun_HistoryInspect_RequireConfig verifies the implemented history and
+// inspect commands require a project file and fail cleanly when none exists,
+// rather than reporting "not yet implemented".
+func TestRun_HistoryInspect_RequireConfig(t *testing.T) {
+	for _, cmd := range []string{"history", "inspect"} {
+		var out bytes.Buffer
+		e := run([]string{cmd, "--dir", t.TempDir()}, &out, nil)
+		if e == nil {
+			t.Fatalf("run(%q): expected config error, got nil", cmd)
+		}
+		if strings.Contains(e.Error(), "not yet implemented") {
+			t.Fatalf("run(%q): unexpected not-implemented error %v", cmd, e)
 		}
 	}
 }

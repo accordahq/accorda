@@ -10,18 +10,12 @@
 //	accorda plan     show intended actions without deploying
 //	accorda sync     run reconciliation
 //	accorda history  show deployment history
+//	accorda inspect  show per-service detail for a specific deployment
 //
-//	accorda init     create an Accorda project/target
-//	accorda status   show environment, repo, branch, Git HEAD, deployed SHA, ...
-//	accorda diff     show deployed vs desired changes
-//	accorda plan     show intended actions without deploying
-//	accorda sync     run reconciliation
-//	accorda history  show deployment history
-//
-// Additional §11 commands (inspect, logs, doctor, version) are registered;
-// version is fully implemented, and status, diff, and plan are implemented
-// in status.go, diff.go, and plan.go. The rest are recognized but report that
-// they are not yet implemented until the backing core packages land.
+// version is fully implemented, and status, diff, plan, history, and inspect
+// are implemented in their eponymous files. The remaining §11 commands
+// (logs, doctor) are recognized but report that they are not yet implemented
+// until their backing core packages land.
 package main
 
 import (
@@ -286,13 +280,8 @@ func stubCmd(name, short string) *cobra.Command {
 	}
 }
 
-func newHistoryCmd() *cobra.Command {
-	return stubCmd("history", "show deployment history")
-}
-
-func newInspectCmd() *cobra.Command {
-	return stubCmd("inspect", "show details for a specific deployment")
-}
+// The history and inspect commands are implemented in history.go and
+// inspect.go. logs and doctor remain stubs until their backing packages land.
 
 func newLogsCmd() *cobra.Command {
 	return stubCmd("logs", "show logs for a deployment or service")

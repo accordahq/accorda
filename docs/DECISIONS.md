@@ -938,3 +938,52 @@ needed and future target drivers receive the environment the same way. The
 reconciler's plan/receipt separation is preserved: the plan owns its
 `environment`, the receipt owns its `environment`, and they agree because
 both derive from the same `config.Project.Environment`.
+
+### 30. `accorda history` and `accorda inspect` read the receipt journal
+
+**Context.** Issue #28 (§11) requires two read-only CLI surfaces that turn
+the deployment journal into the spec's history table and per-service inspect
+view. The receipt journal (`internal/core/history`, ADR #27) already records
+every cycle's commit, outcome (`OutcomeHealthy`/`OutcomeFailed`/
+`OutcomeRolledBack`), changed service names, and per-service image + digest,
+so both views are reconstructible from receipts alone — no Docker daemon and
+no Git fetch is needed.
+
+**Decision.** The two commands are wired as follows:
+- `accorda history` (`cmd/accorda/history.go`) reads the local receipt
+  journal via `history.NewFileStore(receiptPath(dir))` and prints the §11
+  table: one row per cycle with time (UTC `HH:MM`), 7-char commit, result
+  glyph (`✓ healthy` / `✗ failed` / `↺ rolled_back`), and the sorted changed
+  services. Rows are printed newest first to match the §11 example (most
+  recent cycle at the top). The header is always printed, even for an empty
+  journal.
+- `accorda inspect [commit]` (`cmd/accorda/inspect.go`) reads the same
+  journal and prints the per-service §11 view for the deployment at the given
+  commit (full SHA or a short prefix; empty means the most recent cycle). For
+  each changed service it prints the previous digest (from the most recent
+  healthy receipt *before* the inspected one), the deployed digest, the
+  recreated flag (true when the service is in the receipt's `Changes`), and
+  the health result (`passed` for a healthy receipt, `failed` otherwise). An
+  unchanged service (present in `Services` but not in `Changes`) prints a
+  single `unchanged` line, matching the §11 example.
+- Both commands are read-only and load the project (`config.Load`) only to
+  validate it and resolve the journal path keyed by the project directory
+  (`receiptPath`). They never construct the target or the source, so they
+  work without a running Docker daemon and without Git credentials.
+- The existing `shortSHA` helper (status.go) is reused for the commit
+  column, and the existing `receiptPath`/`lastHealthyReceipt`-style helpers
+  in sync.go are reused for journal access, so no read path is duplicated
+  (#DRY).
+- `main.go`'s `newHistoryCmd`/`newInspectCmd` stubs are replaced by the
+  implemented builders; `logs` and `doctor` remain stubs.
+
+**Consequence.** The §11 history and inspect surfaces are fully delivered
+from the receipt journal, with no new core package and no target/source
+dependency. The commands share the journal read path with `status`/`diff`/
+`sync`, so all CLI surfaces agree on what was deployed. The "previous
+digest" column reflects the prior healthy deployment's recorded digest
+(the receipt stores the resolved digest per service), and "recreated"
+reflects the plan's `Changes` list, so the inspect view is accurate without
+re-reading Git or the runtime. An unknown commit or an empty journal is
+reported as an error so an operator can distinguish "no such deployment"
+from "nothing deployed yet".
