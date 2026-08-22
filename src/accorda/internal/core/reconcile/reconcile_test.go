@@ -101,31 +101,43 @@ func (f *fakeTarget) Plan(_ context.Context, desired *state.DesiredState, _ *sta
 }
 func (f *fakeTarget) Apply(_ context.Context, p *plan.Plan) error {
 	f.applyCalls++
+	if err := f.applyFailure(); err != nil {
+		return err
+	}
+	f.applied = append(f.applied, p)
+	f.deployDone = true
+	f.applyRuntime(p)
+	return nil
+}
+
+func (f *fakeTarget) applyFailure() error {
 	if f.applyErr != nil && f.applyCalls == 1 {
 		return f.applyErr
 	}
 	if f.repairApplyErr != nil && f.deployDone {
 		return f.repairApplyErr
 	}
-	f.applied = append(f.applied, p)
-	f.deployDone = true
-	if f.runtime != nil {
-		if f.runtime.Services == nil {
-			f.runtime.Services = make(map[string]state.RuntimeService)
-		}
-		for _, action := range p.Actions {
-			if action.Kind == plan.ActionNoop || action.Service == "" {
-				continue
-			}
-			service := f.runtime.Services[action.Service]
-			service.Status = state.RunningStatus
-			if action.Image != "" {
-				service.Image = action.Image
-			}
-			f.runtime.Services[action.Service] = service
-		}
-	}
 	return nil
+}
+
+func (f *fakeTarget) applyRuntime(p *plan.Plan) {
+	if f.runtime == nil {
+		return
+	}
+	if f.runtime.Services == nil {
+		f.runtime.Services = make(map[string]state.RuntimeService)
+	}
+	for _, action := range p.Actions {
+		if action.Kind == plan.ActionNoop || action.Service == "" {
+			continue
+		}
+		service := f.runtime.Services[action.Service]
+		service.Status = state.RunningStatus
+		if action.Image != "" {
+			service.Image = action.Image
+		}
+		f.runtime.Services[action.Service] = service
+	}
 }
 func (f *fakeTarget) Health(context.Context) (*health.Health, error) {
 	if f.healthErr != nil {
