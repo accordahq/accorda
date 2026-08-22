@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"accorda/internal/config"
 )
 
 func TestRun_DoctorReportsMissingProject(t *testing.T) {
@@ -20,6 +22,41 @@ func TestRun_DoctorReportsMissingProject(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "not yet implemented") {
 		t.Fatalf("doctor output still reports stub: %q", out.String())
+	}
+}
+
+func TestResolveDoctorTargetPaths(t *testing.T) {
+	dir := t.TempDir()
+	absolute := filepath.Join(t.TempDir(), "compose.yaml")
+	cases := []struct {
+		name   string
+		target config.Target
+		want   config.Target
+	}{
+		{
+			name:   "relative file",
+			target: config.Target{File: "compose.yaml"},
+			want:   config.Target{File: filepath.Join(dir, "compose.yaml")},
+		},
+		{
+			name:   "relative path",
+			target: config.Target{Path: "deploy/compose.yaml"},
+			want:   config.Target{Path: filepath.Join(dir, "deploy/compose.yaml")},
+		},
+		{
+			name:   "absolute file",
+			target: config.Target{File: absolute},
+			want:   config.Target{File: absolute},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveDoctorTargetPaths(dir, tc.target)
+			if got != tc.want {
+				t.Fatalf("resolveDoctorTargetPaths() = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }
 

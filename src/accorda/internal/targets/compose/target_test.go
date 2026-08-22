@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -103,7 +104,8 @@ func writeComposeFile(t *testing.T) string {
 // using the project name derived from the file's directory basename.
 func newTarget(t *testing.T, path string, cli dockerClient) *Target {
 	t.Helper()
-	tgt, err := New(config.Target{Type: config.TargetCompose, File: path}, WithDockerClient(cli))
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithRunner(&fakeRunner{}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -212,6 +214,24 @@ func TestValidate_PingFails_IsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "docker ping") {
 		t.Errorf("err = %v, want one mentioning docker ping", err)
+	}
+}
+
+func TestValidate_ComposeCLIFails_IsError(t *testing.T) {
+	path := writeComposeFile(t)
+	runner := &fakeRunner{err: errors.New("compose plugin missing")}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(&fakeDockerClient{}), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	err = tgt.Validate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "docker compose CLI") {
+		t.Fatalf("Validate() error = %v, want Docker Compose CLI failure", err)
+	}
+	if len(runner.calls) != 1 || !slices.Equal(runner.calls[0], []string{"version"}) {
+		t.Fatalf("runner calls = %v, want [[version]]", runner.calls)
 	}
 }
 
@@ -946,6 +966,15 @@ func TestValidate_NilDockerClient_IsError(t *testing.T) {
 	tgt.docker = nil
 	if err := tgt.Validate(context.Background()); err == nil {
 		t.Fatal("expected error for nil docker client, got nil")
+	}
+}
+
+func TestValidate_NilRunner_IsError(t *testing.T) {
+	path := writeComposeFile(t)
+	tgt := newTarget(t, path, &fakeDockerClient{})
+	tgt.runner = nil
+	if err := tgt.Validate(context.Background()); err == nil {
+		t.Fatal("expected error for nil compose runner, got nil")
 	}
 }
 
