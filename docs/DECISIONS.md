@@ -1020,12 +1020,13 @@ file, and Docker connectivity validation already exist at their owning package
 boundaries; duplicating those rules in the CLI would let diagnostics drift from
 the reconciliation lifecycle.
 
-**Decision.** `accorda doctor` loads and validates `accorda.yaml`, validates
-the configured Git source without fetching it, resolves relative target paths
-from the project directory supplied by `--dir`, then constructs the target and
-calls its `Validate` method. For the Compose target, that final check parses the
-Compose file, pings the Docker engine, and invokes `docker compose version` to
-confirm the deployment CLI is available. Results are printed in dependency
+**Decision.** Every project command resolves relative target paths from the
+project directory supplied by `--dir` through the shared `buildTarget` helper.
+`accorda doctor` loads and validates `accorda.yaml`, validates the configured
+Git source without fetching it, constructs the target through that shared path,
+and calls its `Validate` method. For the Compose target, that final check parses
+the Compose file, pings the Docker engine, and invokes `docker compose version`
+to confirm the deployment CLI is available. Results are printed in dependency
 order with `PASS` or `FAIL`; a failed check makes the command exit nonzero. A
 project-load failure stops dependent checks because no trustworthy source or
 target configuration exists. The command never fetches Git or mutates the

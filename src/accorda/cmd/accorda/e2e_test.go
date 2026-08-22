@@ -63,9 +63,8 @@ func writeE2EProject(t *testing.T) string {
 	if err := os.WriteFile(composePath, []byte(e2eCompose), 0o644); err != nil {
 		t.Fatalf("write target compose: %v", err)
 	}
-	// target.file is resolved against the process working directory (not the
-	// config's --dir), so the test must use an absolute path for the target
-	// Compose file; a relative default filename would point at the cwd and fail.
+	// Use the default relative target filename. Every project command must
+	// resolve it from --dir rather than the process working directory.
 	project := `version: 1
 environment: production
 source:
@@ -74,13 +73,13 @@ source:
   branch: main
 target:
   type: ` + config.TargetCompose + `
-  file: ` + composePath + `
+  file: ` + config.DefaultComposeFile + `
 images:
   pull: ` + config.PullNever + `
 health:
   timeout: 30s
 `
-	if err := os.WriteFile(filepath.Join(dir, "accorda.yaml"), []byte(project), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, config.File), []byte(project), 0o644); err != nil {
 		t.Fatalf("write accorda.yaml: %v", err)
 	}
 	return dir

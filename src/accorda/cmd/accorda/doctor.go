@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -70,26 +69,11 @@ func diagnose(ctx context.Context, dir string) []doctorResult {
 	src := git.New(proj.Source)
 	results = append(results, doctorCheck(doctorSource, src.Validate(ctx)))
 
-	proj.Target = resolveDoctorTargetPaths(dir, proj.Target)
-	tgt, err := buildTarget(proj)
+	tgt, err := buildTarget(proj, dir)
 	if err == nil {
 		err = tgt.Validate(ctx)
 	}
 	return append(results, doctorCheck(doctorCompose, err))
-}
-
-// resolveDoctorTargetPaths interprets relative target paths from the directory
-// containing accorda.yaml. This makes --dir behave like a project root instead
-// of accidentally resolving the default Compose filename against the caller's
-// working directory.
-func resolveDoctorTargetPaths(dir string, target config.Target) config.Target {
-	if target.File != "" && !filepath.IsAbs(target.File) {
-		target.File = filepath.Join(dir, target.File)
-	}
-	if target.Path != "" && !filepath.IsAbs(target.Path) {
-		target.Path = filepath.Join(dir, target.Path)
-	}
-	return target
 }
 
 func doctorCheck(name string, err error) doctorResult {

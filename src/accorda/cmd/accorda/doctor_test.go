@@ -25,42 +25,6 @@ func TestRun_DoctorReportsMissingProject(t *testing.T) {
 	}
 }
 
-func TestResolveDoctorTargetPaths(t *testing.T) {
-	dir := t.TempDir()
-	absolute := filepath.Join(t.TempDir(), config.DefaultComposeFile)
-	nested := filepath.Join("deploy", config.DefaultComposeFile)
-	cases := []struct {
-		name   string
-		target config.Target
-		want   config.Target
-	}{
-		{
-			name:   "relative file",
-			target: config.Target{File: config.DefaultComposeFile},
-			want:   config.Target{File: filepath.Join(dir, config.DefaultComposeFile)},
-		},
-		{
-			name:   "relative path",
-			target: config.Target{Path: nested},
-			want:   config.Target{Path: filepath.Join(dir, nested)},
-		},
-		{
-			name:   "absolute file",
-			target: config.Target{File: absolute},
-			want:   config.Target{File: absolute},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := resolveDoctorTargetPaths(dir, tc.target)
-			if got != tc.want {
-				t.Fatalf("resolveDoctorTargetPaths() = %+v, want %+v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestDiagnoseReportsUnsupportedTarget(t *testing.T) {
 	dir := t.TempDir()
 	project := `version: 1
@@ -73,7 +37,7 @@ target:
   type: ` + config.TargetKubernetes + `
   path: deploy
 `
-	if err := os.WriteFile(filepath.Join(dir, "accorda.yaml"), []byte(project), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, config.File), []byte(project), 0o644); err != nil {
 		t.Fatalf("write project: %v", err)
 	}
 

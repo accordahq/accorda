@@ -20,7 +20,7 @@ The `accorda inspect` command (`cmd/accorda/inspect.go`, `docs/ACCORDA.md` §11)
 
 The `accorda logs SERVICE` command (`cmd/accorda/logs.go`, `docs/ACCORDA.md` §11) fetches logs for every container of a Compose service through the target driver. `--tail N` limits the initial output and `--follow`/`-f` streams new output. Docker's stdout/stderr streams are decoded and written to the corresponding terminal streams.
 
-The `accorda doctor` command (`cmd/accorda/doctor.go`, `docs/ACCORDA.md` §11) checks the project configuration, Git source settings, Compose target file, Docker engine connectivity, and Docker Compose CLI availability. Relative target paths are resolved from the project directory supplied by `--dir`. It prints each check result and exits nonzero when a check fails. The command is read-only: it does not fetch Git or change the deployment target.
+The `accorda doctor` command (`cmd/accorda/doctor.go`, `docs/ACCORDA.md` §11) checks the project configuration, Git source settings, Compose target file, Docker engine connectivity, and Docker Compose CLI availability. Like every project command, it resolves relative target paths from the project directory supplied by `--dir`. It prints each check result and exits nonzero when a check fails. The command is read-only: it does not fetch Git or change the deployment target.
 
 ## Quick start
 

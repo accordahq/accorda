@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func TestBuildTarget_Compose(t *testing.T) {
 		Images: config.Images{Pull: config.PullAlways},
 		Health: config.Health{Timeout: 0},
 	}
-	tgt, err := buildTarget(p)
+	tgt, err := buildTarget(p, ".")
 	if err != nil {
 		t.Fatalf("buildTarget(compose) error = %v", err)
 	}
@@ -43,12 +44,48 @@ func TestBuildTarget_Unsupported(t *testing.T) {
 	p := &config.Project{
 		Target: config.Target{Type: config.TargetKubernetes, Path: "manifests"},
 	}
-	_, err := buildTarget(p)
+	_, err := buildTarget(p, ".")
 	if err == nil {
 		t.Fatal("expected error for unsupported target, got nil")
 	}
 	if !strings.Contains(err.Error(), "not implemented") {
 		t.Fatalf("unexpected error %v", err)
+	}
+}
+
+func TestResolveTargetPaths(t *testing.T) {
+	dir := t.TempDir()
+	absolute := filepath.Join(t.TempDir(), config.DefaultComposeFile)
+	nested := filepath.Join("deploy", config.DefaultComposeFile)
+	cases := []struct {
+		name   string
+		target config.Target
+		want   config.Target
+	}{
+		{
+			name:   "relative file",
+			target: config.Target{File: config.DefaultComposeFile},
+			want:   config.Target{File: filepath.Join(dir, config.DefaultComposeFile)},
+		},
+		{
+			name:   "relative path",
+			target: config.Target{Path: nested},
+			want:   config.Target{Path: filepath.Join(dir, nested)},
+		},
+		{
+			name:   "absolute file",
+			target: config.Target{File: absolute},
+			want:   config.Target{File: absolute},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveTargetPaths(dir, tc.target)
+			if got != tc.want {
+				t.Fatalf("resolveTargetPaths() = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }
 

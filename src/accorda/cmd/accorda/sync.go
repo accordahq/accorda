@@ -59,7 +59,7 @@ func runSync(cmd *cobra.Command, dir string) error {
 	}
 
 	src := git.New(proj.Source)
-	tgt, err := buildTarget(proj)
+	tgt, err := buildTarget(proj, dir)
 	if err != nil {
 		return err
 	}
@@ -148,17 +148,31 @@ func lastHealthyReceipt(store history.Store) (*history.Receipt, error) {
 }
 
 // buildTarget constructs the deployment target from the project's target
-// configuration. Only the Compose target is implemented; other target types
-// are recognized by the config loader but have no driver yet.
-func buildTarget(p *config.Project) (*compose.Target, error) {
+// configuration, resolving relative target paths from the directory containing
+// accorda.yaml. Only the Compose target is implemented; other target types are
+// recognized by the config loader but have no driver yet.
+func buildTarget(p *config.Project, dir string) (*compose.Target, error) {
 	if p.Target.Type != config.TargetCompose {
 		return nil, fmt.Errorf("target type %q is not implemented", p.Target.Type)
 	}
-	return compose.New(p.Target,
+	target := resolveTargetPaths(dir, p.Target)
+	return compose.New(target,
 		compose.WithPullPolicy(p.Images.Pull),
 		compose.WithHealthTimeout(p.Health.Timeout),
 		compose.WithEnvironment(p.Environment),
 	)
+}
+
+// resolveTargetPaths interprets relative target paths from the project root.
+// It returns a copy so loading a target never mutates the parsed Project.
+func resolveTargetPaths(dir string, target config.Target) config.Target {
+	if target.File != "" && !filepath.IsAbs(target.File) {
+		target.File = filepath.Join(dir, target.File)
+	}
+	if target.Path != "" && !filepath.IsAbs(target.Path) {
+		target.Path = filepath.Join(dir, target.Path)
+	}
+	return target
 }
 
 // receiptPath returns the path of the deployment receipt journal for the
