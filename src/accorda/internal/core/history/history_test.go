@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -58,6 +59,20 @@ func TestReceipt_SortedServiceNames(t *testing.T) {
 	want := []string{"api", "redis", "worker"}
 	if got := r.SortedServiceNames(); !reflect.DeepEqual(got, want) {
 		t.Errorf("SortedServiceNames = %v, want %v", got, want)
+	}
+}
+
+func TestStub_ReturnsNotImplemented(t *testing.T) {
+	store := NewStub()
+	ctx := context.Background()
+	if err := store.Append(ctx, Receipt{}); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("Append() error = %v, want ErrNotImplemented", err)
+	}
+	if receipts, err := store.List(ctx); !errors.Is(err, ErrNotImplemented) || receipts != nil {
+		t.Errorf("List() = %v, %v; want nil, ErrNotImplemented", receipts, err)
+	}
+	if got := ErrNotImplemented.Error(); got != "history: not implemented" {
+		t.Errorf("ErrNotImplemented.Error() = %q", got)
 	}
 }
 

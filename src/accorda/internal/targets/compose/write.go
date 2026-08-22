@@ -149,9 +149,13 @@ func portString(p state.Port) string {
 		b = append(b, p.HostIP...)
 		b = append(b, ':')
 	}
-	b = append(b, p.Host...)
+	if p.Host != "" {
+		b = append(b, p.Host...)
+	}
 	if p.Container != "" {
-		b = append(b, ':')
+		if len(b) > 0 {
+			b = append(b, ':')
+		}
 		b = append(b, p.Container...)
 	}
 	if p.Protocol != "" && p.Protocol != "tcp" {
