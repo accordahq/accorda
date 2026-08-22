@@ -193,9 +193,18 @@ func receiptPath(dir string) string {
 // lock without exposing an absolute host path in the state directory.
 func deploymentLockPath(dir string, target config.Target) string {
 	resolved := resolveTargetPaths(dir, target)
-	identity := resolved.Type + "\x00" + canonicalTargetPath(resolved.File) + "\x00" + canonicalTargetPath(resolved.Path)
+	identity := resolved.Type + "\x00" + canonicalTargetPath(composeTargetFile(resolved))
 	digest := sha256.Sum256([]byte(identity))
 	return filepath.Join(stateBase(), "accorda", "locks", fmt.Sprintf("%x.lock", digest))
+}
+
+// composeTargetFile mirrors compose.New's file-over-path precedence so the
+// two supported configuration spellings identify the same deployment target.
+func composeTargetFile(target config.Target) string {
+	if target.File != "" {
+		return target.File
+	}
+	return target.Path
 }
 
 func canonicalTargetPath(path string) string {

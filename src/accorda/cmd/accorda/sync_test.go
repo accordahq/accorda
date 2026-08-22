@@ -99,6 +99,10 @@ func TestDeploymentLockPathUsesTargetIdentity(t *testing.T) {
 	if first != second {
 		t.Errorf("same target lock paths differ: %q != %q", first, second)
 	}
+	pathSpelling := deploymentLockPath(t.TempDir(), config.Target{Type: config.TargetCompose, Path: composeFile})
+	if first != pathSpelling {
+		t.Errorf("target.file and target.path lock paths differ: %q != %q", first, pathSpelling)
+	}
 	other := deploymentLockPath(t.TempDir(), config.Target{
 		Type: config.TargetCompose,
 		File: filepath.Join(t.TempDir(), config.DefaultComposeFile),

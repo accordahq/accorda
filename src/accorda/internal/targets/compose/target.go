@@ -405,16 +405,32 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 			if removedOrphans {
 				continue
 			}
+			if err := t.applyAction(ctx, a); err != nil {
+				return &targets.ApplyError{Completed: completed, Failed: a, Err: err}
+			}
 			removedOrphans = true
+			completed = append(completed, actionsOfKind(p.Actions, plan.ActionRemove)...)
+			continue
+		}
+		if a.Kind == plan.ActionNoop {
+			continue
 		}
 		if err := t.applyAction(ctx, a); err != nil {
 			return &targets.ApplyError{Completed: completed, Failed: a, Err: err}
 		}
-		if a.Kind != plan.ActionNoop {
-			completed = append(completed, a)
-		}
+		completed = append(completed, a)
 	}
 	return nil
+}
+
+func actionsOfKind(actions []plan.Action, kind plan.ActionKind) []plan.Action {
+	selected := make([]plan.Action, 0)
+	for _, action := range actions {
+		if action.Kind == kind {
+			selected = append(selected, action)
+		}
+	}
+	return selected
 }
 
 // applyAction executes a single plan action against the Compose project. It

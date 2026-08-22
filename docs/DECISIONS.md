@@ -1052,10 +1052,12 @@ against live runtime state, reusing its deployment ID so target operations can
 be retried idempotently from observed state. If Git has advanced, the checkpoint is
 closed as `interrupted` and the latest commit wins. `WithLocker` guards the
 complete fetch-through-verification cycle; the CLI supplies a target-scoped
-PID-owner file lock under the Accorda state directory, waits for active owners,
-and reclaims a dead owner's lock. Before releasing it, the reconciler fetches
-again and immediately repeats when a commit arrived in flight. Compose returns
-a structured `targets.ApplyError` with completed actions and the failed action.
+OS advisory file lock under the Accorda state directory. The kernel releases
+the lock handle when an owner exits, avoiding stale-lock/PID-reuse ambiguity.
+Before releasing it, the reconciler fetches again and immediately repeats when
+a commit arrived in flight. Compose returns a structured `targets.ApplyError`
+with completed actions (including all orphans covered by one batched removal)
+and the failed action.
 
 **Consequence.** Process crashes leave durable, recoverable intent; retries
 converge from observed runtime rather than replaying assumed progress; two CLI

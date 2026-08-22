@@ -2,9 +2,6 @@ package locking
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,10 +10,7 @@ import (
 	"time"
 )
 
-const (
-	lockPollInterval = 100 * time.Millisecond
-	ownerWriteGrace  = 2 * time.Second
-)
+const lockPollInterval = 100 * time.Millisecond
 
 // UnlockFunc releases an acquired deployment lock. It is safe to call more
 // than once.
@@ -27,16 +21,11 @@ type Locker interface {
 	Lock(ctx context.Context) (UnlockFunc, error)
 }
 
-// FileLocker is a cross-process lock backed by an atomically-created owner
-// file. A dead owner's file is reclaimed, allowing a restarted agent to
-// continue reconciliation after a crash.
+// FileLocker is a cross-process advisory lock backed by a persistent file.
+// The operating system owns the lock lifetime and releases it when the owning
+// process exits, so crash recovery is not vulnerable to PID reuse.
 type FileLocker struct {
 	path string
-}
-
-type owner struct {
-	PID   int    `json:"pid"`
-	Token string `json:"token"`
 }
 
 var _ Locker = (*FileLocker)(nil)
@@ -46,9 +35,9 @@ func NewFileLocker(path string) *FileLocker {
 	return &FileLocker{path: path}
 }
 
-// Lock waits until the lock is available or ctx is cancelled. Creation with
-// O_EXCL makes acquisition atomic across processes. When an owner was killed,
-// its PID is no longer alive and the stale file is removed before retrying.
+// Lock waits until the operating-system advisory lock is available or ctx is
+// cancelled. The lock file remains on disk after release; ownership is the
+// kernel lock on its open handle, which is released automatically on crash.
 func (l *FileLocker) Lock(ctx context.Context) (UnlockFunc, error) {
 	if l == nil || l.path == "" {
 		return nil, errors.New("locking: file lock path is empty")
@@ -56,115 +45,46 @@ func (l *FileLocker) Lock(ctx context.Context) (UnlockFunc, error) {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return nil, fmt.Errorf("locking: create lock dir: %w", err)
 	}
+	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("locking: open lock file: %w", err)
+	}
+	return waitForLock(ctx, file)
+}
+
+func waitForLock(ctx context.Context, file *os.File) (UnlockFunc, error) {
 	for {
-		unlock, acquired, err := l.tryLock()
+		acquired, err := tryAdvisoryLock(file)
 		if err != nil {
-			return nil, err
+			_ = file.Close()
+			return nil, fmt.Errorf("locking: acquire deployment lock: %w", err)
 		}
 		if acquired {
-			return unlock, nil
+			return unlockFile(file), nil
 		}
 		timer := time.NewTimer(lockPollInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+			_ = file.Close()
 			return nil, fmt.Errorf("locking: wait for deployment lock: %w", ctx.Err())
 		case <-timer.C:
 		}
 	}
 }
 
-func (l *FileLocker) tryLock() (UnlockFunc, bool, error) {
-	token, err := randomToken()
-	if err != nil {
-		return nil, false, err
-	}
-	current := owner{PID: os.Getpid(), Token: token}
-	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err == nil {
-		return l.finishLock(f, current)
-	}
-	if !errors.Is(err, os.ErrExist) {
-		return nil, false, fmt.Errorf("locking: create lock: %w", err)
-	}
-	if err := l.reclaimStale(); err != nil {
-		return nil, false, err
-	}
-	return nil, false, nil
-}
-
-func (l *FileLocker) finishLock(f *os.File, current owner) (UnlockFunc, bool, error) {
-	data, err := json.Marshal(current)
-	if err == nil {
-		_, err = f.Write(data)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		_ = os.Remove(l.path)
-		return nil, false, fmt.Errorf("locking: write owner: %w", err)
-	}
+func unlockFile(file *os.File) UnlockFunc {
 	var once sync.Once
 	var releaseErr error
 	return func() error {
-		once.Do(func() { releaseErr = l.release(current.Token) })
+		once.Do(func() {
+			if err := releaseAdvisoryLock(file); err != nil {
+				releaseErr = fmt.Errorf("locking: release deployment lock: %w", err)
+			}
+			if err := file.Close(); releaseErr == nil && err != nil {
+				releaseErr = fmt.Errorf("locking: close lock file: %w", err)
+			}
+		})
 		return releaseErr
-	}, true, nil
-}
-
-func (l *FileLocker) reclaimStale() error {
-	data, err := os.ReadFile(l.path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("locking: read owner: %w", err)
 	}
-	var current owner
-	if err := json.Unmarshal(data, &current); err != nil || current.PID <= 0 || current.Token == "" {
-		info, statErr := os.Stat(l.path)
-		if statErr == nil && time.Since(info.ModTime()) < ownerWriteGrace {
-			return nil
-		}
-		return removeLockFile(l.path)
-	}
-	if processAlive(current.PID) {
-		return nil
-	}
-	return removeLockFile(l.path)
-}
-
-func (l *FileLocker) release(token string) error {
-	data, err := os.ReadFile(l.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("locking: read lock for release: %w", err)
-	}
-	var current owner
-	if err := json.Unmarshal(data, &current); err != nil || current.Token != token {
-		return errors.New("locking: lock ownership changed before release")
-	}
-	return removeLockFile(l.path)
-}
-
-func removeLockFile(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("locking: remove stale lock: %w", err)
-	}
-	return nil
-}
-
-func randomToken() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("locking: generate owner token: %w", err)
-	}
-	return hex.EncodeToString(b), nil
 }

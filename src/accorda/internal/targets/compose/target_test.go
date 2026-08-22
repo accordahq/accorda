@@ -816,6 +816,40 @@ func TestApply_RunnerFailureReportsCompletedAndFailedActions(t *testing.T) {
 	}
 }
 
+func TestApply_PartialFailureReportsAllBatchedOrphanRemovals(t *testing.T) {
+	path := writeComposeFile(t)
+	runner := &fakeRunner{errs: []error{nil, errors.New("worker boom")}}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(&fakeDockerClient{}), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := plan.New("", "production", "abc123", time.Now()).
+		AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan-a"}).
+		AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan-b"}).
+		AddAction(plan.Action{Kind: plan.ActionRecreate, Service: "worker"})
+
+	err = tgt.Apply(context.Background(), p)
+	var applyErr *targets.ApplyError
+	if !errors.As(err, &applyErr) {
+		t.Fatalf("Apply error = %T %v, want *targets.ApplyError", err, err)
+	}
+	if got := actionServices(applyErr.Completed); !reflect.DeepEqual(got, []string{"orphan-a", "orphan-b"}) {
+		t.Errorf("completed services = %v, want both removed orphans", got)
+	}
+	if applyErr.Failed.Service != "worker" {
+		t.Errorf("failed = %+v, want worker", applyErr.Failed)
+	}
+}
+
+func actionServices(actions []plan.Action) []string {
+	services := make([]string, 0, len(actions))
+	for _, action := range actions {
+		services = append(services, action.Service)
+	}
+	return services
+}
+
 func TestApply_NilPlan_IsError(t *testing.T) {
 	path := writeComposeFile(t)
 	cli := &fakeDockerClient{}
