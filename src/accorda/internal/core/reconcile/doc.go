@@ -22,14 +22,18 @@
 // and re-applies to restore the desired runtime and emits DriftReconciled,
 // and disabled ignores drift entirely.
 //
-// Successful and failed deployments are recorded as deployment receipts
-// (docs/ACCORDA.md §7, §11) through the history.Store configured via
-// WithReceiptStore: a changed, SYNCED deployment records an OutcomeHealthy
-// receipt with the runtime digests and changed services, a deploy or
-// health-verification failure records an OutcomeFailed receipt, and a
-// successful rollback records an OutcomeRolledBack receipt carrying the
-// restored commit (docs/ACCORDA.md §20). Recording is best-effort; healthy
-// receipts are gated on the plan changing the target.
+// Deployment lifecycle is recorded through the history.Store configured via
+// WithReceiptStore. Before target mutation, a changed deployment durably
+// records OutcomeInProgress. A restart finds an unmatched checkpoint,
+// re-plans against live runtime state, and resumes with the same deployment
+// ID; a newer Git commit closes the old attempt as OutcomeInterrupted and is
+// reconciled instead. Terminal outcomes are OutcomeHealthy, OutcomeFailed,
+// and OutcomeRolledBack (docs/ACCORDA.md §7, §11, §47).
+//
+// WithLocker serializes the complete cycle for a target. After reaching
+// SYNCED, the reconciler fetches once more while retaining the lock and
+// immediately runs another cycle when Git changed during deployment
+// (docs/ACCORDA.md §47).
 //
 // Rollback restores the last known-healthy deployment when a deploy or
 // health-verification phase fails (docs/ACCORDA.md §20). The previous
@@ -45,6 +49,6 @@
 // safely possible" qualifier in §20).
 //
 // See docs/ACCORDA.md §6 (Reconciliation Lifecycle), §7 (Deployment Receipts),
-// §11 (history), §20 (Rollback), and §5.3 (Runtime State) for the
-// authoritative description.
+// §11 (history), §20 (Rollback), §47 (Reconciliation Hardening), and
+// §5.3 (Runtime State) for the authoritative description.
 package reconcile

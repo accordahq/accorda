@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"accorda/internal/core/events"
 	"accorda/internal/core/health"
 	"accorda/internal/core/history"
+	"accorda/internal/core/locking"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 	"accorda/internal/sources"
@@ -21,6 +23,8 @@ type fakeSource struct {
 	fetchErr   error
 	desiredErr error
 	commit     sources.Commit
+	fetches    []sources.Commit
+	fetchCalls int
 	desired    *state.DesiredState
 	// desiredByCommit returns the desired state for a specific commit SHA,
 	// used by rollback to restore the full previous service model. When a
@@ -30,8 +34,17 @@ type fakeSource struct {
 
 func (f *fakeSource) Validate(context.Context) error { return nil }
 func (f *fakeSource) Fetch(context.Context) (sources.Commit, error) {
+	call := f.fetchCalls
+	f.fetchCalls++
 	if f.fetchErr != nil {
 		return sources.Commit{}, f.fetchErr
+	}
+	if len(f.fetches) > 0 {
+		index := call
+		if index >= len(f.fetches) {
+			index = len(f.fetches) - 1
+		}
+		return f.fetches[index], nil
 	}
 	return f.commit, nil
 }
@@ -82,7 +95,7 @@ func (f *fakeTarget) Plan(_ context.Context, desired *state.DesiredState, _ *sta
 	}
 	p := plan.New("dep_1", desired.Repository, desired.Commit, time.Unix(0, 0))
 	if f.changedPlan {
-		p.AddAction(plan.Action{Kind: plan.ActionRecreate, Service: "api", Image: "api:2"})
+		p.AddAction(plan.Action{Kind: plan.ActionRecreate, Service: "api", Image: desired.Services["api"].Image})
 	}
 	return p, nil
 }
@@ -96,6 +109,22 @@ func (f *fakeTarget) Apply(_ context.Context, p *plan.Plan) error {
 	}
 	f.applied = append(f.applied, p)
 	f.deployDone = true
+	if f.runtime != nil {
+		if f.runtime.Services == nil {
+			f.runtime.Services = make(map[string]state.RuntimeService)
+		}
+		for _, action := range p.Actions {
+			if action.Kind == plan.ActionNoop || action.Service == "" {
+				continue
+			}
+			service := f.runtime.Services[action.Service]
+			service.Status = state.RunningStatus
+			if action.Image != "" {
+				service.Image = action.Image
+			}
+			f.runtime.Services[action.Service] = service
+		}
+	}
 	return nil
 }
 func (f *fakeTarget) Health(context.Context) (*health.Health, error) {
@@ -326,6 +355,53 @@ func TestReconcile_NoBus_DoesNotPanic(t *testing.T) {
 	res := r.Reconcile(context.Background())
 	if res.Phase != PhaseSynced {
 		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseSynced)
+	}
+}
+
+type trackingLocker struct {
+	locks   int
+	unlocks int
+	err     error
+}
+
+func (l *trackingLocker) Lock(context.Context) (locking.UnlockFunc, error) {
+	l.locks++
+	if l.err != nil {
+		return nil, l.err
+	}
+	return func() error {
+		l.unlocks++
+		return nil
+	}, nil
+}
+
+func TestReconcile_HoldsConfiguredLockForCycle(t *testing.T) {
+	src := &fakeSource{commit: sources.Commit{SHA: "abc123"}, desired: healthyDesired()}
+	tgt := &fakeTarget{health: healthyHealth(), runtime: healthyRuntime()}
+	locker := &trackingLocker{}
+
+	res := New(src, tgt, events.NewBus()).WithLocker(locker).Reconcile(context.Background())
+
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseSynced)
+	}
+	if locker.locks != 1 || locker.unlocks != 1 {
+		t.Errorf("lock/unlock calls = %d/%d, want 1/1", locker.locks, locker.unlocks)
+	}
+}
+
+func TestReconcile_LockFailureDoesNotFetchOrMutate(t *testing.T) {
+	src := &fakeSource{commit: sources.Commit{SHA: "abc123"}, desired: healthyDesired()}
+	tgt := &fakeTarget{health: healthyHealth(), runtime: healthyRuntime()}
+	locker := &trackingLocker{err: errors.New("lock boom")}
+
+	res := New(src, tgt, events.NewBus()).WithLocker(locker).Reconcile(context.Background())
+
+	if res.Phase != PhaseFailed || !strings.Contains(res.Err.Error(), "lock boom") {
+		t.Fatalf("result = %+v, want lock failure", res)
+	}
+	if src.fetchCalls != 0 || tgt.applyCalls != 0 {
+		t.Errorf("fetch/apply calls = %d/%d, want 0/0", src.fetchCalls, tgt.applyCalls)
 	}
 }
 
@@ -675,10 +751,13 @@ func TestReconcile_RecordsReceiptOnChangedDeployment(t *testing.T) {
 	if res.Phase != PhaseSynced {
 		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
 	}
-	if len(store.appended) != 1 {
-		t.Fatalf("appended receipts = %d, want 1", len(store.appended))
+	if len(store.appended) != 2 {
+		t.Fatalf("appended receipts = %d, want 2 (in_progress + healthy)", len(store.appended))
 	}
-	rc := store.appended[0]
+	if store.appended[0].Result != history.OutcomeInProgress {
+		t.Errorf("first receipt result = %q, want %q", store.appended[0].Result, history.OutcomeInProgress)
+	}
+	rc := store.appended[1]
 	if rc.DeploymentID == "" {
 		t.Error("receipt deployment id is empty")
 	}
@@ -738,6 +817,93 @@ func TestReconcile_NoopPlan_NoReceipt(t *testing.T) {
 	}
 }
 
+func TestReconcile_ResumesUnfinishedDeployment(t *testing.T) {
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123", Branch: "main"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{health: healthyHealth(), runtime: healthyRuntime()}
+	store := &fakeStore{appended: []history.Receipt{{
+		DeploymentID: "dep_recover",
+		Commit:       "abc123",
+		Result:       history.OutcomeInProgress,
+		Changes:      []string{"api"},
+	}}}
+
+	res := New(src, tgt, events.NewBus()).WithReceiptStore(store).Reconcile(context.Background())
+
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	}
+	if len(store.appended) != 2 {
+		t.Fatalf("receipts = %d, want pending + recovered healthy", len(store.appended))
+	}
+	recovered := store.appended[1]
+	if recovered.DeploymentID != "dep_recover" || recovered.Result != history.OutcomeHealthy {
+		t.Errorf("recovered receipt = %+v", recovered)
+	}
+	if want := []string{"api"}; !reflect.DeepEqual(recovered.Changes, want) {
+		t.Errorf("recovered changes = %v, want %v", recovered.Changes, want)
+	}
+}
+
+func TestReconcile_SupersedesUnfinishedDeploymentWithNewCommit(t *testing.T) {
+	desired := healthyDesired()
+	desired.Commit = "new456"
+	desired.Services["api"] = state.Service{Image: "api:3"}
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "new456", Branch: "main"},
+		desired: desired,
+	}
+	tgt := &fakeTarget{health: healthyHealth(), runtime: healthyRuntime(), changedPlan: true}
+	store := &fakeStore{appended: []history.Receipt{{
+		DeploymentID: "dep_old",
+		Commit:       "old123",
+		Result:       history.OutcomeInProgress,
+	}}}
+
+	res := New(src, tgt, events.NewBus()).WithReceiptStore(store).Reconcile(context.Background())
+
+	if res.Phase != PhaseSynced || res.Commit != "new456" {
+		t.Fatalf("result = %+v, want SYNCED at new456", res)
+	}
+	if got := store.appended[1]; got.DeploymentID != "dep_old" || got.Result != history.OutcomeInterrupted {
+		t.Errorf("superseded receipt = %+v", got)
+	}
+	if got := store.appended[len(store.appended)-1]; got.Result != history.OutcomeHealthy || got.Commit != "new456" {
+		t.Errorf("terminal receipt = %+v", got)
+	}
+}
+
+func TestReconcile_ProcessesCommitThatArrivesDuringDeployment(t *testing.T) {
+	oldDesired := healthyDesired()
+	newDesired := healthyDesired()
+	newDesired.Commit = "def456"
+	newDesired.Services["api"] = state.Service{Image: "api:3"}
+	src := &fakeSource{
+		fetches: []sources.Commit{
+			{SHA: "abc123", Branch: "main"},
+			{SHA: "def456", Branch: "main"},
+			{SHA: "def456", Branch: "main"},
+		},
+		desired: oldDesired,
+		desiredByCommit: map[string]*state.DesiredState{
+			"abc123": oldDesired,
+			"def456": newDesired,
+		},
+	}
+	tgt := &fakeTarget{health: healthyHealth(), runtime: healthyRuntime(), changedPlan: true}
+
+	res := New(src, tgt, events.NewBus()).Reconcile(context.Background())
+
+	if res.Phase != PhaseSynced || res.Commit != "def456" {
+		t.Fatalf("result = %+v, want SYNCED at def456", res)
+	}
+	if tgt.applyCalls != 2 {
+		t.Errorf("apply calls = %d, want 2", tgt.applyCalls)
+	}
+}
+
 func TestReconcile_NoStore_NoReceipt(t *testing.T) {
 	// Without a configured store, a changed deployment must not panic and
 	// must not record a receipt. changedPlan is set so the store path (which
@@ -759,11 +925,10 @@ func TestReconcile_NoStore_NoReceipt(t *testing.T) {
 	}
 }
 
-func TestReconcile_StoreError_StillSynced(t *testing.T) {
-	// A store failure is not a deployment failure: the cycle still reports
-	// SYNCED (receipt recording is best-effort). changedPlan is set so the
-	// store is actually consulted; the assertion that Append was attempted
-	// proves recordReceipt ran despite the nil store path being unreachable.
+func TestReconcile_CheckpointError_PreventsDeployment(t *testing.T) {
+	// A changed deployment must not mutate the target unless its recovery
+	// checkpoint was persisted first. Otherwise a crash could leave no durable
+	// evidence that an idempotent retry is required.
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
@@ -777,14 +942,17 @@ func TestReconcile_StoreError_StillSynced(t *testing.T) {
 	r := New(src, tgt, events.NewBus()).WithReceiptStore(store)
 
 	res := r.Reconcile(context.Background())
-	if res.Phase != PhaseSynced {
-		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	if res.Phase != PhaseFailed {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseFailed, res.Err)
 	}
 	if len(store.appended) != 0 {
 		t.Errorf("appended receipts = %d, want 0 (the store errored)", len(store.appended))
 	}
 	if store.appendCalls != 1 {
-		t.Errorf("store append calls = %d, want 1 (recordReceipt must consult the store)", store.appendCalls)
+		t.Errorf("store append calls = %d, want 1", store.appendCalls)
+	}
+	if tgt.applyCalls != 0 {
+		t.Errorf("target apply calls = %d, want 0", tgt.applyCalls)
 	}
 }
 
@@ -850,10 +1018,10 @@ func TestReconcile_HealthFailure_RecordsFailedReceipt(t *testing.T) {
 	if res.Phase != PhaseFailed {
 		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
 	}
-	if len(store.appended) != 1 {
-		t.Fatalf("appended receipts = %d, want 1", len(store.appended))
+	if len(store.appended) != 2 {
+		t.Fatalf("appended receipts = %d, want 2 (in_progress + failed)", len(store.appended))
 	}
-	if rc := store.appended[0]; rc.Result != history.OutcomeFailed {
+	if rc := store.appended[1]; rc.Result != history.OutcomeFailed {
 		t.Errorf("receipt result = %q, want %q", rc.Result, history.OutcomeFailed)
 	}
 }
@@ -941,10 +1109,10 @@ func TestReconcile_ApplyFailure_RollsBackAndRecordsReceipt(t *testing.T) {
 	}
 
 	// History records the failed deployment and the rollback.
-	if len(store.appended) != 2 {
-		t.Fatalf("appended receipts = %d, want 2 (failed + rolled_back)", len(store.appended))
+	if len(store.appended) != 3 {
+		t.Fatalf("appended receipts = %d, want 3 (in_progress + failed + rolled_back)", len(store.appended))
 	}
-	rb := store.appended[1]
+	rb := store.appended[2]
 	if rb.Result != history.OutcomeRolledBack {
 		t.Errorf("receipt result = %q, want %q", rb.Result, history.OutcomeRolledBack)
 	}
@@ -996,10 +1164,10 @@ func TestReconcile_HealthFailure_NoPrevious_NoRollback(t *testing.T) {
 		t.Errorf("applied plans = %d, want 1 (deploy only, no rollback)", len(tgt.applied))
 	}
 	// Only the failed deployment is recorded; no rollback receipt.
-	if len(store.appended) != 1 {
-		t.Fatalf("appended receipts = %d, want 1 (failed only)", len(store.appended))
+	if len(store.appended) != 2 {
+		t.Fatalf("appended receipts = %d, want 2 (in_progress + failed)", len(store.appended))
 	}
-	if rc := store.appended[0]; rc.Result != history.OutcomeFailed {
+	if rc := store.appended[1]; rc.Result != history.OutcomeFailed {
 		t.Errorf("receipt result = %q, want %q", rc.Result, history.OutcomeFailed)
 	}
 }

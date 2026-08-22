@@ -378,10 +378,10 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState, deployed
 //
 // Apply is idempotent where possible: `up -d` and `up -d --remove-orphans`
 // are safe to retry, and a plan with no changed services performs no work.
-// It handles partial failures by returning an error that names the first
-// failing service and its underlying cause, so the reconcile loop can
-// surface which service failed rather than a bare exit code
-// (docs/ACCORDA.md §6).
+// It handles partial failures with a targets.ApplyError that reports every
+// completed action plus the failed service/action and underlying cause, so an
+// operator can tell exactly how far a retry-safe apply progressed
+// (docs/ACCORDA.md §47).
 //
 // A plan may carry one ActionRemove per orphan service, but `up -d
 // --remove-orphans` removes every orphan in a single invocation. Apply
@@ -399,6 +399,7 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 		return errors.New("compose target: compose runner is nil")
 	}
 	removedOrphans := false
+	completed := make([]plan.Action, 0, len(p.Actions))
 	for _, a := range p.Actions {
 		if a.Kind == plan.ActionRemove {
 			if removedOrphans {
@@ -407,7 +408,10 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 			removedOrphans = true
 		}
 		if err := t.applyAction(ctx, a); err != nil {
-			return err
+			return &targets.ApplyError{Completed: completed, Failed: a, Err: err}
+		}
+		if a.Kind != plan.ActionNoop {
+			completed = append(completed, a)
 		}
 	}
 	return nil

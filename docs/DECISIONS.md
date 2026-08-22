@@ -1036,3 +1036,30 @@ target.
 rules remain aligned with the production config, source, and target validators.
 The command distinguishes successful readiness from actionable failures via
 both human-readable output and its process exit status.
+
+### 35. Reconciliation uses durable checkpoints and target-scoped locks
+
+**Context.** Issue #56 and `docs/ACCORDA.md` §47 require restart recovery,
+deployment locking, concurrent-commit handling, and retry-safe partial-failure
+semantics. A receipt written only after success cannot distinguish a crash
+after target mutation from a cycle that never started, and independent
+`accorda sync` processes could otherwise race on the same Compose project.
+
+**Decision.** A changed cycle appends an `in_progress` receipt before calling
+`Target.Apply`; checkpoint persistence is required before mutation. On restart,
+`history.Unfinished` finds an unmatched checkpoint and the reconciler re-plans
+against live runtime state, reusing its deployment ID so target operations can
+be retried idempotently from observed state. If Git has advanced, the checkpoint is
+closed as `interrupted` and the latest commit wins. `WithLocker` guards the
+complete fetch-through-verification cycle; the CLI supplies a target-scoped
+PID-owner file lock under the Accorda state directory, waits for active owners,
+and reclaims a dead owner's lock. Before releasing it, the reconciler fetches
+again and immediately repeats when a commit arrived in flight. Compose returns
+a structured `targets.ApplyError` with completed actions and the failed action.
+
+**Consequence.** Process crashes leave durable, recoverable intent; retries
+converge from observed runtime rather than replaying assumed progress; two CLI
+reconciles cannot mutate one target concurrently; and in-flight Git updates are
+not lost. The append-only journal retains immutable checkpoints while
+`accorda history` collapses a closed checkpoint into its terminal row and shows
+only genuinely unfinished checkpoints as `in_progress`.

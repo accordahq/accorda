@@ -11,10 +11,9 @@ import (
 // completion timestamps, the deployment outcome, the services that changed,
 // and the per-service image reference and resolved manifest digest.
 //
-// A receipt records both successful and failed deployments so the deployment
-// history (the `accorda history` surface, docs/ACCORDA.md §11) can show the
-// RESULT of every cycle: a receipt for a failed deployment carries
-// Result == OutcomeFailed and no digest data (the deployment never converged).
+// A receipt records lifecycle checkpoints and terminal outcomes so a restart
+// can distinguish unfinished work from healthy, failed, rolled-back, or
+// superseded deployments (docs/ACCORDA.md §47).
 //
 // The digest is the point of the receipt: Git may declare a mutable tag
 // (e.g. "ghcr.io/acme/api:latest"), but Accorda records the immutable digest
@@ -37,8 +36,7 @@ type Receipt struct {
 	StartedAt time.Time `json:"started_at"`
 	// CompletedAt is when the deployment finished (successfully or not).
 	CompletedAt time.Time `json:"completed_at"`
-	// Result is the deployment outcome (docs/ACCORDA.md §11), either
-	// OutcomeHealthy or OutcomeFailed.
+	// Result is the deployment checkpoint or terminal outcome.
 	Result Outcome `json:"result"`
 	// Changes lists the service names the deployment changed, in sorted
 	// order. It records the services the plan intended to change, so it is
@@ -56,6 +54,10 @@ type Receipt struct {
 type Outcome string
 
 const (
+	// OutcomeInProgress is written durably before target mutation begins. If
+	// the agent exits without a terminal receipt for the same deployment ID,
+	// the next cycle resumes it by re-planning against live runtime state.
+	OutcomeInProgress Outcome = "in_progress"
 	// OutcomeHealthy marks a deployment that converged and is healthy.
 	OutcomeHealthy Outcome = "healthy"
 	// OutcomeFailed marks a deployment that failed during apply or health
@@ -68,6 +70,9 @@ const (
 	// carries the commit that was restored, so the history records both the
 	// failed cycle and the rollback that followed it.
 	OutcomeRolledBack Outcome = "rolled_back"
+	// OutcomeInterrupted closes an in-progress deployment when recovery finds
+	// that a newer commit superseded it. The newer commit is then reconciled.
+	OutcomeInterrupted Outcome = "interrupted"
 )
 
 // ServiceReceipt records the image reference and resolved manifest digest for
@@ -107,4 +112,26 @@ func (r Receipt) SortedServiceNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Unfinished returns the newest in-progress receipt without a later terminal
+// receipt carrying the same deployment ID. It returns a clone so callers can
+// safely prepare a recovery record without mutating journal data.
+func Unfinished(receipts []Receipt) *Receipt {
+	closed := make(map[string]struct{})
+	for i := len(receipts) - 1; i >= 0; i-- {
+		receipt := receipts[i]
+		if receipt.DeploymentID == "" {
+			continue
+		}
+		if receipt.Result == OutcomeInProgress {
+			if _, ok := closed[receipt.DeploymentID]; !ok {
+				clone := receipt.Clone()
+				return &clone
+			}
+			continue
+		}
+		closed[receipt.DeploymentID] = struct{}{}
+	}
+	return nil
 }

@@ -2,11 +2,44 @@ package targets
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"accorda/internal/core/health"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 )
+
+// ApplyError reports a partial target application. Completed contains every
+// action that finished before Failed returned Err, allowing callers and
+// operators to distinguish a partial deployment from one that never began
+// (docs/ACCORDA.md §47). Targets should return this type when actions are
+// applied sequentially and one fails.
+type ApplyError struct {
+	Completed []plan.Action
+	Failed    plan.Action
+	Err       error
+}
+
+func (e *ApplyError) Error() string {
+	if e == nil {
+		return "target apply failed"
+	}
+	completed := make([]string, 0, len(e.Completed))
+	for _, action := range e.Completed {
+		completed = append(completed, fmt.Sprintf("%s:%s", action.Service, action.Kind))
+	}
+	return fmt.Sprintf("target apply failed after [%s]; failed %s:%s: %v",
+		strings.Join(completed, ", "), e.Failed.Service, e.Failed.Kind, e.Err)
+}
+
+// Unwrap exposes the concrete target failure for errors.Is/errors.As.
+func (e *ApplyError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // Target is the abstraction Accorda core uses to reconcile desired state
 // against a concrete deployment target (docs/ACCORDA.md §12). Core never

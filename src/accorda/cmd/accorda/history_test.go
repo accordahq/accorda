@@ -33,15 +33,41 @@ func TestResultLabel(t *testing.T) {
 		o    history.Outcome
 		want string
 	}{
+		{"in_progress", history.OutcomeInProgress, "… in_progress"},
 		{"healthy", history.OutcomeHealthy, "✓ healthy"},
 		{"failed", history.OutcomeFailed, "✗ failed"},
 		{"rolled_back", history.OutcomeRolledBack, "↺ rolled_back"},
+		{"interrupted", history.OutcomeInterrupted, "! interrupted"},
 		{"unknown", history.Outcome("weird"), "weird"},
 	}
 	for _, c := range cases {
 		if got := resultLabel(c.o); got != c.want {
 			t.Errorf("resultLabel(%q) = %q, want %q", c.o, got, c.want)
 		}
+	}
+}
+
+func TestCollectHistoryCollapsesCompletedCheckpoint(t *testing.T) {
+	started := time.Unix(1700000000, 0)
+	completed := started.Add(time.Minute)
+	store := &memStore{receipts: []history.Receipt{
+		{DeploymentID: "dep_1", Commit: "abc", StartedAt: started, Result: history.OutcomeInProgress},
+		{DeploymentID: "dep_1", Commit: "abc", CompletedAt: completed, Result: history.OutcomeHealthy},
+		{DeploymentID: "dep_2", Commit: "def", StartedAt: completed.Add(time.Minute), Result: history.OutcomeInProgress},
+	}}
+
+	rows, err := collectHistory(context.Background(), store)
+	if err != nil {
+		t.Fatalf("collectHistory: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want terminal dep_1 + pending dep_2", len(rows))
+	}
+	if rows[0].result != "… in_progress" || rows[0].time != "22:15" {
+		t.Errorf("pending row = %+v", rows[0])
+	}
+	if rows[1].result != "✓ healthy" {
+		t.Errorf("terminal row = %+v", rows[1])
 	}
 }
 

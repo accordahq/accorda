@@ -81,10 +81,14 @@ func (f *fakeDockerClient) ImageInspect(_ context.Context, ref string, _ ...clie
 type fakeRunner struct {
 	calls [][]string
 	err   error
+	errs  []error
 }
 
 func (f *fakeRunner) Run(_ context.Context, args ...string) error {
 	f.calls = append(f.calls, args)
+	if len(f.errs) >= len(f.calls) {
+		return f.errs[len(f.calls)-1]
+	}
 	return f.err
 }
 
@@ -781,6 +785,34 @@ func TestApply_RunnerFails_IsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "api") {
 		t.Errorf("err = %v, want one naming the failing service", err)
+	}
+}
+
+func TestApply_RunnerFailureReportsCompletedAndFailedActions(t *testing.T) {
+	path := writeComposeFile(t)
+	runner := &fakeRunner{errs: []error{nil, errors.New("worker boom")}}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(&fakeDockerClient{}), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := plan.New("", "production", "abc123", time.Now()).
+		AddAction(plan.Action{Kind: plan.ActionCreate, Service: "api"}).
+		AddAction(plan.Action{Kind: plan.ActionRecreate, Service: "worker"})
+
+	err = tgt.Apply(context.Background(), p)
+	var applyErr *targets.ApplyError
+	if !errors.As(err, &applyErr) {
+		t.Fatalf("Apply error = %T %v, want *targets.ApplyError", err, err)
+	}
+	if len(applyErr.Completed) != 1 || applyErr.Completed[0].Service != "api" {
+		t.Errorf("completed = %+v, want api", applyErr.Completed)
+	}
+	if applyErr.Failed.Service != "worker" {
+		t.Errorf("failed = %+v, want worker", applyErr.Failed)
+	}
+	if !strings.Contains(err.Error(), "api:create") || !strings.Contains(err.Error(), "worker:recreate") {
+		t.Errorf("error %q does not report completed and failed services", err)
 	}
 }
 

@@ -61,6 +61,36 @@ func TestReceipt_SortedServiceNames(t *testing.T) {
 	}
 }
 
+func TestUnfinishedFindsNewestUnclosedDeployment(t *testing.T) {
+	receipts := []Receipt{
+		{DeploymentID: "dep_closed", Result: OutcomeInProgress},
+		{DeploymentID: "dep_closed", Result: OutcomeHealthy},
+		{DeploymentID: "dep_open", Result: OutcomeInProgress, Commit: "abc123", Changes: []string{"api"}},
+	}
+
+	got := Unfinished(receipts)
+	if got == nil {
+		t.Fatal("Unfinished = nil, want dep_open")
+	}
+	if got.DeploymentID != "dep_open" || got.Commit != "abc123" {
+		t.Errorf("Unfinished = %+v, want dep_open at abc123", got)
+	}
+	got.Changes[0] = "mutated"
+	if receipts[2].Changes[0] != "api" {
+		t.Error("Unfinished result aliases journal receipt")
+	}
+}
+
+func TestUnfinishedReturnsNilWhenEveryCheckpointClosed(t *testing.T) {
+	receipts := []Receipt{
+		{DeploymentID: "dep_1", Result: OutcomeInProgress},
+		{DeploymentID: "dep_1", Result: OutcomeFailed},
+	}
+	if got := Unfinished(receipts); got != nil {
+		t.Errorf("Unfinished = %+v, want nil", got)
+	}
+}
+
 func TestFileStore_AppendAndList(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "receipts", "proj.jsonl")
 	store := NewFileStore(path)
