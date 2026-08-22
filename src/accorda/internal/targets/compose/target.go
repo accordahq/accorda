@@ -400,14 +400,8 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState, deployed
 // ActionRemove actions so N orphans do not trigger N redundant full `up -d`
 // runs.
 func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
-	if t == nil {
-		return errors.New("compose target: nil target")
-	}
-	if p == nil {
-		return errors.New("compose target: plan is nil")
-	}
-	if t.runner == nil {
-		return errors.New("compose target: compose runner is nil")
+	if err := t.validateApply(p); err != nil {
+		return err
 	}
 	removedOrphans := false
 	completed := make([]plan.Action, 0, len(p.Actions))
@@ -430,6 +424,19 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 			return &targets.ApplyError{Completed: completed, Failed: a, Err: err}
 		}
 		completed = append(completed, a)
+	}
+	return nil
+}
+
+func (t *Target) validateApply(p *plan.Plan) error {
+	if t == nil {
+		return errors.New("compose target: nil target")
+	}
+	if p == nil {
+		return errors.New("compose target: plan is nil")
+	}
+	if t.runner == nil {
+		return errors.New("compose target: compose runner is nil")
 	}
 	return nil
 }
