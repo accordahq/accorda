@@ -274,23 +274,6 @@ func TestRun_Init_UnknownFlag(t *testing.T) {
 	}
 }
 
-// TestRun_StubCommands verifies the commands still awaiting their backing
-// core packages report a clear not-implemented message. history, inspect,
-// and logs are implemented in their own files and exercised by their own
-// test suites; doctor remains a stub.
-func TestRun_StubCommands(t *testing.T) {
-	for _, cmd := range []string{"doctor"} {
-		var out bytes.Buffer
-		e := run([]string{cmd}, &out, nil)
-		if e == nil {
-			t.Fatalf("run(%q): expected not-implemented error, got nil", cmd)
-		}
-		if !strings.Contains(e.Error(), "not yet implemented") {
-			t.Fatalf("run(%q): unexpected error %v", cmd, e)
-		}
-	}
-}
-
 // TestRun_HistoryInspect_RequireConfig verifies the implemented history and
 // inspect commands require a project file and fail cleanly when none exists,
 // rather than reporting "not yet implemented".
