@@ -41,6 +41,6 @@ echo "==> go build"
 go build ./...
 
 echo "==> full suite: unit + integration/E2E (go test -tags integration ./...)"
-go test -v -count=1 -tags integration ./...
+go test -v -count=1 -tags integration ./... -coverprofile=coverage.out
 
 echo "==> all validation passed"

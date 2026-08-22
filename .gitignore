@@ -13,3 +13,5 @@ coverage.*
 
 # macOS
 .DS_Store
+sonar-project.properties
+sonar-scan.sh
