@@ -39,10 +39,11 @@ func (f *fakeSource) Fetch(context.Context) (sources.Commit, error) {
 	if f.fetchErr != nil {
 		return sources.Commit{}, f.fetchErr
 	}
-	if len(f.fetches) > 0 {
+	fetchCount := len(f.fetches)
+	if fetchCount > 0 {
 		index := call
-		if index >= len(f.fetches) {
-			index = len(f.fetches) - 1
+		if index >= fetchCount {
+			index = fetchCount - 1
 		}
 		return f.fetches[index], nil
 	}
