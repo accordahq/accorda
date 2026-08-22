@@ -112,10 +112,11 @@ func WithBaseDir(dir string) Option {
 // WithSSHCommand is kept for API compatibility. With go-git the SSH key is
 // read from Source.Auth.Key; the command string is no longer used.
 func WithSSHCommand(_ string) Option {
-	// No-op: go-git reads the SSH key from Source.Auth.Key directly, so the
-	// GIT_SSH_COMMAND string that the previous CLI-based implementation used
-	// is no longer needed. The option is retained so existing callers compile.
-	return func(*Git) {}
+	return func(*Git) {
+		// Intentionally empty: go-git reads Source.Auth.Key directly. This
+		// compatibility option preserves existing callers without applying the
+		// obsolete GIT_SSH_COMMAND setting.
+	}
 }
 
 // WithAuth sets the auth configuration applied to git operations. It
