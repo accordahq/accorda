@@ -3,11 +3,40 @@ package targets
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 )
+
+func TestApplyError(t *testing.T) {
+	cause := errors.New("compose exited")
+	err := &ApplyError{
+		Completed: []plan.Action{{Service: "api", Kind: plan.ActionRecreate}},
+		Failed:    plan.Action{Service: "worker", Kind: plan.ActionStart},
+		Err:       cause,
+	}
+
+	for _, want := range []string{"api:recreate", "worker:start", cause.Error()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Error() = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("errors.Is(%v, cause) = false, want true", err)
+	}
+}
+
+func TestNilApplyError(t *testing.T) {
+	var err *ApplyError
+	if got := err.Error(); got != "target apply failed" {
+		t.Errorf("Error() = %q, want %q", got, "target apply failed")
+	}
+	if got := err.Unwrap(); got != nil {
+		t.Errorf("Unwrap() = %v, want nil", got)
+	}
+}
 
 // TestStubSatisfiesTarget guards the Target interface at compile time via the
 // var _ Target = (*Stub)(nil) assertion in target.go. This test additionally
@@ -33,6 +62,9 @@ func TestStub_SatisfiesTarget(t *testing.T) {
 	}
 	if h, err := tgt.Health(ctx); !errors.Is(err, ErrNotImplemented) || h != nil {
 		t.Errorf("Health: h=%v err=%v, want nil, ErrNotImplemented", h, err)
+	}
+	if got := ErrNotImplemented.Error(); got != "target: not implemented" {
+		t.Errorf("ErrNotImplemented.Error() = %q", got)
 	}
 }
 

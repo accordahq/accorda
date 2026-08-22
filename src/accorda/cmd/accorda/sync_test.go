@@ -89,6 +89,39 @@ func TestResolveTargetPaths(t *testing.T) {
 	}
 }
 
+func TestDeploymentLockPathUsesTargetIdentity(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	composeFile := filepath.Join(t.TempDir(), config.DefaultComposeFile)
+	target := config.Target{Type: config.TargetCompose, File: composeFile}
+
+	first := deploymentLockPath(t.TempDir(), target)
+	second := deploymentLockPath(t.TempDir(), target)
+	if first != second {
+		t.Errorf("same target lock paths differ: %q != %q", first, second)
+	}
+	pathSpelling := deploymentLockPath(t.TempDir(), config.Target{Type: config.TargetCompose, Path: composeFile})
+	if first != pathSpelling {
+		t.Errorf("target.file and target.path lock paths differ: %q != %q", first, pathSpelling)
+	}
+	sameProject := deploymentLockPath(t.TempDir(), config.Target{
+		Type: config.TargetCompose,
+		File: filepath.Join(filepath.Dir(composeFile), "compose-production.yaml"),
+	})
+	if first != sameProject {
+		t.Errorf("Compose files for the same project have different lock paths: %q != %q", first, sameProject)
+	}
+	other := deploymentLockPath(t.TempDir(), config.Target{
+		Type: config.TargetCompose,
+		File: filepath.Join(t.TempDir(), config.DefaultComposeFile),
+	})
+	if first == other {
+		t.Errorf("different targets share lock path %q", first)
+	}
+	if filepath.Ext(first) != ".lock" {
+		t.Errorf("lock path = %q, want .lock extension", first)
+	}
+}
+
 func TestDriftPolicy(t *testing.T) {
 	cases := []struct {
 		in   string

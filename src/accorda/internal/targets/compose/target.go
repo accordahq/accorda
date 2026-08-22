@@ -142,14 +142,11 @@ func New(cfg config.Target, opts ...Option) (*Target, error) {
 	if cfg.Type != "" && cfg.Type != config.TargetCompose {
 		return nil, fmt.Errorf("compose target: target.type %q is not %q", cfg.Type, config.TargetCompose)
 	}
-	file := cfg.File
-	if file == "" {
-		file = cfg.Path
-	}
+	file := targetFile(cfg)
 	if file == "" {
 		return nil, errors.New("compose target: target.file or target.path is required")
 	}
-	t := &Target{file: file, project: composeProjectName(file), pullPolicy: config.PullChanged, healthTimeout: defaultHealthTimeout}
+	t := &Target{file: file, project: ProjectName(cfg), pullPolicy: config.PullChanged, healthTimeout: defaultHealthTimeout}
 	for _, opt := range opts {
 		opt(t)
 	}
@@ -164,6 +161,20 @@ func New(cfg config.Target, opts ...Option) (*Target, error) {
 		t.runner = cliRunner{file: t.file, project: t.project}
 	}
 	return t, nil
+}
+
+// ProjectName returns the default Compose project name New assigns for cfg.
+// Compose identifies a project by the normalized directory containing its
+// Compose file, independent of the file's name.
+func ProjectName(cfg config.Target) string {
+	return composeProjectName(targetFile(cfg))
+}
+
+func targetFile(cfg config.Target) string {
+	if cfg.File != "" {
+		return cfg.File
+	}
+	return cfg.Path
 }
 
 // WithProjectName sets the Compose project name used to filter containers,
@@ -378,10 +389,10 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState, deployed
 //
 // Apply is idempotent where possible: `up -d` and `up -d --remove-orphans`
 // are safe to retry, and a plan with no changed services performs no work.
-// It handles partial failures by returning an error that names the first
-// failing service and its underlying cause, so the reconcile loop can
-// surface which service failed rather than a bare exit code
-// (docs/ACCORDA.md §6).
+// It handles partial failures with a targets.ApplyError that reports every
+// completed action plus the failed service/action and underlying cause, so an
+// operator can tell exactly how far a retry-safe apply progressed
+// (docs/ACCORDA.md §47).
 //
 // A plan may carry one ActionRemove per orphan service, but `up -d
 // --remove-orphans` removes every orphan in a single invocation. Apply
@@ -389,6 +400,35 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState, deployed
 // ActionRemove actions so N orphans do not trigger N redundant full `up -d`
 // runs.
 func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
+	if err := t.validateApply(p); err != nil {
+		return err
+	}
+	removedOrphans := false
+	completed := make([]plan.Action, 0, len(p.Actions))
+	for _, a := range p.Actions {
+		if a.Kind == plan.ActionRemove {
+			if removedOrphans {
+				continue
+			}
+			if err := t.applyAction(ctx, a); err != nil {
+				return &targets.ApplyError{Completed: completed, Failed: a, Err: err}
+			}
+			removedOrphans = true
+			completed = append(completed, actionsOfKind(p.Actions, plan.ActionRemove)...)
+			continue
+		}
+		if a.Kind == plan.ActionNoop {
+			continue
+		}
+		if err := t.applyAction(ctx, a); err != nil {
+			return &targets.ApplyError{Completed: completed, Failed: a, Err: err}
+		}
+		completed = append(completed, a)
+	}
+	return nil
+}
+
+func (t *Target) validateApply(p *plan.Plan) error {
 	if t == nil {
 		return errors.New("compose target: nil target")
 	}
@@ -398,19 +438,17 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 	if t.runner == nil {
 		return errors.New("compose target: compose runner is nil")
 	}
-	removedOrphans := false
-	for _, a := range p.Actions {
-		if a.Kind == plan.ActionRemove {
-			if removedOrphans {
-				continue
-			}
-			removedOrphans = true
-		}
-		if err := t.applyAction(ctx, a); err != nil {
-			return err
+	return nil
+}
+
+func actionsOfKind(actions []plan.Action, kind plan.ActionKind) []plan.Action {
+	selected := make([]plan.Action, 0)
+	for _, action := range actions {
+		if action.Kind == kind {
+			selected = append(selected, action)
 		}
 	}
-	return nil
+	return selected
 }
 
 // applyAction executes a single plan action against the Compose project. It

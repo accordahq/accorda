@@ -20,6 +20,9 @@ func TestStub_SatisfiesSource(t *testing.T) {
 	if d, err := src.Desired(ctx, nil); !errors.Is(err, ErrNotImplemented) || d != nil {
 		t.Errorf("Desired: d=%v err=%v, want nil, ErrNotImplemented", d, err)
 	}
+	if got := ErrNotImplemented.Error(); got != "source: not implemented" {
+		t.Errorf("ErrNotImplemented.Error() = %q", got)
+	}
 }
 
 func TestSourceInterfaceContract(t *testing.T) {

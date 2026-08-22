@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"accorda/internal/core/events"
 	"accorda/internal/core/health"
 	"accorda/internal/core/history"
+	"accorda/internal/core/locking"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 	"accorda/internal/sources"
@@ -85,6 +87,8 @@ type StateTransition struct {
 type Result struct {
 	// Phase is the terminal phase reached.
 	Phase Phase
+	// Commit is the newest Git commit this cycle converged or attempted.
+	Commit string
 	// Comparison is the desired/deployed/runtime comparison, populated once
 	// the deployment has been applied and verified.
 	Comparison state.Comparison
@@ -147,6 +151,16 @@ type Reconciler struct {
 	// successful deployment (docs/ACCORDA.md §7). It may be nil, in which
 	// case receipts are not recorded.
 	receipts history.Store
+	// locker serializes complete cycles for a deployment target across
+	// reconciler instances and processes (docs/ACCORDA.md §47).
+	locker locking.Locker
+	// cycleMu protects mutable per-cycle fields when one Reconciler is called
+	// concurrently in-process, even when no external locker is configured.
+	cycleMu sync.Mutex
+	// pending is an unfinished deployment recovered from the receipt journal.
+	pending *history.Receipt
+	// recovering is true while the current plan resumes pending.
+	recovering bool
 	// startedAt is when the current reconciliation cycle began. It is set at
 	// the start of Reconcile and used as the receipt's StartedAt timestamp.
 	startedAt time.Time
@@ -179,6 +193,14 @@ func (r *Reconciler) WithReceiptStore(s history.Store) *Reconciler {
 	return r
 }
 
+// WithLocker sets the target-scoped deployment lock. The lock covers fetch,
+// apply, verification, and the final concurrent-commit check, ensuring two
+// reconciliation cycles cannot race on the same target (docs/ACCORDA.md §47).
+func (r *Reconciler) WithLocker(locker locking.Locker) *Reconciler {
+	r.locker = locker
+	return r
+}
+
 // WithDriftPolicy sets how the reconciler reacts to runtime drift
 // (docs/ACCORDA.md §5.3). It accepts DriftReport, DriftRepair, or
 // DriftDisabled. The default is DriftReport, mirroring the config default.
@@ -188,9 +210,9 @@ func (r *Reconciler) WithDriftPolicy(policy DriftPolicy) *Reconciler {
 }
 
 // WithPrevious sets the last successfully deployed state used for rollback
-// (docs/ACCORDA.md §20). It is primarily useful for callers that persist
-// deployment history; the reconcile loop supplies the previous deployment
-// before each cycle.
+// (docs/ACCORDA.md §20). When a receipt store contains a healthy deployment,
+// the reconciler refreshes this value from that store after acquiring its
+// target lock; the explicit value is the fallback for callers without history.
 func (r *Reconciler) WithPrevious(prev *state.DeployedState) *Reconciler {
 	r.previous = prev
 	return r
@@ -200,8 +222,48 @@ func (r *Reconciler) WithPrevious(prev *state.DeployedState) *Reconciler {
 // never panics on a nil source or target; a nil dependency is reported as a
 // validation failure.
 func (r *Reconciler) Reconcile(ctx context.Context) *Result {
+	r.cycleMu.Lock()
+	defer r.cycleMu.Unlock()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	unlock, err := r.acquireLock(ctx)
+	if err != nil {
+		res := &Result{Phase: PhaseDetected}
+		return r.fail(ctx, res, PhaseDetected, "", "", err)
+	}
+	defer func() { _ = unlock() }()
+	pending, previous, err := r.recoveryState(ctx)
+	if err != nil {
+		res := &Result{Phase: PhaseDetected}
+		return r.fail(ctx, res, PhaseDetected, "", "", err)
+	}
+	r.pending = pending
+	if previous != nil {
+		r.previous = previous
+	}
+
+	for {
+		res := r.reconcileOnce(ctx)
+		if res.Phase != PhaseSynced || ctx.Err() != nil {
+			return res
+		}
+		latest, fetchErr := r.source.Fetch(ctx)
+		if fetchErr != nil || latest.SHA == "" || latest.SHA == res.Commit {
+			return res
+		}
+		// A commit arrived while the deployment was in flight. Keep the target
+		// lock and immediately reconcile the newest fetched HEAD. The next
+		// cycle fetches again, so bursts collapse naturally to the latest SHA.
+	}
+}
+
+func (r *Reconciler) reconcileOnce(ctx context.Context) *Result {
 	res := &Result{Phase: PhaseDetected}
 	r.startedAt = time.Now()
+	r.failedDeploymentID = ""
+	r.recovering = false
 	r.emit(ctx, events.EventDeploymentDetected, nil)
 
 	if r.source == nil || r.target == nil {
@@ -211,6 +273,10 @@ func (r *Reconciler) Reconcile(ctx context.Context) *Result {
 	desired, commit, ok := r.fetchAndValidate(ctx, res)
 	if !ok {
 		return res
+	}
+	res.Commit = commit.SHA
+	if err := r.prepareRecovery(ctx, commit); err != nil {
+		return r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
 	}
 
 	p, ok := r.plan(ctx, res, desired, commit)
@@ -225,6 +291,10 @@ func (r *Reconciler) Reconcile(ctx context.Context) *Result {
 	if p.DeploymentID == "" {
 		p.DeploymentID = newDeploymentID()
 	}
+	if r.pending != nil && r.pending.Commit == commit.SHA {
+		p.DeploymentID = r.pending.DeploymentID
+		r.recovering = true
+	}
 
 	if !r.deploy(ctx, res, desired, commit, p) {
 		return res
@@ -236,6 +306,61 @@ func (r *Reconciler) Reconcile(ctx context.Context) *Result {
 	}
 
 	return r.sync(ctx, res, desired, commit, p, h)
+}
+
+func (r *Reconciler) acquireLock(ctx context.Context) (locking.UnlockFunc, error) {
+	if r.locker == nil {
+		return func() error { return nil }, nil
+	}
+	return r.locker.Lock(ctx)
+}
+
+func (r *Reconciler) recoveryState(ctx context.Context) (*history.Receipt, *state.DeployedState, error) {
+	if r.receipts == nil {
+		return nil, nil, nil
+	}
+	receipts, err := r.receipts.List(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reconcile: read deployment recovery journal: %w", err)
+	}
+	return history.Unfinished(receipts), deployedFromReceipts(receipts), nil
+}
+
+func deployedFromReceipts(receipts []history.Receipt) *state.DeployedState {
+	for i := len(receipts) - 1; i >= 0; i-- {
+		receipt := receipts[i]
+		if receipt.Result != history.OutcomeHealthy {
+			continue
+		}
+		services := make(map[string]state.Service, len(receipt.Services))
+		for name, service := range receipt.Services {
+			services[name] = state.Service{Image: service.Image}
+		}
+		return &state.DeployedState{
+			DeploymentID: receipt.DeploymentID,
+			Commit:       receipt.Commit,
+			Services:     services,
+		}
+	}
+	return nil
+}
+
+// prepareRecovery closes a pending deployment as interrupted when Git has
+// moved on. If the commit is unchanged, the pending receipt stays active and
+// its deployment ID is reused after planning so idempotent target operations
+// resume only the work still required by current runtime state.
+func (r *Reconciler) prepareRecovery(ctx context.Context, commit sources.Commit) error {
+	if r.pending == nil || r.pending.Commit == commit.SHA {
+		return nil
+	}
+	interrupted := r.pending.Clone()
+	interrupted.Result = history.OutcomeInterrupted
+	interrupted.CompletedAt = time.Now()
+	if err := r.receipts.Append(ctx, interrupted); err != nil {
+		return fmt.Errorf("reconcile: close superseded deployment %s: %w", interrupted.DeploymentID, err)
+	}
+	r.pending = nil
+	return nil
 }
 
 // fetchAndValidate runs the FETCHING and VALIDATING phases. It returns the
@@ -282,6 +407,12 @@ func (r *Reconciler) plan(ctx context.Context, res *Result, desired *state.Desir
 // cycle failed (res is populated and a rollback was attempted).
 func (r *Reconciler) deploy(ctx context.Context, res *Result, desired *state.DesiredState, commit sources.Commit, p *plan.Plan) bool {
 	r.transition(ctx, PhasePlanning, PhasePulling, commit.SHA, p.DeploymentID, nil)
+	if p.Changed() && !r.recovering {
+		if err := r.recordPending(ctx, desired, commit, p); err != nil {
+			r.fail(ctx, res, PhasePulling, commit.SHA, p.DeploymentID, err)
+			return false
+		}
+	}
 	r.transition(ctx, PhasePulling, PhaseDeploying, commit.SHA, p.DeploymentID, nil)
 	// A no-op plan (only noop actions) performs no deployment work, so a
 	// "deployment started" event would be misleading to consumers. Gate the
@@ -387,11 +518,45 @@ func (r *Reconciler) sync(ctx context.Context, res *Result, desired *state.Desir
 	// A no-op cycle (plan unchanged) still converges to SYNCED, but nothing
 	// was actually deployed, so a "deployment succeeded" event would be
 	// misleading. Gate it on the plan changing the target.
-	if p.Changed() {
+	if p.Changed() || r.recovering {
 		r.emit(ctx, events.EventDeploymentSucceeded, nil)
 		r.recordReceipt(ctx, desired, commit, runtime, p, history.OutcomeHealthy)
+		r.pending = nil
+	}
+	r.previous = &state.DeployedState{
+		DeploymentID: p.DeploymentID,
+		Commit:       commit.SHA,
+		Services:     desired.Clone().Services,
 	}
 	return res
+}
+
+// recordPending durably checkpoints a changed deployment before any target
+// mutation. Unlike terminal receipt recording, checkpoint failure aborts the
+// deployment: proceeding without it would make restart recovery ambiguous.
+func (r *Reconciler) recordPending(ctx context.Context, desired *state.DesiredState, commit sources.Commit, p *plan.Plan) error {
+	if r.receipts == nil {
+		return nil
+	}
+	services := make(map[string]history.ServiceReceipt, len(desired.Services))
+	for name, service := range desired.Services {
+		services[name] = history.ServiceReceipt{Image: service.Image}
+	}
+	receipt := history.Receipt{
+		DeploymentID: p.DeploymentID,
+		Repository:   desired.Repository,
+		Environment:  r.environment,
+		Commit:       commit.SHA,
+		StartedAt:    r.startedAt,
+		Result:       history.OutcomeInProgress,
+		Changes:      changedServices(p),
+		Services:     services,
+	}
+	if err := r.receipts.Append(ctx, receipt); err != nil {
+		return fmt.Errorf("reconcile: persist deployment checkpoint: %w", err)
+	}
+	r.pending = &receipt
+	return nil
 }
 
 // recordReceipt writes a deployment receipt for a deployment
@@ -409,7 +574,7 @@ func (r *Reconciler) sync(ctx context.Context, res *Result, desired *state.Desir
 // runtime state (which carries the resolved digests) rather than the desired
 // state, so the recorded digest reflects what is actually running.
 func (r *Reconciler) recordReceipt(ctx context.Context, desired *state.DesiredState, commit sources.Commit, runtime *state.RuntimeState, p *plan.Plan, result history.Outcome) {
-	if r.receipts == nil || (result == history.OutcomeHealthy && !p.Changed()) {
+	if r.receipts == nil || (result == history.OutcomeHealthy && !p.Changed() && !r.recovering) {
 		return
 	}
 	var services map[string]history.ServiceReceipt
@@ -427,10 +592,27 @@ func (r *Reconciler) recordReceipt(ctx context.Context, desired *state.DesiredSt
 		StartedAt:    r.startedAt,
 		CompletedAt:  time.Now(),
 		Result:       result,
-		Changes:      changedServices(p),
+		Changes:      r.receiptChanges(p),
 		Services:     services,
 	}
 	_ = r.receipts.Append(ctx, receipt)
+}
+
+func (r *Reconciler) receiptChanges(p *plan.Plan) []string {
+	changes := changedServices(p)
+	if !r.recovering || r.pending == nil {
+		return changes
+	}
+	seen := make(map[string]struct{}, len(changes)+len(r.pending.Changes))
+	for _, name := range append(changes, r.pending.Changes...) {
+		seen[name] = struct{}{}
+	}
+	merged := make([]string, 0, len(seen))
+	for name := range seen {
+		merged = append(merged, name)
+	}
+	sort.Strings(merged)
+	return merged
 }
 
 // changedServices returns the sorted, unique service names the plan changes

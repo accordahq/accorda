@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/events"
 	"accorda/internal/core/history"
+	"accorda/internal/core/locking"
 	"accorda/internal/core/reconcile"
 	"accorda/internal/core/state"
 	"accorda/internal/sources/git"
@@ -69,8 +71,8 @@ func runSync(cmd *cobra.Command, dir string) error {
 		WithDriftPolicy(driftPolicy(proj.Reconcile.Drift)).
 		WithEnvironment(proj.Environment).
 		WithReceiptStore(store).
-		WithPrevious(previousFromHistory(store, cmd.ErrOrStderr()))
-	res := r.Reconcile(context.Background())
+		WithLocker(locking.NewFileLocker(deploymentLockPath(dir, proj.Target)))
+	res := r.Reconcile(cmd.Context())
 
 	if res.Phase == reconcile.PhaseFailed {
 		if res.RolledBack {
@@ -182,6 +184,30 @@ func resolveTargetPaths(dir string, target config.Target) config.Target {
 // directory honors XDG_STATE_HOME when set, falling back to ~/.local/state,
 // and finally ~/.accorda for environments without XDG.
 func receiptPath(dir string) string {
+	return projectStatePath("receipts", dir, ".jsonl")
+}
+
+// deploymentLockPath returns the target-scoped lock file used to serialize
+// reconciliation across CLI processes. Hashing the effective Compose project
+// identity means different Compose files that mutate the same project share a
+// lock without exposing the project name in the state directory.
+func deploymentLockPath(dir string, target config.Target) string {
+	resolved := resolveTargetPaths(dir, target)
+	identity := resolved.Type + "\x00" + compose.ProjectName(resolved)
+	digest := sha256.Sum256([]byte(identity))
+	return filepath.Join(stateBase(), "accorda", "locks", fmt.Sprintf("%x.lock", digest))
+}
+
+func projectStatePath(kind, dir, extension string) string {
+	base := stateBase()
+	key := filepath.Clean(dir)
+	if key == "." {
+		key = "default"
+	}
+	return filepath.Join(base, "accorda", kind, key+extension)
+}
+
+func stateBase() string {
 	base := os.Getenv("XDG_STATE_HOME")
 	if base == "" {
 		home, err := os.UserHomeDir()
@@ -190,11 +216,7 @@ func receiptPath(dir string) string {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	key := filepath.Clean(dir)
-	if key == "." {
-		key = "default"
-	}
-	return filepath.Join(base, "accorda", "receipts", key+".jsonl")
+	return base
 }
 
 // driftPolicy maps the project's reconcile.drift setting to the reconciler's

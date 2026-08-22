@@ -2,9 +2,11 @@ package history
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,6 +60,50 @@ func TestReceipt_SortedServiceNames(t *testing.T) {
 	want := []string{"api", "redis", "worker"}
 	if got := r.SortedServiceNames(); !reflect.DeepEqual(got, want) {
 		t.Errorf("SortedServiceNames = %v, want %v", got, want)
+	}
+}
+
+func TestStub_ReturnsNotImplemented(t *testing.T) {
+	store := NewStub()
+	ctx := context.Background()
+	if err := store.Append(ctx, Receipt{}); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("Append() error = %v, want ErrNotImplemented", err)
+	}
+	if receipts, err := store.List(ctx); !errors.Is(err, ErrNotImplemented) || receipts != nil {
+		t.Errorf("List() = %v, %v; want nil, ErrNotImplemented", receipts, err)
+	}
+	if got := ErrNotImplemented.Error(); got != "history: not implemented" {
+		t.Errorf("ErrNotImplemented.Error() = %q", got)
+	}
+}
+
+func TestUnfinishedFindsNewestUnclosedDeployment(t *testing.T) {
+	receipts := []Receipt{
+		{DeploymentID: "dep_closed", Result: OutcomeInProgress},
+		{DeploymentID: "dep_closed", Result: OutcomeHealthy},
+		{DeploymentID: "dep_open", Result: OutcomeInProgress, Commit: "abc123", Changes: []string{"api"}},
+	}
+
+	got := Unfinished(receipts)
+	if got == nil {
+		t.Fatal("Unfinished = nil, want dep_open")
+	}
+	if got.DeploymentID != "dep_open" || got.Commit != "abc123" {
+		t.Errorf("Unfinished = %+v, want dep_open at abc123", got)
+	}
+	got.Changes[0] = "mutated"
+	if receipts[2].Changes[0] != "api" {
+		t.Error("Unfinished result aliases journal receipt")
+	}
+}
+
+func TestUnfinishedReturnsNilWhenEveryCheckpointClosed(t *testing.T) {
+	receipts := []Receipt{
+		{DeploymentID: "dep_1", Result: OutcomeInProgress},
+		{DeploymentID: "dep_1", Result: OutcomeFailed},
+	}
+	if got := Unfinished(receipts); got != nil {
+		t.Errorf("Unfinished = %+v, want nil", got)
 	}
 }
 
@@ -199,6 +245,62 @@ func TestFileStore_Append_EmptyPath_IsError(t *testing.T) {
 	store := NewFileStore("")
 	if err := store.Append(context.Background(), Receipt{}); err == nil {
 		t.Fatal("expected error for empty path, got nil")
+	}
+}
+
+func TestFileStore_NilReceiverIsError(t *testing.T) {
+	var store *FileStore
+	if err := store.Append(context.Background(), Receipt{}); err == nil {
+		t.Error("Append() error = nil, want empty-path error")
+	}
+	if receipts, err := store.List(context.Background()); err == nil || receipts != nil {
+		t.Errorf("List() = %v, %v; want nil, empty-path error", receipts, err)
+	}
+}
+
+func TestFileStore_AppendFilesystemErrors(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(parent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write parent: %v", err)
+	}
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "create directory", path: filepath.Join(parent, "journal.jsonl"), want: "create store dir"},
+		{name: "open journal", path: t.TempDir(), want: "open journal"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := NewFileStore(tt.path).Append(context.Background(), Receipt{})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Append() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestFileStore_ListMalformedJournal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	if err := os.WriteFile(path, []byte("\n{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+	if _, err := NewFileStore(path).List(context.Background()); err == nil || !strings.Contains(err.Error(), "decode receipt") {
+		t.Errorf("List() error = %v, want decode error", err)
+	}
+}
+
+func TestFileStore_ListOpenAndReadErrors(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(parent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write parent: %v", err)
+	}
+	if _, err := NewFileStore(filepath.Join(parent, "journal.jsonl")).List(context.Background()); err == nil || !strings.Contains(err.Error(), "open journal") {
+		t.Errorf("List() open error = %v", err)
+	}
+	if _, err := NewFileStore(t.TempDir()).List(context.Background()); err == nil {
+		t.Error("List(directory) error = nil, want read error")
 	}
 }
 

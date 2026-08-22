@@ -96,10 +96,22 @@ func collectHistory(ctx context.Context, store history.Store) ([]historyRow, err
 		return nil, fmt.Errorf("read history: %w", err)
 	}
 	rows := make([]historyRow, 0, len(receipts))
+	closed := make(map[string]struct{})
 	for i := len(receipts) - 1; i >= 0; i-- {
 		rc := receipts[i]
+		if rc.Result == history.OutcomeInProgress {
+			if _, ok := closed[rc.DeploymentID]; ok {
+				continue
+			}
+		} else if rc.DeploymentID != "" {
+			closed[rc.DeploymentID] = struct{}{}
+		}
+		at := rc.CompletedAt
+		if rc.Result == history.OutcomeInProgress {
+			at = rc.StartedAt
+		}
 		rows = append(rows, historyRow{
-			time:    rc.CompletedAt.UTC().Format(historyTimeFormat),
+			time:    at.UTC().Format(historyTimeFormat),
 			commit:  shortSHA(rc.Commit),
 			result:  resultLabel(rc.Result),
 			changes: joinChanges(rc.Changes),
@@ -117,12 +129,16 @@ const historyTimeFormat = "15:04"
 // the table is never empty.
 func resultLabel(o history.Outcome) string {
 	switch o {
+	case history.OutcomeInProgress:
+		return "… in_progress"
 	case history.OutcomeHealthy:
 		return "✓ healthy"
 	case history.OutcomeFailed:
 		return "✗ failed"
 	case history.OutcomeRolledBack:
 		return "↺ rolled_back"
+	case history.OutcomeInterrupted:
+		return "! interrupted"
 	default:
 		return string(o)
 	}

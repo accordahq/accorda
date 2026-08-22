@@ -193,8 +193,10 @@ func inspectHealthLabel(o history.Outcome) string {
 	switch o {
 	case history.OutcomeHealthy:
 		return "passed"
-	case history.OutcomeFailed, history.OutcomeRolledBack:
+	case history.OutcomeFailed, history.OutcomeRolledBack, history.OutcomeInterrupted:
 		return "failed"
+	case history.OutcomeInProgress:
+		return "in_progress"
 	default:
 		return string(o)
 	}

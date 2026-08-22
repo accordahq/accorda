@@ -81,10 +81,14 @@ func (f *fakeDockerClient) ImageInspect(_ context.Context, ref string, _ ...clie
 type fakeRunner struct {
 	calls [][]string
 	err   error
+	errs  []error
 }
 
 func (f *fakeRunner) Run(_ context.Context, args ...string) error {
 	f.calls = append(f.calls, args)
+	if len(f.errs) >= len(f.calls) {
+		return f.errs[len(f.calls)-1]
+	}
 	return f.err
 }
 
@@ -784,6 +788,68 @@ func TestApply_RunnerFails_IsError(t *testing.T) {
 	}
 }
 
+func TestApply_RunnerFailureReportsCompletedAndFailedActions(t *testing.T) {
+	path := writeComposeFile(t)
+	runner := &fakeRunner{errs: []error{nil, errors.New("worker boom")}}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(&fakeDockerClient{}), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := plan.New("", "production", "abc123", time.Now()).
+		AddAction(plan.Action{Kind: plan.ActionCreate, Service: "api"}).
+		AddAction(plan.Action{Kind: plan.ActionRecreate, Service: "worker"})
+
+	err = tgt.Apply(context.Background(), p)
+	var applyErr *targets.ApplyError
+	if !errors.As(err, &applyErr) {
+		t.Fatalf("Apply error = %T %v, want *targets.ApplyError", err, err)
+	}
+	if len(applyErr.Completed) != 1 || applyErr.Completed[0].Service != "api" {
+		t.Errorf("completed = %+v, want api", applyErr.Completed)
+	}
+	if applyErr.Failed.Service != "worker" {
+		t.Errorf("failed = %+v, want worker", applyErr.Failed)
+	}
+	if !strings.Contains(err.Error(), "api:create") || !strings.Contains(err.Error(), "worker:recreate") {
+		t.Errorf("error %q does not report completed and failed services", err)
+	}
+}
+
+func TestApply_PartialFailureReportsAllBatchedOrphanRemovals(t *testing.T) {
+	path := writeComposeFile(t)
+	runner := &fakeRunner{errs: []error{nil, errors.New("worker boom")}}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(&fakeDockerClient{}), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := plan.New("", "production", "abc123", time.Now()).
+		AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan-a"}).
+		AddAction(plan.Action{Kind: plan.ActionRemove, Service: "orphan-b"}).
+		AddAction(plan.Action{Kind: plan.ActionRecreate, Service: "worker"})
+
+	err = tgt.Apply(context.Background(), p)
+	var applyErr *targets.ApplyError
+	if !errors.As(err, &applyErr) {
+		t.Fatalf("Apply error = %T %v, want *targets.ApplyError", err, err)
+	}
+	if got := actionServices(applyErr.Completed); !reflect.DeepEqual(got, []string{"orphan-a", "orphan-b"}) {
+		t.Errorf("completed services = %v, want both removed orphans", got)
+	}
+	if applyErr.Failed.Service != "worker" {
+		t.Errorf("failed = %+v, want worker", applyErr.Failed)
+	}
+}
+
+func actionServices(actions []plan.Action) []string {
+	services := make([]string, 0, len(actions))
+	for _, action := range actions {
+		services = append(services, action.Service)
+	}
+	return services
+}
+
 func TestApply_NilPlan_IsError(t *testing.T) {
 	path := writeComposeFile(t)
 	cli := &fakeDockerClient{}
@@ -850,6 +916,18 @@ func TestComposeProjectName_FromFilePath(t *testing.T) {
 		if got := composeProjectName(c.path); got != c.want {
 			t.Errorf("composeProjectName(%q) = %q, want %q", c.path, got, c.want)
 		}
+	}
+}
+
+func TestProjectNameUsesComposeProjectIdentity(t *testing.T) {
+	dir := t.TempDir()
+	fileName := filepath.Join(dir, "compose-a.yaml")
+	pathName := filepath.Join(dir, "compose-b.yaml")
+
+	fromFile := ProjectName(config.Target{File: fileName})
+	fromPath := ProjectName(config.Target{Path: pathName})
+	if fromFile != fromPath {
+		t.Errorf("ProjectName differs for files in the same directory: %q != %q", fromFile, fromPath)
 	}
 }
 
