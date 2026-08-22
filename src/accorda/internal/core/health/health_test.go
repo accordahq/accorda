@@ -54,6 +54,23 @@ func TestSummarize_Starting(t *testing.T) {
 	}
 }
 
+func TestSummarize_UnknownService(t *testing.T) {
+	h := New(time.Unix(0, 0))
+	h.SetService("api", StatusUnknown, "no healthcheck")
+	h.Summarize()
+	if h.Overall != StatusUnknown || h.Healthy {
+		t.Errorf("Summarize() = overall %q, healthy %v; want unknown, false", h.Overall, h.Healthy)
+	}
+}
+
+func TestSetService_InitializesNilMap(t *testing.T) {
+	var h Health
+	h.SetService("api", StatusHealthy, "ready")
+	if got := h.Services["api"]; got != (ServiceHealth{Status: StatusHealthy, Message: "ready"}) {
+		t.Errorf("Services[api] = %+v", got)
+	}
+}
+
 func TestSummarize_EmptyIsUnknown(t *testing.T) {
 	h := New(time.Unix(0, 0))
 	h.Summarize()

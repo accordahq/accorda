@@ -11,7 +11,9 @@
 # the integration build tag is additive, so it compiles and runs the
 # integration-tagged tests together with all regular unit tests in one pass.
 # A separate `go test ./...` would re-run the same unit tests, so there is no
-# separate unit-test command.
+# separate unit-test command. `-coverpkg=./...` instruments imported project
+# packages too, so shared integration helpers receive coverage credit when
+# they execute from another package's tests.
 #
 # The integration tests require the system `git` executable and, for the
 # Docker Compose suites, a running Docker daemon with `docker compose`. They
@@ -41,6 +43,6 @@ echo "==> go build"
 go build ./...
 
 echo "==> full suite: unit + integration/E2E (go test -tags integration ./...)"
-go test -v -count=1 -tags integration ./... -coverprofile=coverage.out
+go test -v -count=1 -tags integration -coverpkg=./... ./... -coverprofile=coverage.out
 
 echo "==> all validation passed"

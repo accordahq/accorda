@@ -27,6 +27,10 @@ type fakeLogDockerClient struct {
 	calls []logCall
 }
 
+type errorWriter struct{ err error }
+
+func (w errorWriter) Write([]byte) (int, error) { return 0, w.err }
+
 func (f *fakeLogDockerClient) ContainerLogs(_ context.Context, id string, options container.LogsOptions) (io.ReadCloser, error) {
 	f.calls = append(f.calls, logCall{id: id, options: options})
 	if err := f.errs[id]; err != nil {
@@ -154,6 +158,91 @@ func TestLogs_PropagatesDockerErrors(t *testing.T) {
 	err := tgt.Logs(context.Background(), "api", targets.LogOptions{}, io.Discard, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "logs unavailable") {
 		t.Fatalf("Logs error = %v, want Docker error", err)
+	}
+}
+
+func TestLogs_ValidatesTargetAndService(t *testing.T) {
+	var nilTarget *Target
+	if err := nilTarget.Logs(context.Background(), "api", targets.LogOptions{}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "nil target") {
+		t.Errorf("nil target error = %v", err)
+	}
+	path := writeComposeFile(t)
+	if err := newTarget(t, path, &fakeDockerClient{}).Logs(context.Background(), " ", targets.LogOptions{}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "service is required") {
+		t.Errorf("empty service error = %v", err)
+	}
+	if err := newTarget(t, path, &fakeDockerClient{}).Logs(context.Background(), "api", targets.LogOptions{}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "does not support container logs") {
+		t.Errorf("unsupported client error = %v", err)
+	}
+}
+
+func TestLogs_ReportsListAndInspectErrors(t *testing.T) {
+	path := writeComposeFile(t)
+	project := composeProjectName(path)
+	tests := []struct {
+		name   string
+		client *fakeLogDockerClient
+		want   string
+	}{
+		{
+			name: "list",
+			client: &fakeLogDockerClient{fakeDockerClient: &fakeDockerClient{
+				listErr: errors.New("list unavailable"),
+			}},
+			want: "list unavailable",
+		},
+		{
+			name: "inspect",
+			client: &fakeLogDockerClient{fakeDockerClient: &fakeDockerClient{
+				containers: []container.Summary{summary(project, "api")},
+				inspectErr: map[string]error{"id-api": errors.New("inspect unavailable")},
+			}},
+			want: "inspect unavailable",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := newTarget(t, path, tt.client).Logs(context.Background(), "api", targets.LogOptions{}, io.Discard, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Logs() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLogs_ReportsStreamWriterError(t *testing.T) {
+	path := writeComposeFile(t)
+	project := composeProjectName(path)
+	client := &fakeLogDockerClient{
+		fakeDockerClient: &fakeDockerClient{
+			containers: []container.Summary{summary(project, "api")},
+			inspected:  map[string]container.InspectResponse{"id-api": inspect("api:1", "running", "healthy")},
+		},
+		data: map[string][]byte{"id-api": multiplexedLogs(t, "ready\n", "")},
+	}
+	err := newTarget(t, path, client).Logs(
+		context.Background(), "api", targets.LogOptions{}, errorWriter{err: errors.New("write failed")}, io.Discard,
+	)
+	if err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Errorf("Logs() error = %v, want writer error", err)
+	}
+}
+
+func TestLogs_FollowReturnsFirstReplicaError(t *testing.T) {
+	path := writeComposeFile(t)
+	client := &fakeLogDockerClient{
+		fakeDockerClient: &fakeDockerClient{
+			containers: []container.Summary{{ID: "a"}, {ID: "b"}},
+			inspected: map[string]container.InspectResponse{
+				"a": inspect("api:1", "running", "healthy"),
+				"b": inspect("api:1", "running", "healthy"),
+			},
+		},
+		data: map[string][]byte{"b": multiplexedLogs(t, "ready\n", "")},
+		errs: map[string]error{"a": errors.New("replica unavailable")},
+	}
+	err := newTarget(t, path, client).Logs(context.Background(), "api", targets.LogOptions{Follow: true}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "replica unavailable") {
+		t.Errorf("Logs() error = %v, want first replica error", err)
 	}
 }
 

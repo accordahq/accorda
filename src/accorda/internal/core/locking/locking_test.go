@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,6 +50,74 @@ func TestFileLockerUsesPersistentUnlockedFile(t *testing.T) {
 	}
 	if err := unlock(); err != nil {
 		t.Fatalf("unlock: %v", err)
+	}
+}
+
+func TestFileLockerRejectsMissingPath(t *testing.T) {
+	var nilLocker *FileLocker
+	for name, locker := range map[string]*FileLocker{
+		"nil receiver": nilLocker,
+		"empty path":   NewFileLocker(""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if unlock, err := locker.Lock(context.Background()); err == nil || unlock != nil {
+				t.Errorf("Lock() = %v, %v; want nil, error", unlock, err)
+			}
+		})
+	}
+}
+
+func TestFileLockerFilesystemErrors(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(parent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write parent: %v", err)
+	}
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "create directory", path: filepath.Join(parent, "target.lock"), want: "create lock dir"},
+		{name: "open file", path: t.TempDir(), want: "open lock file"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewFileLocker(tt.path).Lock(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Lock() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestWaitForLockClosedFileIsError(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "closed-lock")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if unlock, err := waitForLock(context.Background(), file); err == nil || unlock != nil {
+		t.Errorf("waitForLock() = %v, %v; want nil, acquire error", unlock, err)
+	}
+}
+
+func TestUnlockFileReportsClosedFileError(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "closed-lock")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	unlock := unlockFile(file)
+	first := unlock()
+	if first == nil {
+		t.Error("unlock() error = nil for closed file")
+	}
+	if second := unlock(); second == nil || second.Error() != first.Error() {
+		t.Errorf("second unlock() error = %v, want stable first error", second)
 	}
 }
 
