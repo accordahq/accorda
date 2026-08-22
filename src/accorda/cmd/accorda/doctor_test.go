@@ -27,7 +27,8 @@ func TestRun_DoctorReportsMissingProject(t *testing.T) {
 
 func TestResolveDoctorTargetPaths(t *testing.T) {
 	dir := t.TempDir()
-	absolute := filepath.Join(t.TempDir(), "compose.yaml")
+	absolute := filepath.Join(t.TempDir(), config.DefaultComposeFile)
+	nested := filepath.Join("deploy", config.DefaultComposeFile)
 	cases := []struct {
 		name   string
 		target config.Target
@@ -35,13 +36,13 @@ func TestResolveDoctorTargetPaths(t *testing.T) {
 	}{
 		{
 			name:   "relative file",
-			target: config.Target{File: "compose.yaml"},
-			want:   config.Target{File: filepath.Join(dir, "compose.yaml")},
+			target: config.Target{File: config.DefaultComposeFile},
+			want:   config.Target{File: filepath.Join(dir, config.DefaultComposeFile)},
 		},
 		{
 			name:   "relative path",
-			target: config.Target{Path: "deploy/compose.yaml"},
-			want:   config.Target{Path: filepath.Join(dir, "deploy/compose.yaml")},
+			target: config.Target{Path: nested},
+			want:   config.Target{Path: filepath.Join(dir, nested)},
 		},
 		{
 			name:   "absolute file",

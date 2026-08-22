@@ -43,7 +43,7 @@ const integrationCompose = `services:
 func writeIntegrationCompose(t *testing.T) (path, project string) {
 	t.Helper()
 	dir := t.TempDir()
-	path = filepath.Join(dir, "compose.yaml")
+	path = filepath.Join(dir, config.DefaultComposeFile)
 	if err := os.WriteFile(path, []byte(integrationCompose), 0o644); err != nil {
 		t.Fatalf("write compose: %v", err)
 	}

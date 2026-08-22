@@ -558,7 +558,7 @@ func mergeRuntime(a, b state.RuntimeService) state.RuntimeService {
 // path, matching the directory-basename heuristic Compose v2 uses when no
 // explicit name is set: the base name of the file's directory, normalized.
 // The path is resolved to absolute first so a bare filename (e.g.
-// "compose.yaml", the §8 example) falls back to the working-directory
+// a bare default filename, as in the §8 example) falls back to the working-directory
 // basename rather than producing an empty name.
 func composeProjectName(file string) string {
 	abs, err := filepath.Abs(file)

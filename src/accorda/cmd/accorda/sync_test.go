@@ -26,7 +26,7 @@ func TestRun_Sync_MissingProjectFile(t *testing.T) {
 
 func TestBuildTarget_Compose(t *testing.T) {
 	p := &config.Project{
-		Target: config.Target{Type: config.TargetCompose, File: "compose.yaml"},
+		Target: config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile},
 		Images: config.Images{Pull: config.PullAlways},
 		Health: config.Health{Timeout: 0},
 	}

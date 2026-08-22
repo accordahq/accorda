@@ -155,11 +155,6 @@ func vcsVersion() string {
 
 // --- init -----------------------------------------------------------------
 
-// initComposeFile is the default Compose file path written into the project
-// file when the user does not override it. It matches the §8 example and
-// the default the Compose target resolves against the working directory.
-const initComposeFile = "compose.yaml"
-
 func newInitCmd() *cobra.Command {
 	var (
 		dir      string
@@ -193,7 +188,7 @@ func newInitCmd() *cobra.Command {
 	c.Flags().StringVar(&env, "env", "default", "environment name")
 	c.Flags().StringVar(&repo, "repo", "", "Git source repository URL")
 	c.Flags().StringVar(&branch, "branch", "main", "Git branch to reconcile")
-	c.Flags().StringVar(&file, "file", initComposeFile, "Compose target file path")
+	c.Flags().StringVar(&file, "file", config.DefaultComposeFile, "Compose target file path")
 	c.Flags().StringVar(&authType, "auth-type", "", "Git auth type: ssh or https (https writes ambient; add source.auth.token by hand)")
 	c.Flags().StringVar(&authKey, "auth-key", "", "SSH private key path (for --auth-type=ssh)")
 	return c

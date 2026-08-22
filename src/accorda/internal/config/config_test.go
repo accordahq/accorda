@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const nestedComposeFile = "deploy/" + DefaultComposeFile
+
 // composeExample is the example from docs/ACCORDA.md §8 (Docker Compose
 // Target), extended with the version/environment fields from §25 so it is a
 // complete, valid project file.
@@ -20,7 +22,7 @@ source:
   path: services/api
 target:
   type: compose
-  file: compose.yaml
+  file: ` + DefaultComposeFile + `
 sync:
   interval: 30s
 images:
@@ -43,7 +45,7 @@ source:
   branch: main
 target:
   type: compose
-  path: deploy/compose.yaml
+  path: ` + nestedComposeFile + `
 secrets:
   - deploy/prod.env.sops
 health:
@@ -94,8 +96,8 @@ func TestParse_ComposeExample(t *testing.T) {
 	if p.Target.Type != "compose" {
 		t.Errorf("Target.Type = %q, want %q", p.Target.Type, "compose")
 	}
-	if p.Target.File != "compose.yaml" {
-		t.Errorf("Target.File = %q, want %q", p.Target.File, "compose.yaml")
+	if p.Target.File != DefaultComposeFile {
+		t.Errorf("Target.File = %q, want %q", p.Target.File, DefaultComposeFile)
 	}
 	if p.Sync.Interval != 30*time.Second {
 		t.Errorf("Sync.Interval = %v, want %v", p.Sync.Interval, 30*time.Second)
@@ -122,8 +124,8 @@ func TestParse_ComposeExample25(t *testing.T) {
 	if p.Target.Type != "compose" {
 		t.Errorf("Target.Type = %q, want %q", p.Target.Type, "compose")
 	}
-	if p.Target.Path != "deploy/compose.yaml" {
-		t.Errorf("Target.Path = %q, want %q", p.Target.Path, "deploy/compose.yaml")
+	if p.Target.Path != nestedComposeFile {
+		t.Errorf("Target.Path = %q, want %q", p.Target.Path, nestedComposeFile)
 	}
 	if len(p.Secrets.Files) != 1 || p.Secrets.Files[0] != "deploy/prod.env.sops" {
 		t.Errorf("Secrets.Files = %v, want [deploy/prod.env.sops]", p.Secrets.Files)
@@ -292,7 +294,7 @@ source:
   url: git@github.com:acme/infra.git
 target:
   type: compose
-  file: compose.yaml
+  file: ` + DefaultComposeFile + `
 `
 	p, err := Parse([]byte(src))
 	if err != nil {
@@ -338,7 +340,7 @@ source:
     key: /etc/Accorda/git.key
 target:
   type: compose
-  file: compose.yaml
+  file: ` + DefaultComposeFile + `
 `
 	p, err := Parse([]byte(src))
 	if err != nil {
@@ -364,7 +366,7 @@ source:
     username: x-access-token
 target:
   type: compose
-  file: compose.yaml
+  file: ` + DefaultComposeFile + `
 `
 	p, err := Parse([]byte(src))
 	if err != nil {
@@ -398,7 +400,7 @@ source:
     type: ssh
 target:
   type: compose
-  file: compose.yaml
+  file: ` + DefaultComposeFile + `
 `,
 			want: "source.auth.key is required",
 		},
@@ -413,7 +415,7 @@ source:
     type: https
 target:
   type: compose
-  file: compose.yaml
+  file: ` + DefaultComposeFile + `
 `,
 			want: "source.auth.token is required",
 		},
@@ -428,7 +430,7 @@ source:
     type: basic
 target:
   type: compose
-  file: compose.yaml
+  file: ` + DefaultComposeFile + `
 `,
 			want: `source.auth.type "basic" is not supported`,
 		},
@@ -455,7 +457,7 @@ source:
   branch: main
 target:
   type: compose
-  file: compose.yaml
+  file: ` + DefaultComposeFile + `
 `
 	_, err := Parse([]byte(src))
 	if err != nil {
@@ -486,7 +488,7 @@ source:
   branch: main
 target:
   type: compose
-  file: compose.yaml
+  file: ` + DefaultComposeFile + `
 `,
 		},
 	}
@@ -545,7 +547,7 @@ func TestMarshalProject_OmitsEmptySections(t *testing.T) {
 		Version:     SchemaVersion,
 		Environment: "production",
 		Source:      Source{Type: "git", URL: "git@github.com:acme/backend.git", Branch: "main"},
-		Target:      Target{Type: TargetCompose, File: "compose.yaml"},
+		Target:      Target{Type: TargetCompose, File: DefaultComposeFile},
 	}
 	ApplyDefaults(p)
 	out, err := MarshalProject(p)

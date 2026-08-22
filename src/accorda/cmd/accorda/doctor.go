@@ -80,7 +80,7 @@ func diagnose(ctx context.Context, dir string) []doctorResult {
 
 // resolveDoctorTargetPaths interprets relative target paths from the directory
 // containing accorda.yaml. This makes --dir behave like a project root instead
-// of accidentally resolving the default compose.yaml against the caller's
+// of accidentally resolving the default Compose filename against the caller's
 // working directory.
 func resolveDoctorTargetPaths(dir string, target config.Target) config.Target {
 	if target.File != "" && !filepath.IsAbs(target.File) {

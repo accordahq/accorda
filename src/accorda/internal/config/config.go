@@ -14,6 +14,10 @@ import (
 // File is the canonical name of the Accorda project file on disk.
 const File = "accorda.yaml"
 
+// DefaultComposeFile is the Compose file used when a project or Git source
+// does not configure a different services file.
+const DefaultComposeFile = "compose.yaml"
+
 // SchemaVersion is the only format version currently accepted by the loader.
 const SchemaVersion = 1
 

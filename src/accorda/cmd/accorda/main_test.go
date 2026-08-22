@@ -92,7 +92,7 @@ func TestRun_Init_CreatesProjectFile(t *testing.T) {
 		"url: git@github.com:acme/backend.git",
 		"branch: main",
 		"type: compose",
-		"file: compose.yaml",
+		"file: " + config.DefaultComposeFile,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("project file missing %q; got %s", want, s)
@@ -131,7 +131,7 @@ func TestRun_Init_Defaults(t *testing.T) {
 	if !strings.Contains(s, "branch: main") {
 		t.Fatalf("expected default branch, got %s", s)
 	}
-	if !strings.Contains(s, "file: compose.yaml") {
+	if !strings.Contains(s, "file: "+config.DefaultComposeFile) {
 		t.Fatalf("expected default compose file, got %s", s)
 	}
 }

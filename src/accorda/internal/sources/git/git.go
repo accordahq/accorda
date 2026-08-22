@@ -27,10 +27,6 @@ import (
 // missing method is caught at build time, not at runtime.
 var _ sources.Source = (*Git)(nil)
 
-// defaultComposeFile is the services file read when the configured source
-// path is empty or points at a directory.
-const defaultComposeFile = "compose.yaml"
-
 // Git is the generic Git source adapter (docs/ACCORDA.md §13).
 //
 // It clones or fetches a repository into a local cache, checks out the
@@ -536,23 +532,23 @@ func repoExists(dir string) (bool, error) {
 }
 
 // servicesPath returns the path to the services file relative to the repo
-// root, defaulting to defaultComposeFile when the source path is empty.
+// root, defaulting to config.DefaultComposeFile when the source path is empty.
 func servicesPath(sourcePath string) string {
 	p := strings.TrimSpace(sourcePath)
 	if p == "" {
-		return defaultComposeFile
+		return config.DefaultComposeFile
 	}
 	if isComposeFile(p) {
 		return p
 	}
-	return filepath.Join(p, defaultComposeFile)
+	return filepath.Join(p, config.DefaultComposeFile)
 }
 
 // isComposeFile reports whether path looks like a compose file name.
 func isComposeFile(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 	switch base {
-	case defaultComposeFile, "compose.yml", "docker-compose.yaml", "docker-compose.yml":
+	case config.DefaultComposeFile, "compose.yml", "docker-compose.yaml", "docker-compose.yml":
 		return true
 	default:
 		return false

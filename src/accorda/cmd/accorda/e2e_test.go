@@ -58,13 +58,13 @@ func writeE2EProject(t *testing.T) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir project dir: %v", err)
 	}
-	composePath := filepath.Join(dir, "compose.yaml")
+	composePath := filepath.Join(dir, testutil.ComposeFile)
 	if err := os.WriteFile(composePath, []byte(e2eCompose), 0o644); err != nil {
 		t.Fatalf("write target compose: %v", err)
 	}
 	// target.file is resolved against the process working directory (not the
 	// config's --dir), so the test must use an absolute path for the target
-	// Compose file; a relative "compose.yaml" would point at the cwd and fail.
+	// Compose file; a relative default filename would point at the cwd and fail.
 	project := `version: 1
 environment: production
 source:
@@ -106,6 +106,18 @@ func execCommand(t *testing.T, dir, name string, args ...string) string {
 	return string(out)
 }
 
+// cleanupComposeProject registers a best-effort teardown for the fixed E2E
+// Compose project. Keeping the command here ensures every test uses the shared
+// Compose filename and the same cleanup behavior.
+func cleanupComposeProject(t *testing.T, dir string) {
+	t.Helper()
+	t.Cleanup(func() {
+		cmd := exec.Command("docker", "compose", "-f", testutil.ComposeFile, "-p", "accorda", "down", "--remove-orphans")
+		cmd.Dir = dir
+		_ = cmd.Run()
+	})
+}
+
 // TestE2E_Sync_ConvergesToSynced drives the full reconciliation lifecycle
 // end-to-end: a Git commit declares the desired state, `accorda sync` detects
 // it, plans, deploys to a real Docker daemon, verifies health, and reports
@@ -115,12 +127,7 @@ func TestE2E_Sync_ConvergesToSynced(t *testing.T) {
 	testutil.RequireGit(t)
 
 	dir := writeE2EProject(t)
-	t.Cleanup(func() {
-		// Best-effort teardown of the compose project.
-		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
-		cmd.Dir = dir
-		_ = cmd.Run()
-	})
+	cleanupComposeProject(t, dir)
 
 	var out bytes.Buffer
 	if err := run([]string{"sync", "--dir", dir}, &out, nil); err != nil {
@@ -152,11 +159,7 @@ func TestE2E_Sync_RollsBackOnFailedDeploy(t *testing.T) {
 
 	dir := writeE2EProject(t)
 	origin := gitOriginDir(t, dir)
-	t.Cleanup(func() {
-		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
-		cmd.Dir = dir
-		_ = cmd.Run()
-	})
+	cleanupComposeProject(t, dir)
 
 	// 1. First sync deploys busybox:1.36 and records a healthy receipt.
 	var first bytes.Buffer
@@ -175,7 +178,7 @@ func TestE2E_Sync_RollsBackOnFailedDeploy(t *testing.T) {
 	}
 	runGit(t, origin, "add", testutil.ComposeFile)
 	runGit(t, origin, "commit", "-m", "bump to bad image")
-	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(badImageCompose), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, testutil.ComposeFile), []byte(badImageCompose), 0o644); err != nil {
 		t.Fatalf("write target compose (bad image): %v", err)
 	}
 
@@ -190,7 +193,7 @@ func TestE2E_Sync_RollsBackOnFailedDeploy(t *testing.T) {
 	}
 
 	// 4. The on-disk Compose file must be restored to busybox:1.36.
-	data, readErr := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	data, readErr := os.ReadFile(filepath.Join(dir, testutil.ComposeFile))
 	if readErr != nil {
 		t.Fatalf("read restored compose: %v", readErr)
 	}
@@ -220,11 +223,7 @@ func TestE2E_Sync_FailureNoHistory_NoRollback(t *testing.T) {
 	testutil.RequireGit(t)
 
 	dir := writeE2EProject(t)
-	t.Cleanup(func() {
-		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
-		cmd.Dir = dir
-		_ = cmd.Run()
-	})
+	cleanupComposeProject(t, dir)
 
 	// Overwrite Git and the target file to the nonexistent image before any
 	// successful sync, so there is no healthy receipt to roll back to.
@@ -234,7 +233,7 @@ func TestE2E_Sync_FailureNoHistory_NoRollback(t *testing.T) {
 	}
 	runGit(t, origin, "add", testutil.ComposeFile)
 	runGit(t, origin, "commit", "-m", "bump to bad image")
-	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(badImageCompose), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, testutil.ComposeFile), []byte(badImageCompose), 0o644); err != nil {
 		t.Fatalf("write target compose (bad image): %v", err)
 	}
 
@@ -248,7 +247,7 @@ func TestE2E_Sync_FailureNoHistory_NoRollback(t *testing.T) {
 	}
 	// The on-disk file must be left as the failed image (no rollback wrote it
 	// back).
-	data, readErr := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	data, readErr := os.ReadFile(filepath.Join(dir, testutil.ComposeFile))
 	if readErr != nil {
 		t.Fatalf("read compose: %v", readErr)
 	}
@@ -285,11 +284,7 @@ func TestE2E_Status_ReportsAfterSync(t *testing.T) {
 	testutil.RequireGit(t)
 
 	dir := writeE2EProject(t)
-	t.Cleanup(func() {
-		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
-		cmd.Dir = dir
-		_ = cmd.Run()
-	})
+	cleanupComposeProject(t, dir)
 
 	// First converge so a healthy receipt exists.
 	var syncOut bytes.Buffer
@@ -330,11 +325,7 @@ func TestE2E_Diff_AfterSync(t *testing.T) {
 
 	dir := writeE2EProject(t)
 	origin := gitOriginDir(t, dir)
-	t.Cleanup(func() {
-		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
-		cmd.Dir = dir
-		_ = cmd.Run()
-	})
+	cleanupComposeProject(t, dir)
 
 	// First converge so a healthy receipt exists.
 	var syncOut bytes.Buffer
@@ -396,11 +387,7 @@ func TestE2E_Plan_AfterSync(t *testing.T) {
 	testutil.RequireGit(t)
 
 	dir := writeE2EProject(t)
-	t.Cleanup(func() {
-		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
-		cmd.Dir = dir
-		_ = cmd.Run()
-	})
+	cleanupComposeProject(t, dir)
 
 	// First converge so a healthy receipt exists.
 	var syncOut bytes.Buffer
@@ -432,11 +419,7 @@ func TestE2E_History_ReportsAfterSync(t *testing.T) {
 	testutil.RequireGit(t)
 
 	dir := writeE2EProject(t)
-	t.Cleanup(func() {
-		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
-		cmd.Dir = dir
-		_ = cmd.Run()
-	})
+	cleanupComposeProject(t, dir)
 
 	// First converge so a healthy receipt is recorded.
 	var syncOut bytes.Buffer
@@ -469,11 +452,7 @@ func TestE2E_Inspect_AfterSync(t *testing.T) {
 	testutil.RequireGit(t)
 
 	dir := writeE2EProject(t)
-	t.Cleanup(func() {
-		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
-		cmd.Dir = dir
-		_ = cmd.Run()
-	})
+	cleanupComposeProject(t, dir)
 
 	// First converge so a healthy receipt with a resolved digest is recorded.
 	var syncOut bytes.Buffer
@@ -508,11 +487,7 @@ func TestE2E_History_RecordsFailure(t *testing.T) {
 
 	dir := writeE2EProject(t)
 	origin := gitOriginDir(t, dir)
-	t.Cleanup(func() {
-		cmd := exec.Command("docker", "compose", "-f", "compose.yaml", "-p", "accorda", "down", "--remove-orphans")
-		cmd.Dir = dir
-		_ = cmd.Run()
-	})
+	cleanupComposeProject(t, dir)
 
 	// First converge so a healthy receipt exists (rollback has a target).
 	var first bytes.Buffer
@@ -527,7 +502,7 @@ func TestE2E_History_RecordsFailure(t *testing.T) {
 	}
 	runGit(t, origin, "add", testutil.ComposeFile)
 	runGit(t, origin, "commit", "-m", "bump to bad image")
-	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(badImageCompose), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, testutil.ComposeFile), []byte(badImageCompose), 0o644); err != nil {
 		t.Fatalf("write target compose (bad image): %v", err)
 	}
 
