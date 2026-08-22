@@ -55,7 +55,7 @@ func runPlan(cmd *cobra.Command, dir string) error {
 		return err
 	}
 	src := git.New(proj.Source)
-	tgt, err := buildTarget(proj)
+	tgt, err := buildTarget(proj, dir)
 	if err != nil {
 		return err
 	}

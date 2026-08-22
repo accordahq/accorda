@@ -33,8 +33,9 @@ var _ targets.LogTarget = (*Target)(nil)
 // This implementation provides the Validate and Current phases of the
 // reconciliation lifecycle (docs/ACCORDA.md §6):
 //
-//   - Validate loads and validates the Compose file (reusing LoadFile) and
-//     pings the Docker engine to confirm connectivity. It makes no changes.
+//   - Validate loads and validates the Compose file (reusing LoadFile), pings
+//     the Docker engine, and verifies the Docker Compose CLI is available. It
+//     makes no changes.
 //   - Current reads the runtime state of the project's containers and maps
 //     them back to Accorda service names via the Compose labels, returning a
 //     state.RuntimeState. It makes no changes.
@@ -172,9 +173,9 @@ func WithProjectName(name string) Option {
 	return func(t *Target) { t.project = normalizeProjectName(name) }
 }
 
-// Validate checks that the Compose file is loadable and that the Docker
-// engine is reachable. It does not mutate the target
-// (docs/ACCORDA.md §6 validate phase).
+// Validate checks that the Compose file is loadable, the Docker engine is
+// reachable, and the Docker Compose CLI is available. It does not mutate the
+// target (docs/ACCORDA.md §6 validate phase).
 func (t *Target) Validate(ctx context.Context) error {
 	if t == nil {
 		return errors.New("compose target: nil target")
@@ -187,6 +188,12 @@ func (t *Target) Validate(ctx context.Context) error {
 	}
 	if _, err := t.docker.Ping(ctx); err != nil {
 		return fmt.Errorf("compose target: docker ping: %w", err)
+	}
+	if t.runner == nil {
+		return errors.New("compose target: compose runner is nil")
+	}
+	if err := t.runner.Run(ctx, "version"); err != nil {
+		return fmt.Errorf("compose target: docker compose CLI: %w", err)
 	}
 	return nil
 }
@@ -551,7 +558,7 @@ func mergeRuntime(a, b state.RuntimeService) state.RuntimeService {
 // path, matching the directory-basename heuristic Compose v2 uses when no
 // explicit name is set: the base name of the file's directory, normalized.
 // The path is resolved to absolute first so a bare filename (e.g.
-// "compose.yaml", the §8 example) falls back to the working-directory
+// a bare default filename, as in the §8 example) falls back to the working-directory
 // basename rather than producing an empty name.
 func composeProjectName(file string) string {
 	abs, err := filepath.Abs(file)

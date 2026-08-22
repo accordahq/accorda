@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +93,7 @@ func (f *fakeRunner) Run(_ context.Context, args ...string) error {
 func writeComposeFile(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "compose.yaml")
+	path := filepath.Join(dir, config.DefaultComposeFile)
 	if err := os.WriteFile(path, []byte("services:\n  api:\n    image: api:1\n"), 0o644); err != nil {
 		t.Fatalf("write compose: %v", err)
 	}
@@ -103,7 +104,8 @@ func writeComposeFile(t *testing.T) string {
 // using the project name derived from the file's directory basename.
 func newTarget(t *testing.T, path string, cli dockerClient) *Target {
 	t.Helper()
-	tgt, err := New(config.Target{Type: config.TargetCompose, File: path}, WithDockerClient(cli))
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithRunner(&fakeRunner{}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -212,6 +214,24 @@ func TestValidate_PingFails_IsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "docker ping") {
 		t.Errorf("err = %v, want one mentioning docker ping", err)
+	}
+}
+
+func TestValidate_ComposeCLIFails_IsError(t *testing.T) {
+	path := writeComposeFile(t)
+	runner := &fakeRunner{err: errors.New("compose plugin missing")}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(&fakeDockerClient{}), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	err = tgt.Validate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "docker compose CLI") {
+		t.Fatalf("Validate() error = %v, want Docker Compose CLI failure", err)
+	}
+	if len(runner.calls) != 1 || !slices.Equal(runner.calls[0], []string{"version"}) {
+		t.Fatalf("runner calls = %v, want [[version]]", runner.calls)
 	}
 }
 
@@ -822,9 +842,9 @@ func TestComposeProjectName_FromFilePath(t *testing.T) {
 		path string
 		want string
 	}{
-		{"/srv/app/compose.yaml", "app"},
-		{"/home/user/My Service/compose.yaml", "myservice"},
-		{"/root/compose.yaml", "root"},
+		{filepath.Join("/srv/app", config.DefaultComposeFile), "app"},
+		{filepath.Join("/home/user/My Service", config.DefaultComposeFile), "myservice"},
+		{filepath.Join("/root", config.DefaultComposeFile), "root"},
 	}
 	for _, c := range cases {
 		if got := composeProjectName(c.path); got != c.want {
@@ -834,7 +854,7 @@ func TestComposeProjectName_FromFilePath(t *testing.T) {
 }
 
 func TestComposeProjectName_BareFilenameFallsBackToWorkingDir(t *testing.T) {
-	// The §8 example uses `target.file: compose.yaml` with no directory
+	// The §8 example uses the default target.file with no directory
 	// component. The derived project name must fall back to the working
 	// directory basename rather than empty, so Current() filters on a real
 	// project label instead of matching nothing.
@@ -843,11 +863,11 @@ func TestComposeProjectName_BareFilenameFallsBackToWorkingDir(t *testing.T) {
 		t.Fatalf("Getwd: %v", err)
 	}
 	want := normalizeProjectName(filepath.Base(wd))
-	if got := composeProjectName("compose.yaml"); got != want {
-		t.Errorf("composeProjectName(%q) = %q, want %q", "compose.yaml", got, want)
+	if got := composeProjectName(config.DefaultComposeFile); got != want {
+		t.Errorf("composeProjectName(%q) = %q, want %q", config.DefaultComposeFile, got, want)
 	}
-	if got := composeProjectName("compose.yaml"); got == "" {
-		t.Error("composeProjectName(compose.yaml) is empty, want working-dir basename")
+	if got := composeProjectName(config.DefaultComposeFile); got == "" {
+		t.Errorf("composeProjectName(%s) is empty, want working-dir basename", config.DefaultComposeFile)
 	}
 }
 
@@ -946,6 +966,15 @@ func TestValidate_NilDockerClient_IsError(t *testing.T) {
 	tgt.docker = nil
 	if err := tgt.Validate(context.Background()); err == nil {
 		t.Fatal("expected error for nil docker client, got nil")
+	}
+}
+
+func TestValidate_NilRunner_IsError(t *testing.T) {
+	path := writeComposeFile(t)
+	tgt := newTarget(t, path, &fakeDockerClient{})
+	tgt.runner = nil
+	if err := tgt.Validate(context.Background()); err == nil {
+		t.Fatal("expected error for nil compose runner, got nil")
 	}
 }
 
@@ -1106,7 +1135,7 @@ func TestApplyDesired_NilDesired(t *testing.T) {
 func TestWriteComposeServices_RoundTripsImage(t *testing.T) {
 	// writeComposeServices must write the image reference into the file so a
 	// later LoadFile reads it back (docs/ACCORDA.md §20).
-	path := filepath.Join(t.TempDir(), "compose.yaml")
+	path := filepath.Join(t.TempDir(), config.DefaultComposeFile)
 	services := map[string]state.Service{
 		"api": {Image: "busybox:1.36", Command: []string{"sh", "-c", "sleep 300"}},
 	}

@@ -7,12 +7,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"accorda/internal/config"
 )
 
 // ComposeFile is the services file name the fixtures write into the origin
-// repository. It matches the git source's default services file
-// (internal/sources/git defaultComposeFile).
-const ComposeFile = "compose.yaml"
+// repository. It aliases the product default so fixtures change with it.
+const ComposeFile = config.DefaultComposeFile
 
 // CommitInfo mirrors sources.Commit for test fixtures.
 type CommitInfo struct {

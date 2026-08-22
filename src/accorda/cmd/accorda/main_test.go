@@ -91,8 +91,8 @@ func TestRun_Init_CreatesProjectFile(t *testing.T) {
 		"type: git",
 		"url: git@github.com:acme/backend.git",
 		"branch: main",
-		"type: compose",
-		"file: compose.yaml",
+		"type: " + config.TargetCompose,
+		"file: " + config.DefaultComposeFile,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("project file missing %q; got %s", want, s)
@@ -131,7 +131,7 @@ func TestRun_Init_Defaults(t *testing.T) {
 	if !strings.Contains(s, "branch: main") {
 		t.Fatalf("expected default branch, got %s", s)
 	}
-	if !strings.Contains(s, "file: compose.yaml") {
+	if !strings.Contains(s, "file: "+config.DefaultComposeFile) {
 		t.Fatalf("expected default compose file, got %s", s)
 	}
 }
@@ -165,19 +165,19 @@ func TestRun_Init_Auth(t *testing.T) {
 		},
 		{
 			name:     "ssh with key",
-			args:     []string{"--auth-type", "ssh", "--auth-key", "/home/user/.ssh/id_ed25519"},
-			wantAuth: "type: ssh",
+			args:     []string{"--auth-type", config.AuthSSH, "--auth-key", "/home/user/.ssh/id_ed25519"},
+			wantAuth: "type: " + config.AuthSSH,
 			wantLoad: true,
 		},
 		{
 			name:     "ssh without key fails validation",
-			args:     []string{"--auth-type", "ssh"},
+			args:     []string{"--auth-type", config.AuthSSH},
 			wantErr:  "source.auth.key is required",
 			wantLoad: false,
 		},
 		{
 			name:     "https writes ambient with hint (token added by hand)",
-			args:     []string{"--auth-type", "https"},
+			args:     []string{"--auth-type", config.AuthHTTPS},
 			wantAuth: "",
 			wantLoad: true,
 			wantHint: "HTTPS auth requires source.auth.token",
@@ -235,7 +235,7 @@ func assertAuthContent(t *testing.T, s, wantAuth string) {
 		t.Fatalf("project file should have no auth section; got %s", s)
 	}
 	// Verify the SSH key path appears when ssh auth is used.
-	if strings.Contains(wantAuth, "ssh") && !strings.Contains(s, "/home/user/.ssh/id_ed25519") {
+	if strings.Contains(wantAuth, config.AuthSSH) && !strings.Contains(s, "/home/user/.ssh/id_ed25519") {
 		t.Fatalf("project file missing SSH key path; got %s", s)
 	}
 }
@@ -271,23 +271,6 @@ func TestRun_Init_UnknownFlag(t *testing.T) {
 	}
 	if !strings.Contains(e.Error(), "unknown flag") {
 		t.Fatalf("unexpected error %v", e)
-	}
-}
-
-// TestRun_StubCommands verifies the commands still awaiting their backing
-// core packages report a clear not-implemented message. history, inspect,
-// and logs are implemented in their own files and exercised by their own
-// test suites; doctor remains a stub.
-func TestRun_StubCommands(t *testing.T) {
-	for _, cmd := range []string{"doctor"} {
-		var out bytes.Buffer
-		e := run([]string{cmd}, &out, nil)
-		if e == nil {
-			t.Fatalf("run(%q): expected not-implemented error, got nil", cmd)
-		}
-		if !strings.Contains(e.Error(), "not yet implemented") {
-			t.Fatalf("run(%q): unexpected error %v", cmd, e)
-		}
 	}
 }
 

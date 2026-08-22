@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"accorda/internal/config"
 	"accorda/internal/core/state"
 )
 
@@ -477,7 +478,7 @@ networks:
 
 func TestLoadFile(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "compose.yaml")
+	path := filepath.Join(dir, config.DefaultComposeFile)
 	if err := os.WriteFile(path, []byte(fullCompose), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -491,7 +492,7 @@ func TestLoadFile(t *testing.T) {
 }
 
 func TestLoadFile_Missing(t *testing.T) {
-	_, err := LoadFile("/nonexistent/compose.yaml")
+	_, err := LoadFile(filepath.Join("/nonexistent", config.DefaultComposeFile))
 	if err == nil {
 		t.Fatal("expected error for missing file, got nil")
 	}

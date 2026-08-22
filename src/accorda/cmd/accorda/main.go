@@ -13,10 +13,8 @@
 //	accorda inspect  show per-service detail for a specific deployment
 //	accorda logs     fetch or follow logs for a service
 //
-// version is fully implemented, and status, diff, plan, history, inspect, and
-// logs are implemented in their eponymous files. The remaining §11 command
-// (doctor) is recognized but reports that it is not yet implemented until its
-// backing package lands.
+// version is fully implemented, and status, diff, plan, history, inspect, logs,
+// and doctor are implemented in their eponymous files.
 package main
 
 import (
@@ -157,11 +155,6 @@ func vcsVersion() string {
 
 // --- init -----------------------------------------------------------------
 
-// initComposeFile is the default Compose file path written into the project
-// file when the user does not override it. It matches the §8 example and
-// the default the Compose target resolves against the working directory.
-const initComposeFile = "compose.yaml"
-
 func newInitCmd() *cobra.Command {
 	var (
 		dir      string
@@ -195,7 +188,7 @@ func newInitCmd() *cobra.Command {
 	c.Flags().StringVar(&env, "env", "default", "environment name")
 	c.Flags().StringVar(&repo, "repo", "", "Git source repository URL")
 	c.Flags().StringVar(&branch, "branch", "main", "Git branch to reconcile")
-	c.Flags().StringVar(&file, "file", initComposeFile, "Compose target file path")
+	c.Flags().StringVar(&file, "file", config.DefaultComposeFile, "Compose target file path")
 	c.Flags().StringVar(&authType, "auth-type", "", "Git auth type: ssh or https (https writes ambient; add source.auth.token by hand)")
 	c.Flags().StringVar(&authKey, "auth-key", "", "SSH private key path (for --auth-type=ssh)")
 	return c
@@ -264,23 +257,4 @@ func initAuth(authType, authKey string) (config.Auth, string) {
 	default:
 		return config.Auth{}, ""
 	}
-}
-
-// --- stub commands --------------------------------------------------------
-
-// stubCmd builds a command that reports it is not yet implemented. These
-// commands are recognized so the CLI surface matches the spec and users get a
-// clear, actionable message instead of "unknown command".
-func stubCmd(name, short string) *cobra.Command {
-	return &cobra.Command{
-		Use:   name,
-		Short: short,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("%s: not yet implemented (see docs/ACCORDA.md §11, §45)", name)
-		},
-	}
-}
-
-func newDoctorCmd() *cobra.Command {
-	return stubCmd("doctor", "check the local Accorda installation and configuration")
 }
