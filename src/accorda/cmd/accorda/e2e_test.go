@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"accorda/internal/config"
 	"accorda/internal/testutil"
 )
 
@@ -72,10 +73,10 @@ source:
   url: file://` + origin + `
   branch: main
 target:
-  type: compose
+  type: ` + config.TargetCompose + `
   file: ` + composePath + `
 images:
-  pull: never
+  pull: ` + config.PullNever + `
 health:
   timeout: 30s
 `

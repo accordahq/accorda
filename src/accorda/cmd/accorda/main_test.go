@@ -91,7 +91,7 @@ func TestRun_Init_CreatesProjectFile(t *testing.T) {
 		"type: git",
 		"url: git@github.com:acme/backend.git",
 		"branch: main",
-		"type: compose",
+		"type: " + config.TargetCompose,
 		"file: " + config.DefaultComposeFile,
 	} {
 		if !strings.Contains(s, want) {
@@ -165,19 +165,19 @@ func TestRun_Init_Auth(t *testing.T) {
 		},
 		{
 			name:     "ssh with key",
-			args:     []string{"--auth-type", "ssh", "--auth-key", "/home/user/.ssh/id_ed25519"},
-			wantAuth: "type: ssh",
+			args:     []string{"--auth-type", config.AuthSSH, "--auth-key", "/home/user/.ssh/id_ed25519"},
+			wantAuth: "type: " + config.AuthSSH,
 			wantLoad: true,
 		},
 		{
 			name:     "ssh without key fails validation",
-			args:     []string{"--auth-type", "ssh"},
+			args:     []string{"--auth-type", config.AuthSSH},
 			wantErr:  "source.auth.key is required",
 			wantLoad: false,
 		},
 		{
 			name:     "https writes ambient with hint (token added by hand)",
-			args:     []string{"--auth-type", "https"},
+			args:     []string{"--auth-type", config.AuthHTTPS},
 			wantAuth: "",
 			wantLoad: true,
 			wantHint: "HTTPS auth requires source.auth.token",
@@ -235,7 +235,7 @@ func assertAuthContent(t *testing.T, s, wantAuth string) {
 		t.Fatalf("project file should have no auth section; got %s", s)
 	}
 	// Verify the SSH key path appears when ssh auth is used.
-	if strings.Contains(wantAuth, "ssh") && !strings.Contains(s, "/home/user/.ssh/id_ed25519") {
+	if strings.Contains(wantAuth, config.AuthSSH) && !strings.Contains(s, "/home/user/.ssh/id_ed25519") {
 		t.Fatalf("project file missing SSH key path; got %s", s)
 	}
 }

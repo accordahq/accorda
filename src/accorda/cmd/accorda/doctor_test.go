@@ -70,7 +70,7 @@ source:
   url: https://git.example.test/acme/app.git
   branch: main
 target:
-  type: kubernetes
+  type: ` + config.TargetKubernetes + `
   path: deploy
 `
 	if err := os.WriteFile(filepath.Join(dir, "accorda.yaml"), []byte(project), 0o644); err != nil {

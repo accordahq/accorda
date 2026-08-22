@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-const nestedComposeFile = "deploy/" + DefaultComposeFile
+const (
+	nestedComposeFile    = "deploy/" + DefaultComposeFile
+	composeTargetFixture = "target: {type: " + TargetCompose + ", file: c.yaml}\n"
+)
 
 // composeExample is the example from docs/ACCORDA.md §8 (Docker Compose
 // Target), extended with the version/environment fields from §25 so it is a
@@ -21,14 +24,14 @@ source:
   branch: production
   path: services/api
 target:
-  type: compose
+  type: ` + TargetCompose + `
   file: ` + DefaultComposeFile + `
 sync:
   interval: 30s
 images:
-  pull: changed
+  pull: ` + PullChanged + `
 reconcile:
-  drift: repair
+  drift: ` + DriftRepair + `
   remove_orphans: true
 health:
   timeout: 120s
@@ -44,7 +47,7 @@ source:
   url: git@github.com:acme/infra.git
   branch: main
 target:
-  type: compose
+  type: ` + TargetCompose + `
   path: ` + nestedComposeFile + `
 secrets:
   - deploy/prod.env.sops
@@ -62,7 +65,7 @@ source:
   url: git@github.com:acme/infra.git
   branch: main
 target:
-  type: kubernetes
+  type: ` + TargetKubernetes + `
   path: deploy/kubernetes
 secrets:
   provider: sops
@@ -93,8 +96,8 @@ func TestParse_ComposeExample(t *testing.T) {
 	if p.Source.Path != "services/api" {
 		t.Errorf("Source.Path = %q, want %q", p.Source.Path, "services/api")
 	}
-	if p.Target.Type != "compose" {
-		t.Errorf("Target.Type = %q, want %q", p.Target.Type, "compose")
+	if p.Target.Type != TargetCompose {
+		t.Errorf("Target.Type = %q, want %q", p.Target.Type, TargetCompose)
 	}
 	if p.Target.File != DefaultComposeFile {
 		t.Errorf("Target.File = %q, want %q", p.Target.File, DefaultComposeFile)
@@ -102,11 +105,11 @@ func TestParse_ComposeExample(t *testing.T) {
 	if p.Sync.Interval != 30*time.Second {
 		t.Errorf("Sync.Interval = %v, want %v", p.Sync.Interval, 30*time.Second)
 	}
-	if p.Images.Pull != "changed" {
-		t.Errorf("Images.Pull = %q, want %q", p.Images.Pull, "changed")
+	if p.Images.Pull != PullChanged {
+		t.Errorf("Images.Pull = %q, want %q", p.Images.Pull, PullChanged)
 	}
-	if p.Reconcile.Drift != "repair" {
-		t.Errorf("Reconcile.Drift = %q, want %q", p.Reconcile.Drift, "repair")
+	if p.Reconcile.Drift != DriftRepair {
+		t.Errorf("Reconcile.Drift = %q, want %q", p.Reconcile.Drift, DriftRepair)
 	}
 	if p.Reconcile.RemoveOrphans == nil || !*p.Reconcile.RemoveOrphans {
 		t.Errorf("Reconcile.RemoveOrphans = %v, want true", p.Reconcile.RemoveOrphans)
@@ -121,8 +124,8 @@ func TestParse_ComposeExample25(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: unexpected error: %v", err)
 	}
-	if p.Target.Type != "compose" {
-		t.Errorf("Target.Type = %q, want %q", p.Target.Type, "compose")
+	if p.Target.Type != TargetCompose {
+		t.Errorf("Target.Type = %q, want %q", p.Target.Type, TargetCompose)
 	}
 	if p.Target.Path != nestedComposeFile {
 		t.Errorf("Target.Path = %q, want %q", p.Target.Path, nestedComposeFile)
@@ -140,8 +143,8 @@ func TestParse_ComposeExample25(t *testing.T) {
 	if p.Source.Branch != "main" {
 		t.Errorf("Source.Branch default = %q, want %q", p.Source.Branch, "main")
 	}
-	if p.Images.Pull != "changed" {
-		t.Errorf("Images.Pull default = %q, want %q", p.Images.Pull, "changed")
+	if p.Images.Pull != PullChanged {
+		t.Errorf("Images.Pull default = %q, want %q", p.Images.Pull, PullChanged)
 	}
 }
 
@@ -150,8 +153,8 @@ func TestParse_KubernetesExample25(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: unexpected error: %v", err)
 	}
-	if p.Target.Type != "kubernetes" {
-		t.Errorf("Target.Type = %q, want %q", p.Target.Type, "kubernetes")
+	if p.Target.Type != TargetKubernetes {
+		t.Errorf("Target.Type = %q, want %q", p.Target.Type, TargetKubernetes)
 	}
 	if p.Target.Path != "deploy/kubernetes" {
 		t.Errorf("Target.Path = %q, want %q", p.Target.Path, "deploy/kubernetes")
@@ -215,27 +218,27 @@ func TestValidate_Errors(t *testing.T) {
 	}{
 		{
 			name: "missing version",
-			yaml: "environment: production\nsource: {url: x}\ntarget: {type: compose, file: c.yaml}\n",
+			yaml: "environment: production\nsource: {url: x}\n" + composeTargetFixture,
 			want: "version is required",
 		},
 		{
 			name: "unsupported version",
-			yaml: "version: 2\nenvironment: production\nsource: {url: x}\ntarget: {type: compose, file: c.yaml}\n",
+			yaml: "version: 2\nenvironment: production\nsource: {url: x}\n" + composeTargetFixture,
 			want: "version 2 is not supported",
 		},
 		{
 			name: "missing environment",
-			yaml: "version: 1\nsource: {url: x}\ntarget: {type: compose, file: c.yaml}\n",
+			yaml: "version: 1\nsource: {url: x}\n" + composeTargetFixture,
 			want: "environment is required",
 		},
 		{
 			name: "missing source url",
-			yaml: "version: 1\nenvironment: production\ntarget: {type: compose, file: c.yaml}\n",
+			yaml: "version: 1\nenvironment: production\n" + composeTargetFixture,
 			want: "source.url is required",
 		},
 		{
 			name: "unsupported source type",
-			yaml: "version: 1\nenvironment: production\nsource: {type: s3, url: x}\ntarget: {type: compose, file: c.yaml}\n",
+			yaml: "version: 1\nenvironment: production\nsource: {type: s3, url: x}\n" + composeTargetFixture,
 			want: "source.type \"s3\" is not supported",
 		},
 		{
@@ -245,13 +248,13 @@ func TestValidate_Errors(t *testing.T) {
 		},
 		{
 			name: "compose without file or path",
-			yaml: "version: 1\nenvironment: production\nsource: {url: x}\ntarget: {type: compose}\n",
-			want: "target.file or target.path is required for \"compose\" targets",
+			yaml: "version: 1\nenvironment: production\nsource: {url: x}\ntarget: {type: " + TargetCompose + "}\n",
+			want: "target.file or target.path is required for \"" + TargetCompose + "\" targets",
 		},
 		{
 			name: "kubernetes without path",
-			yaml: "version: 1\nenvironment: production\nsource: {url: x}\ntarget: {type: kubernetes}\n",
-			want: "target.path is required for \"kubernetes\" targets",
+			yaml: "version: 1\nenvironment: production\nsource: {url: x}\ntarget: {type: " + TargetKubernetes + "}\n",
+			want: "target.path is required for \"" + TargetKubernetes + "\" targets",
 		},
 		{
 			name: "unsupported target type",
@@ -260,17 +263,17 @@ func TestValidate_Errors(t *testing.T) {
 		},
 		{
 			name: "invalid image pull",
-			yaml: "version: 1\nenvironment: production\nsource: {url: x}\ntarget: {type: compose, file: c.yaml}\nimages: {pull: sometimes}\n",
+			yaml: "version: 1\nenvironment: production\nsource: {url: x}\n" + composeTargetFixture + "images: {pull: sometimes}\n",
 			want: "images.pull \"sometimes\" is not valid",
 		},
 		{
 			name: "invalid drift",
-			yaml: "version: 1\nenvironment: production\nsource: {url: x}\ntarget: {type: compose, file: c.yaml}\nreconcile: {drift: fix}\n",
+			yaml: "version: 1\nenvironment: production\nsource: {url: x}\n" + composeTargetFixture + "reconcile: {drift: fix}\n",
 			want: "reconcile.drift \"fix\" is not valid",
 		},
 		{
 			name: "secrets empty file entry",
-			yaml: "version: 1\nenvironment: production\nsource: {url: x}\ntarget: {type: compose, file: c.yaml}\nsecrets: [\"\"]\n",
+			yaml: "version: 1\nenvironment: production\nsource: {url: x}\n" + composeTargetFixture + "secrets: [\"\"]\n",
 			want: "secrets.files[0] is empty",
 		},
 	}
@@ -293,7 +296,7 @@ environment: production
 source:
   url: git@github.com:acme/infra.git
 target:
-  type: compose
+  type: ` + TargetCompose + `
   file: ` + DefaultComposeFile + `
 `
 	p, err := Parse([]byte(src))
@@ -306,11 +309,11 @@ target:
 	if p.Source.Branch != "main" {
 		t.Errorf("Source.Branch default = %q, want %q", p.Source.Branch, "main")
 	}
-	if p.Images.Pull != "changed" {
-		t.Errorf("Images.Pull default = %q, want %q", p.Images.Pull, "changed")
+	if p.Images.Pull != PullChanged {
+		t.Errorf("Images.Pull default = %q, want %q", p.Images.Pull, PullChanged)
 	}
-	if p.Reconcile.Drift != "report" {
-		t.Errorf("Reconcile.Drift default = %q, want %q", p.Reconcile.Drift, "report")
+	if p.Reconcile.Drift != DriftReport {
+		t.Errorf("Reconcile.Drift default = %q, want %q", p.Reconcile.Drift, DriftReport)
 	}
 	if p.Health.Timeout != 120*time.Second {
 		t.Errorf("Health.Timeout default = %v, want %v", p.Health.Timeout, 120*time.Second)
@@ -336,10 +339,10 @@ source:
   url: git@git.internal:acme/infra.git
   branch: main
   auth:
-    type: ssh
+    type: ` + AuthSSH + `
     key: /etc/Accorda/git.key
 target:
-  type: compose
+  type: ` + TargetCompose + `
   file: ` + DefaultComposeFile + `
 `
 	p, err := Parse([]byte(src))
@@ -361,11 +364,11 @@ source:
   url: https://git.internal/acme/infra.git
   branch: main
   auth:
-    type: https
+    type: ` + AuthHTTPS + `
     token: ghp_secrettoken
     username: x-access-token
 target:
-  type: compose
+  type: ` + TargetCompose + `
   file: ` + DefaultComposeFile + `
 `
 	p, err := Parse([]byte(src))
@@ -397,9 +400,9 @@ source:
   url: https://git.internal/acme/infra.git
   branch: main
   auth:
-    type: ssh
+    type: ` + AuthSSH + `
 target:
-  type: compose
+  type: ` + TargetCompose + `
   file: ` + DefaultComposeFile + `
 `,
 			want: "source.auth.key is required",
@@ -412,9 +415,9 @@ source:
   url: https://git.internal/acme/infra.git
   branch: main
   auth:
-    type: https
+    type: ` + AuthHTTPS + `
 target:
-  type: compose
+  type: ` + TargetCompose + `
   file: ` + DefaultComposeFile + `
 `,
 			want: "source.auth.token is required",
@@ -429,7 +432,7 @@ source:
   auth:
     type: basic
 target:
-  type: compose
+  type: ` + TargetCompose + `
   file: ` + DefaultComposeFile + `
 `,
 			want: `source.auth.type "basic" is not supported`,
@@ -456,7 +459,7 @@ source:
   url: https://git.internal/acme/infra.git
   branch: main
 target:
-  type: compose
+  type: ` + TargetCompose + `
   file: ` + DefaultComposeFile + `
 `
 	_, err := Parse([]byte(src))
@@ -487,7 +490,7 @@ source:
   url: git@github.com:acme/backend.git
   branch: main
 target:
-  type: compose
+  type: ` + TargetCompose + `
   file: ` + DefaultComposeFile + `
 `,
 		},
