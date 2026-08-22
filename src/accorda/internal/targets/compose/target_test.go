@@ -919,6 +919,18 @@ func TestComposeProjectName_FromFilePath(t *testing.T) {
 	}
 }
 
+func TestProjectNameUsesComposeProjectIdentity(t *testing.T) {
+	dir := t.TempDir()
+	fileName := filepath.Join(dir, "compose-a.yaml")
+	pathName := filepath.Join(dir, "compose-b.yaml")
+
+	fromFile := ProjectName(config.Target{File: fileName})
+	fromPath := ProjectName(config.Target{Path: pathName})
+	if fromFile != fromPath {
+		t.Errorf("ProjectName differs for files in the same directory: %q != %q", fromFile, fromPath)
+	}
+}
+
 func TestComposeProjectName_BareFilenameFallsBackToWorkingDir(t *testing.T) {
 	// The §8 example uses the default target.file with no directory
 	// component. The derived project name must fall back to the working

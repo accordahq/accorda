@@ -103,6 +103,13 @@ func TestDeploymentLockPathUsesTargetIdentity(t *testing.T) {
 	if first != pathSpelling {
 		t.Errorf("target.file and target.path lock paths differ: %q != %q", first, pathSpelling)
 	}
+	sameProject := deploymentLockPath(t.TempDir(), config.Target{
+		Type: config.TargetCompose,
+		File: filepath.Join(filepath.Dir(composeFile), "compose-production.yaml"),
+	})
+	if first != sameProject {
+		t.Errorf("Compose files for the same project have different lock paths: %q != %q", first, sameProject)
+	}
 	other := deploymentLockPath(t.TempDir(), config.Target{
 		Type: config.TargetCompose,
 		File: filepath.Join(t.TempDir(), config.DefaultComposeFile),

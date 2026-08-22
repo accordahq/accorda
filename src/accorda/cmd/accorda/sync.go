@@ -188,38 +188,14 @@ func receiptPath(dir string) string {
 }
 
 // deploymentLockPath returns the target-scoped lock file used to serialize
-// reconciliation across CLI processes. Hashing the normalized target identity
-// means two project directories that point at the same Compose file share a
-// lock without exposing an absolute host path in the state directory.
+// reconciliation across CLI processes. Hashing the effective Compose project
+// identity means different Compose files that mutate the same project share a
+// lock without exposing the project name in the state directory.
 func deploymentLockPath(dir string, target config.Target) string {
 	resolved := resolveTargetPaths(dir, target)
-	identity := resolved.Type + "\x00" + canonicalTargetPath(composeTargetFile(resolved))
+	identity := resolved.Type + "\x00" + compose.ProjectName(resolved)
 	digest := sha256.Sum256([]byte(identity))
 	return filepath.Join(stateBase(), "accorda", "locks", fmt.Sprintf("%x.lock", digest))
-}
-
-// composeTargetFile mirrors compose.New's file-over-path precedence so the
-// two supported configuration spellings identify the same deployment target.
-func composeTargetFile(target config.Target) string {
-	if target.File != "" {
-		return target.File
-	}
-	return target.Path
-}
-
-func canonicalTargetPath(path string) string {
-	if path == "" {
-		return ""
-	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return filepath.Clean(path)
-	}
-	resolved, err := filepath.EvalSymlinks(absolute)
-	if err == nil {
-		return resolved
-	}
-	return absolute
 }
 
 func projectStatePath(kind, dir, extension string) string {

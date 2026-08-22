@@ -142,14 +142,11 @@ func New(cfg config.Target, opts ...Option) (*Target, error) {
 	if cfg.Type != "" && cfg.Type != config.TargetCompose {
 		return nil, fmt.Errorf("compose target: target.type %q is not %q", cfg.Type, config.TargetCompose)
 	}
-	file := cfg.File
-	if file == "" {
-		file = cfg.Path
-	}
+	file := targetFile(cfg)
 	if file == "" {
 		return nil, errors.New("compose target: target.file or target.path is required")
 	}
-	t := &Target{file: file, project: composeProjectName(file), pullPolicy: config.PullChanged, healthTimeout: defaultHealthTimeout}
+	t := &Target{file: file, project: ProjectName(cfg), pullPolicy: config.PullChanged, healthTimeout: defaultHealthTimeout}
 	for _, opt := range opts {
 		opt(t)
 	}
@@ -164,6 +161,20 @@ func New(cfg config.Target, opts ...Option) (*Target, error) {
 		t.runner = cliRunner{file: t.file, project: t.project}
 	}
 	return t, nil
+}
+
+// ProjectName returns the default Compose project name New assigns for cfg.
+// Compose identifies a project by the normalized directory containing its
+// Compose file, independent of the file's name.
+func ProjectName(cfg config.Target) string {
+	return composeProjectName(targetFile(cfg))
+}
+
+func targetFile(cfg config.Target) string {
+	if cfg.File != "" {
+		return cfg.File
+	}
+	return cfg.Path
 }
 
 // WithProjectName sets the Compose project name used to filter containers,
