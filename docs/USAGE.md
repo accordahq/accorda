@@ -14,13 +14,13 @@ Create a directory for one deployment target:
 
 ```bash
 mkdir -p "$HOME/accorda/projects/backend-production"
+cd "$HOME/accorda/projects/backend-production"
 ```
 
 Initialize it using SSH authentication:
 
 ```bash
 accorda init \
-  --dir "$HOME/accorda/projects/backend-production" \
   --env production \
   --repo git@github.com:example/platform-deployments.git \
   --branch main \
@@ -88,7 +88,7 @@ Supported drift policies are `report`, `repair`, and `disabled`.
 Run diagnostics before the first deployment:
 
 ```bash
-accorda doctor --dir "$HOME/accorda/projects/backend-production"
+accorda doctor
 ```
 
 `doctor` validates project and Git authentication configuration, Docker Engine
@@ -102,14 +102,14 @@ Fetch the configured branch and preview the intended actions without changing
 the target:
 
 ```bash
-accorda plan --dir "$HOME/accorda/projects/backend-production"
+accorda plan
 ```
 
 After at least one successful deployment, inspect field-level changes between
 the last healthy revision and current Git HEAD:
 
 ```bash
-accorda diff --dir "$HOME/accorda/projects/backend-production"
+accorda diff
 ```
 
 Environment values are redacted from diff output.
@@ -120,7 +120,7 @@ Apply the current desired state, wait for health verification, and record a
 deployment receipt:
 
 ```bash
-accorda sync --dir "$HOME/accorda/projects/backend-production"
+accorda sync
 ```
 
 The command prints each reconciliation phase as it progresses and finishes
@@ -135,7 +135,7 @@ health verification fails and a previous healthy deployment is available.
 Run one immediate reconciliation and then poll Git using `sync.interval`:
 
 ```bash
-accorda sync --watch --dir "$HOME/accorda/projects/backend-production"
+accorda sync --watch
 ```
 
 Use a process supervisor such as systemd or Docker to start this process at
@@ -147,27 +147,27 @@ shutdown.
 Show current desired, deployed, and runtime posture:
 
 ```bash
-accorda status --dir "$HOME/accorda/projects/backend-production"
+accorda status
 ```
 
 Show the local deployment journal:
 
 ```bash
-accorda history --dir "$HOME/accorda/projects/backend-production"
+accorda history
 ```
 
 Inspect the latest deployment or a specific commit:
 
 ```bash
-accorda inspect --dir "$HOME/accorda/projects/backend-production"
-accorda inspect a84fd21 --dir "$HOME/accorda/projects/backend-production"
+accorda inspect
+accorda inspect a84fd21
 ```
 
 Read or follow logs for a Compose service:
 
 ```bash
-accorda logs api --tail 200 --dir "$HOME/accorda/projects/backend-production"
-accorda logs api --follow --dir "$HOME/accorda/projects/backend-production"
+accorda logs api --tail 200
+accorda logs api --follow
 ```
 
 ## Operate multiple projects
@@ -182,8 +182,10 @@ deployment target or environment:
 └── monitoring-production/accorda.yaml
 ```
 
-Run commands with the corresponding `--dir`. A single long-running agent that
-supervises several project files is planned but is not implemented yet.
+Change into the corresponding project directory before running commands. Use
+`--dir <path>` when operating a project from another directory. A single
+long-running agent that supervises several project files is planned but is not
+implemented yet.
 
 ## Command help
 
