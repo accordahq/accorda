@@ -35,6 +35,12 @@
 // immediately runs another cycle when Git changed during deployment
 // (docs/ACCORDA.md §47).
 //
+// Run adds continuous polling around that lifecycle. It reconciles once
+// immediately and then at sync.interval until its context is cancelled. An
+// unchanged Git HEAD produces no target mutation but still reaches runtime
+// comparison so configured drift reporting or repair remains active. Failed
+// cycles do not stop the loop, allowing transient dependencies to recover.
+//
 // Rollback restores the last known-healthy deployment when a deploy or
 // health-verification phase fails (docs/ACCORDA.md §20). The previous
 // deployment is supplied via WithPrevious; the full previous service model is

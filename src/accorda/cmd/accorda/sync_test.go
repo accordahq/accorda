@@ -25,6 +25,17 @@ func TestRun_Sync_MissingProjectFile(t *testing.T) {
 	}
 }
 
+func TestSyncCommand_WatchFlag(t *testing.T) {
+	cmd := newSyncCmd()
+	flag := cmd.Flags().Lookup("watch")
+	if flag == nil {
+		t.Fatal("sync --watch flag is missing")
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("sync --watch default = %q, want false", flag.DefValue)
+	}
+}
+
 func TestBuildTarget_Compose(t *testing.T) {
 	p := &config.Project{
 		Target: config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile},

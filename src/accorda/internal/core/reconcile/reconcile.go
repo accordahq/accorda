@@ -170,6 +170,14 @@ type Reconciler struct {
 	// (docs/ACCORDA.md §20). It is empty when the cycle failed before a
 	// deployment identifier was assigned.
 	failedDeploymentID string
+	// lastDesired is the last desired state successfully reconciled by this
+	// process. It lets continuous polling distinguish an unchanged branch HEAD
+	// and run only drift detection instead of planning target mutations again.
+	lastDesired *state.DesiredState
+	// unchanged is set by reconcileOnce when the current cycle took the
+	// unchanged-HEAD drift path. Reconcile uses it to avoid the extra
+	// in-flight-commit fetch that only full deployment cycles require.
+	unchanged bool
 }
 
 // New returns a Reconciler that orchestrates src and tgt, publishing events
@@ -245,8 +253,12 @@ func (r *Reconciler) Reconcile(ctx context.Context) *Result {
 	}
 
 	for {
+		r.unchanged = false
 		res := r.reconcileOnce(ctx)
 		if res.Phase != PhaseSynced || ctx.Err() != nil {
+			return res
+		}
+		if r.unchanged {
 			return res
 		}
 		latest, fetchErr := r.source.Fetch(ctx)
@@ -270,11 +282,19 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) *Result {
 		return r.fail(ctx, res, PhaseDetected, "", "", errors.New("reconcile: source and target are required"))
 	}
 
-	desired, commit, ok := r.fetchAndValidate(ctx, res)
+	commit, ok := r.fetch(ctx, res)
 	if !ok {
 		return res
 	}
 	res.Commit = commit.SHA
+	if r.lastDesired != nil && commit.SHA == r.lastDesired.Commit {
+		r.unchanged = true
+		return r.checkDrift(ctx, res, commit)
+	}
+	desired, ok := r.validate(ctx, res, commit)
+	if !ok {
+		return res
+	}
 	if err := r.prepareRecovery(ctx, commit); err != nil {
 		return r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
 	}
@@ -363,32 +383,56 @@ func (r *Reconciler) prepareRecovery(ctx context.Context, commit sources.Commit)
 	return nil
 }
 
-// fetchAndValidate runs the FETCHING and VALIDATING phases. It returns the
-// desired state and commit on success, or false when the cycle failed (res
-// is already populated with the failure).
-func (r *Reconciler) fetchAndValidate(ctx context.Context, res *Result) (*state.DesiredState, sources.Commit, bool) {
+// fetch runs the FETCHING phase and returns the tracked branch HEAD.
+func (r *Reconciler) fetch(ctx context.Context, res *Result) (sources.Commit, bool) {
 	r.transition(ctx, PhaseDetected, PhaseFetching, "", "", nil)
 	commit, err := r.source.Fetch(ctx)
 	if err != nil {
 		r.fail(ctx, res, PhaseFetching, "", "", err)
-		return nil, sources.Commit{}, false
+		return sources.Commit{}, false
 	}
+	return commit, true
+}
 
+// validate loads and validates desired state for a new commit.
+func (r *Reconciler) validate(ctx context.Context, res *Result, commit sources.Commit) (*state.DesiredState, bool) {
 	r.transition(ctx, PhaseFetching, PhaseValidating, commit.SHA, "", nil)
 	desired, err := r.source.Desired(ctx, &commit)
 	if err != nil {
 		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
-		return nil, sources.Commit{}, false
+		return nil, false
 	}
 	if err := desired.Validate(); err != nil {
 		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
-		return nil, sources.Commit{}, false
+		return nil, false
 	}
 	if err := r.target.Validate(ctx); err != nil {
 		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
-		return nil, sources.Commit{}, false
+		return nil, false
 	}
-	return desired, commit, true
+	return desired, true
+}
+
+// checkDrift handles a polling cycle whose Git HEAD is unchanged. It reads
+// runtime state and applies only the configured drift policy, avoiding plan,
+// pull, deploy, and health operations that belong to a new Git revision.
+func (r *Reconciler) checkDrift(ctx context.Context, res *Result, commit sources.Commit) *Result {
+	cloned := r.lastDesired.Clone()
+	desired := &cloned
+	runtime, err := r.target.Current(ctx)
+	if err != nil {
+		return r.fail(ctx, res, PhaseFetching, commit.SHA, "", err)
+	}
+	deployed := &state.DeployedState{Commit: commit.SHA, Services: desired.Services}
+	res.Comparison = state.Compare(desired, deployed, runtime)
+	if res.Comparison.Result == state.ResultDrifted {
+		res.Phase = PhaseHealthy
+		r.handleDrift(ctx, res, desired, deployed)
+		return res
+	}
+	res.Phase = PhaseSynced
+	r.transition(ctx, PhaseFetching, PhaseSynced, commit.SHA, "", nil)
+	return res
 }
 
 // plan runs the PLANNING phase. It returns the plan on success, or false
@@ -419,6 +463,9 @@ func (r *Reconciler) deploy(ctx context.Context, res *Result, desired *state.Des
 	// event on the plan actually changing the target (docs/DECISIONS.md #16).
 	if p.Changed() {
 		r.emit(ctx, events.EventDeploymentStarted, nil)
+	}
+	if !p.Changed() {
+		return true
 	}
 	if err := r.target.Apply(ctx, p); err != nil {
 		r.failedDeploymentID = p.DeploymentID
@@ -503,6 +550,8 @@ func (r *Reconciler) sync(ctx context.Context, res *Result, desired *state.Desir
 	}
 	res.Comparison = state.Compare(desired, deployed, runtime)
 	res.Health = h
+	cloned := desired.Clone()
+	r.lastDesired = &cloned
 	switch res.Comparison.Result {
 	case state.ResultDrifted:
 		res.Phase = PhaseHealthy

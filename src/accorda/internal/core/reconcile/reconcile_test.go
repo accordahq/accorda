@@ -76,6 +76,7 @@ type fakeTarget struct {
 	health         *health.Health
 	runtime        *state.RuntimeState
 	applied        []*plan.Plan
+	planCalls      int
 	applyCalls     int
 	deployDone     bool
 	// changedPlan makes Plan return a plan with a non-noop action so the
@@ -91,6 +92,7 @@ func (f *fakeTarget) Current(context.Context) (*state.RuntimeState, error) {
 	return f.runtime, nil
 }
 func (f *fakeTarget) Plan(_ context.Context, desired *state.DesiredState, _ *state.DeployedState) (*plan.Plan, error) {
+	f.planCalls++
 	if f.planErr != nil {
 		return nil, f.planErr
 	}
@@ -273,7 +275,7 @@ func TestReconcile_ApplyFailure_RollsBack(t *testing.T) {
 			"prev123": previousDesired(),
 		},
 	}
-	tgt := &fakeTarget{applyErr: errors.New("apply boom")}
+	tgt := &fakeTarget{applyErr: errors.New("apply boom"), changedPlan: true}
 	prev := &state.DeployedState{
 		DeploymentID: "dep_0",
 		Commit:       "prev123",
@@ -549,10 +551,10 @@ func TestReconcile_DriftRepair_EmitsDetectedAndReconciled(t *testing.T) {
 	if reconciled != 1 {
 		t.Errorf("drift.reconciled events = %d, want 1", reconciled)
 	}
-	// Repair re-plans and re-applies: one Apply from the deploy phase plus
-	// one from the repair.
-	if tgt.applyCalls != 2 {
-		t.Errorf("apply calls = %d, want 2 (deploy + repair)", tgt.applyCalls)
+	// The unchanged deployment plan does not mutate the target; drift repair
+	// is the only Apply call.
+	if tgt.applyCalls != 1 {
+		t.Errorf("apply calls = %d, want 1 (repair only)", tgt.applyCalls)
 	}
 }
 
@@ -593,9 +595,8 @@ func TestReconcile_DriftDisabled_NoEventsNoRepair(t *testing.T) {
 	if reconciled != 0 {
 		t.Errorf("drift.reconciled events = %d, want 0", reconciled)
 	}
-	// Only the deploy-phase Apply runs; no repair Apply.
-	if tgt.applyCalls != 1 {
-		t.Errorf("apply calls = %d, want 1 (deploy only)", tgt.applyCalls)
+	if tgt.applyCalls != 0 {
+		t.Errorf("apply calls = %d, want 0", tgt.applyCalls)
 	}
 }
 
@@ -636,8 +637,8 @@ func TestReconcile_DriftReport_DetectedOnly(t *testing.T) {
 	if reconciled != 0 {
 		t.Errorf("drift.reconciled events = %d, want 0", reconciled)
 	}
-	if tgt.applyCalls != 1 {
-		t.Errorf("apply calls = %d, want 1 (deploy only)", tgt.applyCalls)
+	if tgt.applyCalls != 0 {
+		t.Errorf("apply calls = %d, want 0", tgt.applyCalls)
 	}
 }
 
@@ -656,6 +657,7 @@ func TestReconcile_DriftRepair_ApplyFails_NoReconciled(t *testing.T) {
 			},
 		},
 		repairApplyErr: errors.New("repair boom"),
+		deployDone:     true,
 	}
 	bus := events.NewBus()
 	var detected, reconciled int
@@ -977,7 +979,7 @@ func TestReconcile_ApplyFailure_RecordsFailedReceipt(t *testing.T) {
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
 	}
-	tgt := &fakeTarget{applyErr: errors.New("apply boom")}
+	tgt := &fakeTarget{applyErr: errors.New("apply boom"), changedPlan: true}
 	store := &fakeStore{}
 	r := New(src, tgt, events.NewBus()).
 		WithEnvironment("production").
@@ -987,10 +989,10 @@ func TestReconcile_ApplyFailure_RecordsFailedReceipt(t *testing.T) {
 	if res.Phase != PhaseFailed {
 		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
 	}
-	if len(store.appended) != 1 {
-		t.Fatalf("appended receipts = %d, want 1", len(store.appended))
+	if len(store.appended) != 2 {
+		t.Fatalf("appended receipts = %d, want 2 (in_progress + failed)", len(store.appended))
 	}
-	rc := store.appended[0]
+	rc := store.appended[1]
 	if rc.Result != history.OutcomeFailed {
 		t.Errorf("receipt result = %q, want %q", rc.Result, history.OutcomeFailed)
 	}

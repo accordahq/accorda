@@ -18,12 +18,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -37,7 +40,9 @@ var createProjectFile = func(path string) (io.WriteCloser, error) {
 }
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := newRootCmd().ExecuteContext(ctx); err != nil {
 		// cobra already prints errors to stderr; keep the exit code nonzero.
 		os.Exit(1)
 	}
