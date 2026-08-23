@@ -451,7 +451,8 @@ func (r *Reconciler) plan(ctx context.Context, res *Result, desired *state.Desir
 // cycle failed (res is populated and a rollback was attempted).
 func (r *Reconciler) deploy(ctx context.Context, res *Result, desired *state.DesiredState, commit sources.Commit, p *plan.Plan) bool {
 	r.transition(ctx, PhasePlanning, PhasePulling, commit.SHA, p.DeploymentID, nil)
-	if p.Changed() && !r.recovering {
+	changed := p.Changed()
+	if changed && !r.recovering {
 		if err := r.recordPending(ctx, desired, commit, p); err != nil {
 			r.fail(ctx, res, PhasePulling, commit.SHA, p.DeploymentID, err)
 			return false
@@ -461,12 +462,10 @@ func (r *Reconciler) deploy(ctx context.Context, res *Result, desired *state.Des
 	// A no-op plan (only noop actions) performs no deployment work, so a
 	// "deployment started" event would be misleading to consumers. Gate the
 	// event on the plan actually changing the target (docs/DECISIONS.md #16).
-	if p.Changed() {
-		r.emit(ctx, events.EventDeploymentStarted, nil)
-	}
-	if !p.Changed() {
+	if !changed {
 		return true
 	}
+	r.emit(ctx, events.EventDeploymentStarted, nil)
 	if err := r.target.Apply(ctx, p); err != nil {
 		r.failedDeploymentID = p.DeploymentID
 		r.fail(ctx, res, PhaseDeploying, commit.SHA, p.DeploymentID, err)
