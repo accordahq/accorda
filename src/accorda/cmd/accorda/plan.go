@@ -77,11 +77,11 @@ func runPlan(cmd *cobra.Command, dir string) error {
 	// service model re-read from the source at the deployed commit (the
 	// receipt journal stores only image/digest), so `accorda plan` and
 	// `accorda diff` agree on the deployed side and a converged service is
-	// not over-reported as CHANGED. Note this differs from `accorda sync`,
-	// whose reconcile loop passes the image-only `previousFromHistory`
-	// baseline to Target.Plan; threading the full-model baseline into sync is
-	// a follow-up. When history has no healthy deployment, the baseline is
-	// nil and the plan treats every desired service as new.
+	// not over-reported as CHANGED. The reconcile loop independently hydrates
+	// its receipt baseline from the same deployed Git commit before planning,
+	// so plan and sync compare equivalent full models. When history has no
+	// healthy deployment, the baseline is nil and the plan treats every
+	// desired service as new.
 	store := history.NewFileStore(receiptPath(dir))
 	deployed := deployedStateFromDesired(deployedAtCommit(ctx, src, store, cmd.ErrOrStderr()))
 	p, err := tgt.Plan(ctx, desired, deployed)

@@ -1214,3 +1214,25 @@ according to Compose's empty-environment semantics.
 **Consequence.** Git-authored defaulted ports, URLs, and other typed Compose
 fields parse deterministically on every host without incorporating local
 secrets into desired state.
+
+### 42. Receipt baselines are hydrated from deployed Git revisions
+
+**Context.** Deployment receipts intentionally record image references and
+digests rather than duplicating the complete desired service model. After an
+agent restart, reconstructing `DeployedState` from only those image fields made
+the Compose target compare a partial service against the complete Git model.
+An unchanged healthy commit was therefore planned as a full recreation.
+
+**Decision.** A reconciler that recovers its previous deployment from receipts
+hydrates that image-only baseline before target planning. If the receipt commit
+matches the current validated desired state, it reuses that in-memory model. If
+the commits differ, it reads and validates desired state at the receipt commit
+through the target-agnostic `Source` interface. Failure to recover the complete
+historical model fails reconciliation before target mutation instead of
+planning from partial data. Explicit `WithPrevious` values remain unchanged;
+only receipt-derived baselines require hydration.
+
+**Consequence.** Restarted and one-shot agents treat an unchanged deployment as
+a no-op, while changed commits still receive an accurate full-model comparison.
+Receipts remain compact and image/digest-focused, and Core gains no Compose- or
+provider-specific dependency.

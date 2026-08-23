@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"testing"
 
 	"accorda/internal/config"
+	"accorda/internal/core/history"
 	"accorda/internal/testutil"
 )
 
@@ -146,6 +148,30 @@ func TestE2E_Sync_ConvergesToSynced(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "SYNCED") {
 		t.Errorf("sync output = %q, want it to contain SYNCED", out.String())
+	}
+
+	store := history.NewFileStore(receiptPath(dir))
+	before, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("list receipts after first sync: %v", err)
+	}
+
+	// A second invocation constructs a fresh reconciler and recovers its
+	// deployed baseline from the compact receipt journal. It must hydrate that
+	// baseline from Git and leave an unchanged deployment alone.
+	out.Reset()
+	if err := run([]string{"sync", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	after, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("list receipts after second sync: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("receipt count after unchanged sync = %d, want %d", len(after), len(before))
+	}
+	if !strings.Contains(out.String(), "SYNCED") {
+		t.Errorf("second sync output = %q, want it to contain SYNCED", out.String())
 	}
 }
 

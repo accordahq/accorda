@@ -82,6 +82,8 @@ type fakeTarget struct {
 	// changedPlan makes Plan return a plan with a non-noop action so the
 	// reconciler treats the deployment as changed (and records a receipt).
 	changedPlan bool
+	// plannedPrevious captures the deployed baseline passed to Plan.
+	plannedPrevious *state.DeployedState
 }
 
 func (f *fakeTarget) Validate(context.Context) error { return f.validateErr }
@@ -91,8 +93,12 @@ func (f *fakeTarget) Current(context.Context) (*state.RuntimeState, error) {
 	}
 	return f.runtime, nil
 }
-func (f *fakeTarget) Plan(_ context.Context, desired *state.DesiredState, _ *state.DeployedState) (*plan.Plan, error) {
+func (f *fakeTarget) Plan(_ context.Context, desired *state.DesiredState, deployed *state.DeployedState) (*plan.Plan, error) {
 	f.planCalls++
+	if deployed != nil {
+		cloned := deployed.Clone()
+		f.plannedPrevious = &cloned
+	}
 	if f.planErr != nil {
 		return nil, f.planErr
 	}
@@ -833,6 +839,39 @@ func TestReconcile_NoopPlan_NoReceipt(t *testing.T) {
 		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseSynced)
 	}
 	requireReceiptCount(t, store, 0)
+}
+
+func TestReconcile_HydratesReceiptBaselineForUnchangedCommit(t *testing.T) {
+	desired := healthyDesired()
+	desired.Services["api"] = state.Service{
+		Image:   "api:2",
+		Command: []string{"serve", "--port", "3000"},
+		Env:     map[string]string{"MODE": "production"},
+	}
+	src := &fakeSource{commit: sources.Commit{SHA: desired.Commit}, desired: desired}
+	tgt := &fakeTarget{health: healthyHealth(), runtime: healthyRuntime()}
+	store := &fakeStore{appended: []history.Receipt{{
+		DeploymentID: "dep_healthy",
+		Commit:       desired.Commit,
+		Result:       history.OutcomeHealthy,
+		Services: map[string]history.ServiceReceipt{
+			"api": {Image: "api:2", Digest: "sha256:91a"},
+		},
+	}}}
+
+	res := New(src, tgt, events.NewBus()).WithReceiptStore(store).Reconcile(context.Background())
+
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	}
+	if tgt.plannedPrevious == nil {
+		t.Fatal("Plan previous state = nil, want hydrated deployed state")
+	}
+	if !reflect.DeepEqual(tgt.plannedPrevious.Services, desired.Services) {
+		t.Errorf("Plan previous services = %+v, want full desired services %+v",
+			tgt.plannedPrevious.Services, desired.Services)
+	}
+	requireReceiptCount(t, store, 1)
 }
 
 func TestReconcile_ResumesUnfinishedDeploymentAtCachedHead(t *testing.T) {
