@@ -222,6 +222,10 @@ For full validation — gofmt check, build, unit suite, and the integration/E2E 
 scripts/test.sh
 ```
 
+The script also fails when aggregate statement coverage is below 80%. Set
+`ACCORDA_MIN_COVERAGE` to exercise a different threshold locally; CI uses the
+repository default.
+
 You can also run the integration suite directly from the module directory:
 
 ```bash

@@ -21,8 +21,16 @@
 # so the script is safe to run anywhere; the full suite is exercised in CI
 # where Docker is present.
 #
-# Exit status is non-zero if formatting, build, or tests fail.
+# Exit status is non-zero if formatting, build, tests, or the aggregate
+# statement-coverage threshold fail.
 set -euo pipefail
+
+minimum_coverage="${ACCORDA_MIN_COVERAGE:-80.0}"
+if [[ ! "$minimum_coverage" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+  ! awk -v minimum="$minimum_coverage" 'BEGIN { exit !(minimum + 0 <= 100) }'; then
+  echo "error: ACCORDA_MIN_COVERAGE must be a number from 0 to 100" >&2
+  exit 1
+fi
 
 # Resolve the script's directory so the script works regardless of the
 # caller's working directory.
@@ -44,5 +52,18 @@ go build ./...
 
 echo "==> full suite: unit + integration/E2E (go test -tags integration ./...)"
 go test -v -count=1 -tags integration -coverpkg=./... ./... -coverprofile=coverage.out
+
+echo "==> aggregate statement coverage (minimum ${minimum_coverage}%)"
+coverage="$(go tool cover -func=coverage.out | awk '$1 == "total:" { gsub(/%/, "", $3); print $3 }')"
+if [[ -z "$coverage" ]]; then
+  echo "error: aggregate coverage was not reported" >&2
+  exit 1
+fi
+if ! awk -v actual="$coverage" -v minimum="$minimum_coverage" \
+  'BEGIN { exit !(actual + 0 >= minimum + 0) }'; then
+  echo "error: aggregate statement coverage ${coverage}% is below ${minimum_coverage}%" >&2
+  exit 1
+fi
+echo "aggregate statement coverage: ${coverage}%"
 
 echo "==> all validation passed"

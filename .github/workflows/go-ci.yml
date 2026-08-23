@@ -15,30 +15,13 @@ jobs:
       - name: Set up Go
         uses: ./.github/actions/setup-go
 
-      - name: Check formatting
-        run: |
-          find src/accorda -name '*.go' -print0 | xargs -0 gofmt -w
-          git diff --exit-code -- src/accorda
-
       - name: Start Docker daemon
         run: |
           sudo systemctl start docker
           docker info
 
-      # The integration tag is additive: `-tags integration` compiles and runs
-      # the integration-tagged tests *and* all regular unit tests in one pass,
-      # so a separate `go test ./...` would re-run the same unit tests. This
-      # single command runs the full suite and produces one coverage profile.
-      - name: Run full test suite with coverage
-        run: |
-          cd src/accorda
-          go test -tags integration -coverprofile=coverage.out ./...
-
-
-      - name: Build
-        run: |
-          cd src/accorda
-          go build ./...
+      - name: Run full validation
+        run: scripts/test.sh
 
       - name: Scan reachable Go vulnerabilities
         uses: golang/govulncheck-action@v1.1.0

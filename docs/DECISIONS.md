@@ -802,15 +802,16 @@ get wrong, and running only one of them allowed a change that broke a module
 outside the one under edit to slip through unnoticed until CI failed.
 
 **Decision.** `scripts/test.sh` runs the full validation in one invocation:
-a gofmt check, the build, the unit suite (`go test -count=1 ./...`), and the
-integration/E2E suite (`go test -count=1 -tags integration ./...`), stopping
-on the first failure. It resolves the module directory relative to the script
-so it works from any working directory, uses `-count=1` to defeat caching so
-a claimed pass reflects the current tree, and relies on the existing
-`internal/testutil` prerequisite checks to skip integration tests gracefully
-when a prerequisite is unavailable. Agents and contributors are instructed to
-use it (see `AGENTS.md` "Common commands" and `docs/IMPLEMENTER.md` §5) for
-full validation rather than assembling the long `go test` commands by hand.
+a gofmt check, the build, and one additive integration-tagged test pass
+(`go test -count=1 -tags integration ./...`), stopping on the first failure.
+The tagged pass includes all regular unit tests, so running an untagged pass
+separately would duplicate them. The script resolves the module directory
+relative to its own location, uses `-count=1` to defeat caching, and relies on
+the existing `internal/testutil` prerequisite checks to skip integration tests
+gracefully when a prerequisite is unavailable. Agents and contributors are
+instructed to use it (see `AGENTS.md` "Common commands" and
+`docs/IMPLEMENTER.md` §5) for full validation rather than assembling the long
+`go test` commands by hand.
 
 **Consequence.** A single `scripts/test.sh` gives a complete validation pass,
 so a change that breaks a module outside the one under edit is never missed.
@@ -1095,3 +1096,20 @@ environment plaintext through default output, credential files are private,
 and release builds use a patched standard library with continuous vulnerability
 checking. This supersedes decision #24's Go 1.25.6 CI pin and minimum-toolchain
 choice.
+
+### 37. Full validation enforces aggregate statement coverage
+
+**Context.** Sonar reports coverage on changed lines, but contributors had no
+local coverage floor and CI duplicated only part of `scripts/test.sh`. A test
+suite could pass while aggregate coverage regressed, and local validation could
+diverge from the pull-request workflow.
+
+**Decision.** `scripts/test.sh` derives aggregate statement coverage from its
+Go coverage profile and fails below 80%. `ACCORDA_MIN_COVERAGE` may override
+the threshold for local diagnostics, while CI uses the repository default and
+invokes the same script instead of maintaining separate format, test, and build
+commands. Sonar remains responsible for its distinct new-code coverage gate.
+
+**Consequence.** Contributors and CI receive the same validation and an
+immediate aggregate coverage regression signal. The local gate complements,
+rather than attempts to reproduce, Sonar's baseline-aware changed-line metric.
