@@ -11,6 +11,7 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/history"
 	"accorda/internal/core/reconcile"
+	gitSource "accorda/internal/sources/git"
 )
 
 func TestRun_Sync_MissingProjectFile(t *testing.T) {
@@ -38,11 +39,16 @@ func TestSyncCommand_WatchFlag(t *testing.T) {
 
 func TestBuildTarget_Compose(t *testing.T) {
 	p := &config.Project{
+		Source: config.Source{URL: "https://example.com/acme/repo.git"},
 		Target: config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile},
 		Images: config.Images{Pull: config.PullAlways},
 		Health: config.Health{Timeout: 0},
 	}
-	tgt, err := buildTarget(p, ".")
+	src, err := buildSource(p)
+	if err != nil {
+		t.Fatalf("buildSource error = %v", err)
+	}
+	tgt, err := buildTarget(p, ".", src)
 	if err != nil {
 		t.Fatalf("buildTarget(compose) error = %v", err)
 	}
@@ -55,7 +61,11 @@ func TestBuildTarget_Unsupported(t *testing.T) {
 	p := &config.Project{
 		Target: config.Target{Type: config.TargetKubernetes, Path: "manifests"},
 	}
-	_, err := buildTarget(p, ".")
+	src, err := buildSource(p)
+	if err != nil {
+		t.Fatalf("buildSource error = %v", err)
+	}
+	_, err = buildTarget(p, ".", src)
 	if err == nil {
 		t.Fatal("expected error for unsupported target, got nil")
 	}
@@ -65,23 +75,32 @@ func TestBuildTarget_Unsupported(t *testing.T) {
 }
 
 func TestResolveTargetPaths(t *testing.T) {
-	dir := t.TempDir()
+	base := t.TempDir()
+	src := gitSource.New(config.Source{URL: "https://example.com/acme/repo.git", Path: config.DefaultComposeFile},
+		gitSource.WithBaseDir(base))
+	managed, err := src.CheckoutPath(config.DefaultComposeFile)
+	if err != nil {
+		t.Fatalf("CheckoutPath: %v", err)
+	}
 	absolute := filepath.Join(t.TempDir(), config.DefaultComposeFile)
 	nested := filepath.Join("deploy", config.DefaultComposeFile)
 	cases := []struct {
-		name   string
-		target config.Target
-		want   config.Target
+		name    string
+		target  config.Target
+		want    config.Target
+		managed bool
 	}{
 		{
-			name:   "relative file",
-			target: config.Target{File: config.DefaultComposeFile},
-			want:   config.Target{File: filepath.Join(dir, config.DefaultComposeFile)},
+			name:    "relative file",
+			target:  config.Target{File: config.DefaultComposeFile},
+			want:    config.Target{File: managed},
+			managed: true,
 		},
 		{
-			name:   "relative path",
-			target: config.Target{Path: nested},
-			want:   config.Target{Path: filepath.Join(dir, nested)},
+			name:    "relative path",
+			target:  config.Target{Path: nested},
+			want:    config.Target{File: managed},
+			managed: true,
 		},
 		{
 			name:   "absolute file",
@@ -92,9 +111,43 @@ func TestResolveTargetPaths(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolveTargetPaths(dir, tc.target)
+			got, managed, err := resolveTargetPaths(tc.target, src)
+			if err != nil {
+				t.Fatalf("resolveTargetPaths(): %v", err)
+			}
 			if got != tc.want {
 				t.Fatalf("resolveTargetPaths() = %+v, want %+v", got, tc.want)
+			}
+			if managed != tc.managed {
+				t.Fatalf("resolveTargetPaths() managed = %t, want %t", managed, tc.managed)
+			}
+		})
+	}
+}
+
+func TestBuildSourceResolvesComposeFileInManagedCheckout(t *testing.T) {
+	cases := []struct {
+		name       string
+		sourcePath string
+		targetFile string
+		want       string
+	}{
+		{name: "root Aura file", targetFile: "docker-compose.yml", want: "docker-compose.yml"},
+		{name: "source directory", sourcePath: "services/api", targetFile: "compose.yaml", want: "services/api/compose.yaml"},
+		{name: "explicit source file wins", sourcePath: "deploy/prod.yml", targetFile: "compose.yaml", want: "deploy/prod.yml"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &config.Project{
+				Source: config.Source{URL: "https://example.com/acme/repo.git", Path: tc.sourcePath},
+				Target: config.Target{Type: config.TargetCompose, File: tc.targetFile},
+			}
+			src, err := buildSource(p)
+			if err != nil {
+				t.Fatalf("buildSource: %v", err)
+			}
+			if src.Source.Path != tc.want {
+				t.Errorf("source path = %q, want %q", src.Source.Path, tc.want)
 			}
 		})
 	}

@@ -1,27 +1,58 @@
 package git
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"accorda/internal/config"
 )
 
-func TestServicesPath(t *testing.T) {
+func TestComposePath(t *testing.T) {
 	cases := []struct {
-		in, want string
+		source, target, want string
 	}{
-		{"", config.DefaultComposeFile},
-		{"deploy/", "deploy/" + config.DefaultComposeFile},
-		{"deploy", "deploy/" + config.DefaultComposeFile},
-		{"deploy/" + config.DefaultComposeFile, "deploy/" + config.DefaultComposeFile},
-		{"deploy/docker-compose.yml", "deploy/docker-compose.yml"},
-		{"deploy/services", "deploy/services/" + config.DefaultComposeFile},
+		{"", "", config.DefaultComposeFile},
+		{"", "docker-compose.yml", "docker-compose.yml"},
+		{"deploy/", "", "deploy/" + config.DefaultComposeFile},
+		{"deploy", "docker-compose.yml", "deploy/docker-compose.yml"},
+		{"deploy/" + config.DefaultComposeFile, "other.yml", "deploy/" + config.DefaultComposeFile},
+		{"deploy/custom.yaml", config.DefaultComposeFile, "deploy/custom.yaml"},
+		{"deploy/services", "", "deploy/services/" + config.DefaultComposeFile},
 	}
 	for _, c := range cases {
-		if got := servicesPath(c.in); got != c.want {
-			t.Errorf("servicesPath(%q) = %q, want %q", c.in, got, c.want)
+		got, err := ComposePath(c.source, c.target)
+		if err != nil {
+			t.Fatalf("ComposePath(%q, %q): %v", c.source, c.target, err)
 		}
+		if got != c.want {
+			t.Errorf("ComposePath(%q, %q) = %q, want %q", c.source, c.target, got, c.want)
+		}
+	}
+}
+
+func TestComposePathRejectsCheckoutEscape(t *testing.T) {
+	for _, input := range []string{"../compose.yaml", "/tmp/compose.yaml"} {
+		if _, err := ComposePath(input, ""); err == nil {
+			t.Errorf("ComposePath(%q, \"\") expected error", input)
+		}
+	}
+}
+
+func TestCheckoutPath(t *testing.T) {
+	base := t.TempDir()
+	g := New(config.Source{URL: "https://example.com/acme/repo.git"}, WithBaseDir(base))
+	got, err := g.CheckoutPath("deploy/compose.yaml")
+	if err != nil {
+		t.Fatalf("CheckoutPath: %v", err)
+	}
+	wantDir, err := g.cacheDir()
+	if err != nil {
+		t.Fatalf("cacheDir: %v", err)
+	}
+	want := filepath.Join(wantDir, "deploy", "compose.yaml")
+	if got != want {
+		t.Errorf("CheckoutPath() = %q, want %q", got, want)
 	}
 }
 
@@ -63,7 +94,7 @@ func TestIsComposeFile(t *testing.T) {
 		{"docker-compose.yaml", true},
 		{"docker-compose.yml", true},
 		{"deploy/" + config.DefaultComposeFile, true},
-		{"app.yaml", false},
+		{"app.yaml", true},
 		{"Makefile", false},
 	}
 	for _, c := range cases {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -278,6 +279,27 @@ func (g *Git) cacheDir() (string, error) {
 	return filepath.Join(base, repoDirName(g.Source.URL)), nil
 }
 
+// CheckoutPath returns an absolute path inside this source's managed Git
+// worktree. The worktree does not need to exist yet: Fetch creates it before
+// the reconcile loop validates or applies the target.
+//
+// Repository paths are constrained to the checkout so Git-controlled
+// configuration cannot escape into arbitrary host paths.
+func (g *Git) CheckoutPath(repositoryPath string) (string, error) {
+	if g == nil {
+		return "", errors.New("git source: nil source")
+	}
+	clean, err := cleanRepositoryPath(repositoryPath)
+	if err != nil {
+		return "", err
+	}
+	dir, err := g.cacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, filepath.FromSlash(clean)), nil
+}
+
 func defaultCacheBase() (string, error) {
 	return cacheBase(os.UserCacheDir, os.UserConfigDir)
 }
@@ -486,7 +508,10 @@ func (g *Git) resolveCommit(ctx context.Context, ref *sources.Commit) (sources.C
 // resolution; for a file read at a specific commit, the content is extracted
 // from the commit tree and loaded from an in-memory file set.
 func (g *Git) parseServices(ctx context.Context, sha string) (map[string]state.Service, error) {
-	path := servicesPath(g.Source.Path)
+	path, err := ComposePath(g.Source.Path, "")
+	if err != nil {
+		return nil, err
+	}
 	dir, err := g.cacheDir()
 	if err != nil {
 		return nil, err
@@ -663,28 +688,48 @@ func repoExists(dir string) (bool, error) {
 	return true, nil
 }
 
-// servicesPath returns the path to the services file relative to the repo
-// root, defaulting to config.DefaultComposeFile when the source path is empty.
-func servicesPath(sourcePath string) string {
-	p := strings.TrimSpace(sourcePath)
-	if p == "" {
-		return config.DefaultComposeFile
+// ComposePath resolves the Compose file within a Git repository. sourcePath
+// may name either a Compose file or a directory; targetPath supplies the
+// configured target filename for the directory form. Empty values default to
+// compose.yaml. The returned path always uses repository-style separators.
+func ComposePath(sourcePath, targetPath string) (string, error) {
+	sourcePath = strings.TrimSpace(sourcePath)
+	targetPath = strings.TrimSpace(targetPath)
+	if sourcePath == "" {
+		if targetPath == "" {
+			targetPath = config.DefaultComposeFile
+		}
+		return cleanRepositoryPath(targetPath)
 	}
-	if isComposeFile(p) {
-		return p
+	if isComposeFile(sourcePath) {
+		return cleanRepositoryPath(sourcePath)
 	}
-	return filepath.Join(p, config.DefaultComposeFile)
+	if targetPath == "" {
+		targetPath = config.DefaultComposeFile
+	}
+	return cleanRepositoryPath(path.Join(filepath.ToSlash(sourcePath), filepath.ToSlash(targetPath)))
 }
 
 // isComposeFile reports whether path looks like a compose file name.
-func isComposeFile(path string) bool {
-	base := strings.ToLower(filepath.Base(path))
+func isComposeFile(filePath string) bool {
+	base := strings.ToLower(filepath.Base(filePath))
 	switch base {
 	case config.DefaultComposeFile, "compose.yml", "docker-compose.yaml", "docker-compose.yml":
 		return true
 	default:
-		return false
+		ext := strings.ToLower(filepath.Ext(base))
+		return ext == ".yaml" || ext == ".yml"
 	}
+}
+
+func cleanRepositoryPath(repositoryPath string) (string, error) {
+	normalized := filepath.ToSlash(strings.TrimSpace(repositoryPath))
+	clean := path.Clean(normalized)
+	if clean == "." || path.IsAbs(clean) || filepath.IsAbs(repositoryPath) ||
+		clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("git source: repository path %q must stay within the checkout", repositoryPath)
+	}
+	return clean, nil
 }
 
 // repoDirName hashes a canonical, credential-free repository identity so

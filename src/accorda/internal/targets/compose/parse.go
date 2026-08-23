@@ -50,20 +50,19 @@ func LoadFile(path string) (map[string]state.Service, error) {
 // file-path-based loading. The compose-go loader handles YAML parsing,
 // extends, and normalization so Accorda does not maintain its own parser.
 //
-// Compose variable interpolation (${VAR}) is intentionally skipped (see
-// ParseWithContext); Accorda controls its own substitution to keep the
-// desired state free of ambient environment values (docs/ACCORDA.md §18/§56).
+// Compose interpolation is evaluated against an empty controlled environment
+// (see ParseWithContext). This applies declaration defaults such as
+// ${PORT:-8080} without importing host environment values into desired state
+// (docs/ACCORDA.md §18/§56).
 func Parse(data []byte) (map[string]state.Service, error) {
 	return ParseWithContext(context.Background(), data)
 }
 
 // ParseWithContext is like Parse but accepts a context for cancellation.
 //
-// Interpolation is skipped (o.SkipInterpolation = true) so ${VAR} references
-// are left unresolved rather than substituted from the ambient environment.
-// Accorda reasons about the desired state as declared in Git, and embedding
-// local environment values into the desired state would leak host-specific
-// configuration and violate the secret-handling rules (docs/ACCORDA.md §18/§56).
+// Interpolation uses only the explicit empty ConfigDetails.Environment. This
+// resolves Compose defaults while preventing ambient host values from entering
+// desired state or its hashes (docs/ACCORDA.md §18/§56).
 // Compose's own validation is skipped because Accorda applies its own,
 // image-centric validation in validateService.
 func ParseWithContext(ctx context.Context, data []byte) (map[string]state.Service, error) {
@@ -71,8 +70,12 @@ func ParseWithContext(ctx context.Context, data []byte) (map[string]state.Servic
 		ConfigFiles: []types.ConfigFile{{Content: data}},
 		Environment: types.Mapping{},
 	}, func(o *composeloader.Options) {
-		o.SkipInterpolation = true
 		o.SkipValidation = true
+		// env_file and label_file contents are deployment-time inputs. Desired
+		// state models their declarations without reading host-local files or
+		// secret values while parsing Git content.
+		o.SkipResolveEnvironment = true
+		o.SkipResolveLabels = true
 	})
 	if err != nil {
 		return nil, fmt.Errorf("parse: %w", err)

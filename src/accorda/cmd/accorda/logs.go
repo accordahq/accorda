@@ -44,7 +44,11 @@ func runLogs(cmd *cobra.Command, dir, service string, opts targets.LogOptions) e
 	if err != nil {
 		return err
 	}
-	tgt, err := buildTarget(proj, dir)
+	src, err := buildSource(proj)
+	if err != nil {
+		return err
+	}
+	tgt, err := buildTarget(proj, dir, src)
 	if err != nil {
 		return err
 	}

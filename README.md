@@ -22,7 +22,7 @@ The `accorda inspect` command (`cmd/accorda/inspect.go`, `docs/ACCORDA.md` §11)
 
 The `accorda logs SERVICE` command (`cmd/accorda/logs.go`, `docs/ACCORDA.md` §11) fetches logs for every container of a Compose service through the target driver. `--tail N` limits the initial output and `--follow`/`-f` streams new output. Docker's stdout/stderr streams are decoded and written to the corresponding terminal streams.
 
-The `accorda doctor` command (`cmd/accorda/doctor.go`, `docs/ACCORDA.md` §11) checks the project configuration, Git source settings, Compose target file, Docker engine connectivity, and Docker Compose CLI availability. Like every project command, it resolves relative target paths from the project directory supplied by `--dir`. It prints each check result and exits nonzero when a check fails. The command is read-only: it does not fetch Git or change the deployment target.
+The `accorda doctor` command (`cmd/accorda/doctor.go`, `docs/ACCORDA.md` §11) checks the project configuration, Git source settings, Compose target file when the managed checkout already exists, Docker engine connectivity, and Docker Compose CLI availability. It prints each check result and exits nonzero when a check fails. The command is read-only: it does not fetch Git or change the deployment target; validation of a not-yet-fetched Compose file is deferred to `plan` or `sync` after the first fetch.
 
 ## Quick start
 
@@ -34,7 +34,7 @@ go build ./cmd/accorda
 ./accorda sync --watch
 ```
 
-`accorda init` writes a minimal `accorda.yaml` project file in the current directory (override with `--dir <path>`) using the unified project format (§25), so `accorda sync` can load it directly. New project files use mode `0600`, and `init` refuses to overwrite an existing file. Run `accorda init --help` for the available flags (source auth type, Compose file path). `accorda version` prints the build version, falling back to VCS revision info from the Go build. The CLI is built on [cobra](https://github.com/spf13/cobra); run `accorda --help` or `accorda <command> --help` for details.
+`accorda init` writes a minimal `accorda.yaml` project file in the current directory (override with `--dir <path>`) using the unified project format (§25), so `accorda sync` can load it directly. The `--file` value is recorded as both the Git source's Compose path and the Compose target file. On the first `plan` or `sync`, Accorda clones the repository into its private cache and runs Compose directly from that managed checkout; the operator does not clone the application repository beside `accorda.yaml`. New project files use mode `0600`, and `init` refuses to overwrite an existing file. Run `accorda init --help` for the available flags (source auth type, Compose file path). `accorda version` prints the build version, falling back to VCS revision info from the Go build. The CLI is built on [cobra](https://github.com/spf13/cobra); run `accorda --help` or `accorda <command> --help` for details.
 
 ## Project file
 
@@ -64,6 +64,8 @@ health:
 
 `config.Load(dir)` reads and validates `accorda.yaml` from a directory; `config.Parse(data)` does the same for raw YAML bytes. A file containing `source.auth.token` or an inline URL password must have mode `0600` or stricter. The loader is target-agnostic (Compose, Kubernetes, and Helm target types are recognized), applies defaults for omitted optional fields, rejects unknown fields, and returns field-oriented errors for invalid configuration. See the package documentation in `src/accorda/internal/config` for the accepted fields and validation rules.
 
+For Compose, relative `target.file` and `target.path` values are repository-relative and resolve inside Accorda's managed Git checkout. When `source.path` names a directory, the target filename is appended (for example `services/api` plus `compose.yaml`); when `source.path` names a YAML file, that exact file is used. An absolute target path remains an explicit local-file override for compatibility.
+
 ## Core interfaces
 
 The core abstractions defined in `docs/ACCORDA.md` §12 are implemented so that Accorda core never depends on a specific Git host or deployment target:
@@ -80,7 +82,7 @@ The core abstractions defined in `docs/ACCORDA.md` §12 are implemented so that 
 
 The generic Git source adapter (`internal/sources/git`, `docs/ACCORDA.md` §13) implements `sources.Source` and works against any Git server over SSH or HTTPS, including on-premises servers, with zero SaaS dependency and no GitHub-specific calls. It uses the [go-git](https://github.com/go-git/go-git) library for Git operations (clone, fetch, checkout, reading files at commits), so the system `git` CLI is not required at runtime. Auth is handled via go-git transport methods: SSH key auth, HTTPS token auth, or ambient (SSH agent / unauthenticated HTTPS).
 
-`git.New(config.Source, opts...)` constructs a source configured from `accorda.yaml`. `Validate` checks the source configuration without cloning, including reading and parsing an explicitly configured SSH key. `Fetch` clones into a private per-user cache keyed by a SHA-256 repository identity on first use, verifies a cached repository's `origin` before every reuse, then fetches and checks out the configured branch. `Desired` reads the Compose-style services file under the configured `source.path` and returns a `state.DesiredState` carrying the repository, branch, commit, and declared services.
+`git.New(config.Source, opts...)` constructs a source configured from `accorda.yaml`. `Validate` checks the source configuration without cloning, including reading and parsing an explicitly configured SSH key. `Fetch` clones into a private per-user cache keyed by a SHA-256 repository identity on first use, verifies a cached repository's `origin` before every reuse, then fetches and checks out the configured branch. `Desired` reads the Compose-style services file under the configured `source.path` and returns a `state.DesiredState` carrying the repository, branch, commit, and declared services. `CheckoutPath` safely resolves repository-relative artifacts inside that same managed worktree so target adapters consume the exact fetched revision.
 
 Authentication follows §15 and is configured explicitly via `source.auth` in `accorda.yaml` (or `git.WithAuth` in code):
 
@@ -137,6 +139,8 @@ error. SOPS decryption remains separate from this lifecycle policy and is
 delegated to SOPS rather than implemented by Accorda.
 
 ## Compose target
+
+For repository-relative targets, CLI wiring points the Compose driver at the Git source's managed checkout. Compose therefore receives the complete fetched repository context—including relative build contexts and `env_file` paths—without a user-managed clone. Parser interpolation uses an empty controlled environment, so declaration defaults such as `${PORT:-8080}` resolve without importing host values; host-local `env_file` and `label_file` contents remain deployment-time inputs and are not ingested into desired state.
 
 The Docker Compose target driver (`internal/targets/compose`, `docs/ACCORDA.md §8`) implements the `targets.Target` interface. The load/validate phase is implemented: `compose.LoadFile(path)` (or `compose.Parse(data)` for raw bytes) uses the [compose-go](https://github.com/compose-spec/compose-go) loader to parse the Compose file (handling the full Compose schema: interpolation, extends, short and long forms), then normalizes each service into a `state.Service` with image, command, environment, ports, volumes, networks, labels, healthcheck, and dependencies. Required fields are validated: a service must declare an image.
 

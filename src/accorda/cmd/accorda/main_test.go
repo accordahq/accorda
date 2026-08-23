@@ -198,6 +198,9 @@ func TestRun_Init_Defaults(t *testing.T) {
 	if !strings.Contains(s, "branch: main") {
 		t.Fatalf("expected default branch, got %s", s)
 	}
+	if !strings.Contains(s, "path: "+config.DefaultComposeFile) {
+		t.Fatalf("expected source Compose path, got %s", s)
+	}
 	if !strings.Contains(s, "file: "+config.DefaultComposeFile) {
 		t.Fatalf("expected default compose file, got %s", s)
 	}

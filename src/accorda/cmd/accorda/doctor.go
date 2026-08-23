@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"accorda/internal/config"
-	"accorda/internal/sources/git"
 )
 
 const (
@@ -66,14 +67,24 @@ func diagnose(ctx context.Context, dir string) []doctorResult {
 		return results
 	}
 
-	src := git.New(proj.Source)
+	src, err := buildSource(proj)
+	if err != nil {
+		return append(results, doctorCheck(doctorSource, err))
+	}
 	results = append(results, doctorCheck(doctorSource, src.Validate(ctx)))
 
-	tgt, err := buildTarget(proj, dir)
+	tgt, err := buildTarget(proj, dir, src)
 	if err == nil {
 		err = tgt.Validate(ctx)
+		if err != nil && managedTargetPending(proj.Target, err) {
+			err = tgt.ValidateEnvironment(ctx)
+		}
 	}
 	return append(results, doctorCheck(doctorCompose, err))
+}
+
+func managedTargetPending(target config.Target, err error) bool {
+	return !filepath.IsAbs(configuredTargetPath(target)) && errors.Is(err, os.ErrNotExist)
 }
 
 func doctorCheck(name string, err error) doctorResult {

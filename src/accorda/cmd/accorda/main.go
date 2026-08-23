@@ -197,7 +197,7 @@ func newInitCmd() *cobra.Command {
 	c.Flags().StringVar(&env, "env", "default", "environment name")
 	c.Flags().StringVar(&repo, "repo", "", "Git source repository URL")
 	c.Flags().StringVar(&branch, "branch", "main", "Git branch to reconcile")
-	c.Flags().StringVar(&file, "file", config.DefaultComposeFile, "Compose target file path")
+	c.Flags().StringVar(&file, "file", config.DefaultComposeFile, "Compose file path in Git (absolute path selects a local override)")
 	c.Flags().StringVar(&authType, "auth-type", "", "Git auth type: ssh or https (https writes ambient; add source.auth.token by hand)")
 	c.Flags().StringVar(&authKey, "auth-key", "", "SSH private key path (for --auth-type=ssh)")
 	return c
@@ -232,6 +232,9 @@ func initProject(dir, env, repo, branch, file, authType, authKey string) (string
 			Type: config.TargetCompose,
 			File: file,
 		},
+	}
+	if !filepath.IsAbs(file) {
+		proj.Source.Path = file
 	}
 	config.ApplyDefaults(proj)
 	if err := config.Validate(proj); err != nil {

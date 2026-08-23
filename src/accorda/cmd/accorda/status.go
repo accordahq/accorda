@@ -85,8 +85,11 @@ func runStatus(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	src := git.New(proj.Source)
-	tgt, err := buildTarget(proj, dir)
+	src, err := buildSource(proj)
+	if err != nil {
+		return err
+	}
+	tgt, err := buildTarget(proj, dir, src)
 	if err != nil {
 		return err
 	}

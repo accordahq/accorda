@@ -18,7 +18,6 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/history"
 	"accorda/internal/core/plan"
-	"accorda/internal/sources/git"
 )
 
 // newPlanCmd builds the `accorda plan` command (docs/ACCORDA.md §11). It
@@ -54,8 +53,11 @@ func runPlan(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	src := git.New(proj.Source)
-	tgt, err := buildTarget(proj, dir)
+	src, err := buildSource(proj)
+	if err != nil {
+		return err
+	}
+	tgt, err := buildTarget(proj, dir, src)
 	if err != nil {
 		return err
 	}

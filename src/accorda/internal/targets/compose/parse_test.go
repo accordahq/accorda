@@ -76,6 +76,31 @@ func TestParse_FullExample(t *testing.T) {
 	t.Run("postgres", func(t *testing.T) { assertPostgresService(t, services["postgres"]) })
 }
 
+func TestParse_InterpolationUsesDefaultsWithoutAmbientEnvironment(t *testing.T) {
+	t.Setenv("AURA_HTTP_PORT", "9999")
+	data := []byte(`services:
+  gateway:
+    image: gateway:1
+    env_file:
+      - missing-local-secrets.env
+    ports:
+      - "${AURA_HTTP_PORT:-80}:8080"
+    environment:
+      AURA_SITE_ADDRESS: ${AURA_SITE_ADDRESS:-http://localhost}
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	gateway := services["gateway"]
+	if len(gateway.Ports) != 1 || gateway.Ports[0].Host != "80" || gateway.Ports[0].Container != "8080" {
+		t.Errorf("gateway ports = %+v, want host 80 -> container 8080", gateway.Ports)
+	}
+	if got := gateway.Env["AURA_SITE_ADDRESS"]; got != "http://localhost" {
+		t.Errorf("AURA_SITE_ADDRESS = %q, want default http://localhost", got)
+	}
+}
+
 // assertAPIService checks the normalized fields of the `api` service.
 func assertAPIService(t *testing.T, api state.Service) {
 	t.Helper()

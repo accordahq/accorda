@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -64,8 +65,11 @@ func runSync(cmd *cobra.Command, dir string, watch bool) error {
 		return err
 	}
 
-	src := git.New(proj.Source)
-	tgt, err := buildTarget(proj, dir)
+	src, err := buildSource(proj)
+	if err != nil {
+		return err
+	}
+	tgt, err := buildTarget(proj, dir, src)
 	if err != nil {
 		return err
 	}
@@ -166,32 +170,74 @@ func lastHealthyReceipt(store history.Store) (*history.Receipt, error) {
 	return nil, nil
 }
 
-// buildTarget constructs the deployment target from the project's target
-// configuration, resolving relative target paths from the directory containing
-// accorda.yaml. Only the Compose target is implemented; other target types are
-// recognized by the config loader but have no driver yet.
-func buildTarget(p *config.Project, dir string) (*compose.Target, error) {
+// buildSource resolves the repository-relative Compose artifact shared by the
+// Git source and Compose target. A source path naming a directory is combined
+// with the target filename; an explicit source YAML path wins.
+func buildSource(p *config.Project) (*git.Git, error) {
+	source := p.Source
+	targetPath := configuredTargetPath(p.Target)
+	if filepath.IsAbs(targetPath) {
+		targetPath = ""
+	}
+	composePath, err := git.ComposePath(source.Path, targetPath)
+	if err != nil {
+		return nil, err
+	}
+	source.Path = composePath
+	return git.New(source), nil
+}
+
+// buildTarget constructs the deployment target against the Git source's
+// managed checkout. Only the Compose target is implemented; other target
+// types are recognized by the config loader but have no driver yet.
+func buildTarget(p *config.Project, dir string, src *git.Git) (*compose.Target, error) {
 	if p.Target.Type != config.TargetCompose {
 		return nil, fmt.Errorf("target type %q is not implemented", p.Target.Type)
 	}
-	target := resolveTargetPaths(dir, p.Target)
-	return compose.New(target,
+	target, managed, err := resolveTargetPaths(p.Target, src)
+	if err != nil {
+		return nil, err
+	}
+	options := []compose.Option{
 		compose.WithPullPolicy(p.Images.Pull),
 		compose.WithHealthTimeout(p.Health.Timeout),
 		compose.WithEnvironment(p.Environment),
-	)
+	}
+	if managed {
+		projectDir, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve project directory: %w", err)
+		}
+		options = append(options, compose.WithProjectName(filepath.Base(filepath.Clean(projectDir))))
+	}
+	return compose.New(target, options...)
 }
 
-// resolveTargetPaths interprets relative target paths from the project root.
-// It returns a copy so loading a target never mutates the parsed Project.
-func resolveTargetPaths(dir string, target config.Target) config.Target {
-	if target.File != "" && !filepath.IsAbs(target.File) {
-		target.File = filepath.Join(dir, target.File)
+// resolveTargetPaths points repository-relative Compose targets at the Git
+// source's managed checkout. Absolute target paths remain explicit local
+// overrides for backwards compatibility.
+func resolveTargetPaths(target config.Target, src *git.Git) (config.Target, bool, error) {
+	configured := configuredTargetPath(target)
+	if filepath.IsAbs(configured) {
+		return target, false, nil
 	}
-	if target.Path != "" && !filepath.IsAbs(target.Path) {
-		target.Path = filepath.Join(dir, target.Path)
+	if src == nil {
+		return config.Target{}, false, errors.New("build target: Git source is nil")
 	}
-	return target
+	file, err := src.CheckoutPath(src.Source.Path)
+	if err != nil {
+		return config.Target{}, false, err
+	}
+	target.File = file
+	target.Path = ""
+	return target, true, nil
+}
+
+func configuredTargetPath(target config.Target) string {
+	if target.File != "" {
+		return target.File
+	}
+	return target.Path
 }
 
 // receiptPath returns the path of the deployment receipt journal for the
@@ -209,7 +255,14 @@ func receiptPath(dir string) string {
 // identity means different Compose files that mutate the same project share a
 // lock without exposing the project name in the state directory.
 func deploymentLockPath(dir string, target config.Target) string {
-	resolved := resolveTargetPaths(dir, target)
+	resolved := target
+	if configured := configuredTargetPath(target); !filepath.IsAbs(configured) {
+		if target.File != "" {
+			resolved.File = filepath.Join(dir, target.File)
+		} else {
+			resolved.Path = filepath.Join(dir, target.Path)
+		}
+	}
 	identity := resolved.Type + "\x00" + compose.ProjectName(resolved)
 	digest := sha256.Sum256([]byte(identity))
 	return filepath.Join(stateBase(), "accorda", "locks", fmt.Sprintf("%x.lock", digest))

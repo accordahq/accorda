@@ -195,6 +195,21 @@ func TestValidate_LoadsFileAndPings(t *testing.T) {
 	}
 }
 
+func TestValidateEnvironment_DoesNotRequireComposeFile(t *testing.T) {
+	runner := &fakeRunner{}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: "/nonexistent/x.yaml"},
+		WithDockerClient(&fakeDockerClient{}), WithRunner(runner))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := tgt.ValidateEnvironment(context.Background()); err != nil {
+		t.Fatalf("ValidateEnvironment: %v", err)
+	}
+	if len(runner.calls) != 1 || !slices.Equal(runner.calls[0], []string{"version"}) {
+		t.Fatalf("runner calls = %v, want [[version]]", runner.calls)
+	}
+}
+
 func TestValidate_MissingFile_IsError(t *testing.T) {
 	cli := &fakeDockerClient{}
 	tgt, err := New(config.Target{Type: config.TargetCompose, File: "/nonexistent/x.yaml"},

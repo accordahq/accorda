@@ -1168,3 +1168,49 @@ Interactive users and jobs keep a terminating `sync`, while deployments run
 `sync --watch` under an external process supervisor such as systemd or Docker.
 The supervisor owns restart and startup policy; Accorda owns polling,
 reconciliation, and graceful in-flight cancellation.
+
+### 40. Compose deploys from the Git source's managed checkout
+
+**Context.** The Git adapter already cloned and updated the declared source in
+a private cache, but CLI wiring resolved a relative Compose target beside
+`accorda.yaml`. Operators therefore had to maintain a second application
+checkout, and a newly fetched commit could be planned while `docker compose`
+applied a stale local file. This contradicted the Git-driven flow in
+`docs/ACCORDA.md` §6, §8, §13, and §25.
+
+**Decision.** `cmd/accorda` resolves repository-relative Compose targets
+through `git.Git.CheckoutPath` and runs the target against the same managed
+worktree updated by `Source.Fetch`. `source.path` may select a Compose file or
+a directory combined with `target.file`; an omitted source path uses the
+target path. Checkout path resolution rejects absolute paths and traversal.
+The Compose project name remains derived from the operator project directory
+so moving the internal cache does not change target identity. Absolute target
+paths remain explicit local overrides. `accorda init` records a relative
+`--file` in both source and target configuration, while `doctor` checks Docker
+without fetching when the managed checkout does not exist yet.
+
+**Consequence.** `accorda.yaml` can live independently from the application
+repository, and the first `plan` or `sync` creates the only checkout Accorda
+needs. Fetch, desired-state parsing, relative Compose resources, deployment,
+and watch updates all use one revision; Core interfaces remain unchanged and
+provider-independent.
+
+### 41. Compose interpolation uses declared defaults, not host values
+
+**Context.** Leaving interpolation disabled preserved `${VAR:-default}` as a
+literal, which compose-go could not normalize in typed fields such as short
+port mappings. Using the process environment instead would make desired state
+host-dependent and could leak secrets into comparisons or output.
+
+**Decision.** `internal/targets/compose.ParseWithContext` enables compose-go
+interpolation with an explicit empty environment. Compose declaration defaults
+therefore resolve (`${PORT:-80}` becomes `80`), while ambient environment values
+are never consulted. `env_file` and `label_file` resolution is skipped while
+parsing desired state so host-local files and secret values are not required or
+ingested; Docker Compose resolves those deployment-time inputs from the managed
+checkout when it applies the target. Variables without declared defaults resolve
+according to Compose's empty-environment semantics.
+
+**Consequence.** Git-authored defaulted ports, URLs, and other typed Compose
+fields parse deterministically on every host without incorporating local
+secrets into desired state.

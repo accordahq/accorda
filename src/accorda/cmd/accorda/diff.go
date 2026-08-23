@@ -26,7 +26,6 @@ import (
 	"accorda/internal/core/state"
 	"accorda/internal/secrets"
 	"accorda/internal/sources"
-	"accorda/internal/sources/git"
 	"accorda/internal/targets/compose"
 )
 
@@ -77,7 +76,10 @@ func runDiff(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	src := git.New(proj.Source)
+	src, err := buildSource(proj)
+	if err != nil {
+		return err
+	}
 	ctx := context.Background()
 
 	// Fetch first so the desired side reflects the current remote tip, not a

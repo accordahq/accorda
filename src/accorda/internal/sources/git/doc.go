@@ -26,4 +26,9 @@
 // to have been fetched separately; the adapter does not fetch all remotes on
 // every sync by design, to keep fetches cheap and scoped to the configured
 // branch.
+//
+// CheckoutPath resolves repository-relative target artifacts inside the same
+// private managed worktree that Fetch updates. It rejects absolute paths and
+// traversal so adapters can consume fetched files without exposing arbitrary
+// host paths.
 package git
