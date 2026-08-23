@@ -1,6 +1,6 @@
 module accorda
 
-go 1.25.0
+go 1.25.13
 
 require (
 	github.com/compose-spec/compose-go/v2 v2.14.0

@@ -802,15 +802,16 @@ get wrong, and running only one of them allowed a change that broke a module
 outside the one under edit to slip through unnoticed until CI failed.
 
 **Decision.** `scripts/test.sh` runs the full validation in one invocation:
-a gofmt check, the build, the unit suite (`go test -count=1 ./...`), and the
-integration/E2E suite (`go test -count=1 -tags integration ./...`), stopping
-on the first failure. It resolves the module directory relative to the script
-so it works from any working directory, uses `-count=1` to defeat caching so
-a claimed pass reflects the current tree, and relies on the existing
-`internal/testutil` prerequisite checks to skip integration tests gracefully
-when a prerequisite is unavailable. Agents and contributors are instructed to
-use it (see `AGENTS.md` "Common commands" and `docs/IMPLEMENTER.md` §5) for
-full validation rather than assembling the long `go test` commands by hand.
+a gofmt check, the build, and one additive integration-tagged test pass
+(`go test -count=1 -tags integration ./...`), stopping on the first failure.
+The tagged pass includes all regular unit tests, so running an untagged pass
+separately would duplicate them. The script resolves the module directory
+relative to its own location, uses `-count=1` to defeat caching, and relies on
+the existing `internal/testutil` prerequisite checks to skip integration tests
+gracefully when a prerequisite is unavailable. Agents and contributors are
+instructed to use it (see `AGENTS.md` "Common commands" and
+`docs/IMPLEMENTER.md` §5) for full validation rather than assembling the long
+`go test` commands by hand.
 
 **Consequence.** A single `scripts/test.sh` gives a complete validation pass,
 so a change that breaks a module outside the one under edit is never missed.
@@ -1067,3 +1068,55 @@ reconciles cannot mutate one target concurrently; and in-flight Git updates are
 not lost. The append-only journal retains immutable checkpoints while
 `accorda history` collapses a closed checkpoint into its terminal row and shows
 only genuinely unfinished checkpoints as `in_progress`.
+
+### 36. MVP command trust boundaries fail closed
+
+**Context.** Issue #83 found that repository caches, explicit credentials,
+Git-controlled Compose names, CLI diffs, local config permissions, and the
+build toolchain crossed trust boundaries without sufficient validation. A
+predictable cache root under the shared temporary directory could also be
+pre-seeded by another local user; changing its mode would not change ownership.
+
+**Decision.** Git cache names are the SHA-256 digest of a canonical,
+credential-free repository URL under a private user cache; cache paths reject
+symlinks, use mode `0700`, and verify the cached `origin` before reuse.
+Automatic cache discovery uses the user cache directory, falls back only to
+the user config directory, and fails closed if neither provides a non-empty
+root; no shared temporary-directory fallback is used. Explicit SSH keys are
+read and parsed during source validation, and any failure is fatal rather than
+falling back to ambient credentials. Environment values in
+`accorda diff` are represented only as `<redacted>`/`<unset>`. Compose service
+names must start with an alphanumeric character, contain only Compose-safe
+identifier characters, and are passed after `--` when used as CLI operands.
+`accorda init` creates `accorda.yaml` exclusively with mode `0600`, while the
+loader rejects group/world-readable files containing an HTTPS token or inline
+URL password. The
+module and CI require Go 1.25.13, and CI runs symbol-level `govulncheck`, failing
+on every reachable finding except the two Docker SDK advisories whose
+unreachable plugin/AuthZ paths are accepted in decision #25.
+
+**Consequence.** Cached state and ambient credentials can no longer silently
+change deployment identity, and an attacker cannot regain cache control by
+pre-seeding a shared temporary path. Service accounts without a discoverable
+user cache or config directory must provide a valid user environment. Git
+content cannot inject Compose flags or expose environment plaintext through
+default output, credential files are private, and release builds use a patched
+standard library with continuous vulnerability checking. This supersedes
+decision #24's Go 1.25.6 CI pin and minimum-toolchain choice.
+
+### 37. Full validation enforces aggregate statement coverage
+
+**Context.** Sonar reports coverage on changed lines, but contributors had no
+local coverage floor and CI duplicated only part of `scripts/test.sh`. A test
+suite could pass while aggregate coverage regressed, and local validation could
+diverge from the pull-request workflow.
+
+**Decision.** `scripts/test.sh` derives aggregate statement coverage from its
+Go coverage profile and fails below 85%. `ACCORDA_MIN_COVERAGE` may override
+the threshold for local diagnostics, while CI uses the repository default and
+invokes the same script instead of maintaining separate format, test, and build
+commands. Sonar remains responsible for its distinct new-code coverage gate.
+
+**Consequence.** Contributors and CI receive the same validation and an
+immediate aggregate coverage regression signal. The local gate complements,
+rather than attempts to reproduce, Sonar's baseline-aware changed-line metric.

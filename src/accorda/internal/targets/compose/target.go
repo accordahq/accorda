@@ -342,6 +342,11 @@ func (t *Target) Plan(ctx context.Context, desired *state.DesiredState, deployed
 	if desired == nil {
 		return nil, errors.New("compose target: desired state is nil")
 	}
+	for name := range desired.Services {
+		if err := validateServiceName(name); err != nil {
+			return nil, fmt.Errorf("compose target: %w", err)
+		}
+	}
 	runtime, err := t.Current(ctx)
 	if err != nil {
 		return nil, err
@@ -438,6 +443,11 @@ func (t *Target) validateApply(p *plan.Plan) error {
 	if t.runner == nil {
 		return errors.New("compose target: compose runner is nil")
 	}
+	for _, action := range p.Actions {
+		if err := validateServiceName(action.Service); err != nil {
+			return fmt.Errorf("compose target: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -457,7 +467,7 @@ func actionsOfKind(actions []plan.Action, kind plan.ActionKind) []plan.Action {
 func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
 	switch a.Kind {
 	case plan.ActionCreate, plan.ActionRecreate, plan.ActionStart:
-		if err := t.runner.Run(ctx, "up", "-d", a.Service); err != nil {
+		if err := t.runner.Run(ctx, "up", "-d", "--", a.Service); err != nil {
 			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
 		}
 	case plan.ActionRemove:
@@ -469,11 +479,11 @@ func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
 			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
 		}
 	case plan.ActionPull:
-		if err := t.runner.Run(ctx, "pull", a.Service); err != nil {
+		if err := t.runner.Run(ctx, "pull", "--", a.Service); err != nil {
 			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
 		}
 	case plan.ActionStop:
-		if err := t.runner.Run(ctx, "stop", a.Service); err != nil {
+		if err := t.runner.Run(ctx, "stop", "--", a.Service); err != nil {
 			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
 		}
 	case plan.ActionNoop:

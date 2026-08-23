@@ -25,8 +25,11 @@ not authorize unrelated cleanup, deployment, or remote GitHub mutations.
 - Gather the initial context with `scripts/prepare-issue-context.sh <issue>`
   (fetches the issue, its PRs, diffs, CI, and working-tree state in one
   read-only call) so the implementation is grounded in the issue and any
-  related PRs. Redirect the output to a file to load it into session memory:
-  `scripts/prepare-issue-context.sh <ISSUE> > /tmp/ctx.txt`.
+  related PRs. Run it without redirecting stdout:
+  `scripts/prepare-issue-context.sh <ISSUE>`. The script writes the complete
+  context to a deterministic temporary file and prints that file's path; read
+  the reported file. Redirecting stdout captures only the location notice,
+  not the gathered context.
 - Inspect the worktree and current branch. Treat existing modifications and
   untracked files as user-owned unless the task clearly says otherwise.
 - If existing work prevents a safe branch switch or overlaps the requested

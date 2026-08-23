@@ -32,6 +32,10 @@ import (
 
 var errUsage = errors.New("usage: accorda <command> [flags]")
 
+var createProjectFile = func(path string) (io.WriteCloser, error) {
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+}
+
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
 		// cobra already prints errors to stderr; keep the exit code nonzero.
@@ -232,7 +236,16 @@ func initProject(dir, env, repo, branch, file, authType, authKey string) (string
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(dir, config.File), data, 0o644); err != nil {
+	path := filepath.Join(dir, config.File)
+	fileHandle, err := createProjectFile(path)
+	if err != nil {
+		return "", err
+	}
+	if _, err := fileHandle.Write(data); err != nil {
+		_ = fileHandle.Close()
+		return "", err
+	}
+	if err := fileHandle.Close(); err != nil {
 		return "", err
 	}
 	return hint, nil

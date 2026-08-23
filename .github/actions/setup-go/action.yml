@@ -5,9 +5,9 @@
 # assumes the repository is already checked out (a job must run
 # actions/checkout first — a local action's manifest must exist on disk when
 # the job loads, so the action itself cannot perform the checkout). It pins
-# the toolchain explicitly (docs/DECISIONS.md #24): the module's `go`
-# directive stays at the true minimum (1.25.0), while CI needs 1.25.6+ where
-# go-git's `file://` transport works. The cache is keyed on the actual module
+# the toolchain explicitly (docs/DECISIONS.md #36): the module's `go`
+# directive requires the patched 1.25.13 toolchain, matching CI. The cache is
+# keyed on the actual module
 # file (`src/accorda/go.sum`) via `cache-dependency-path` so
 # actions/setup-go can locate the dependency file in this monorepo layout;
 # without it, setup-go warns that no `go.mod` is found at the repo root and
@@ -20,7 +20,7 @@ inputs:
   go-version:
     description: Go toolchain version to install.
     required: true
-    default: "1.25.6"
+    default: "1.25.13"
 
 runs:
   using: composite

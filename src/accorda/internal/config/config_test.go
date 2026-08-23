@@ -192,6 +192,80 @@ func TestLoad_MissingFile(t *testing.T) {
 	}
 }
 
+func TestLoad_InvalidProject(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, File), []byte("version: ["), 0o600); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), "parse") {
+		t.Fatalf("Load() error = %v, want parse failure", err)
+	}
+}
+
+func TestLoad_RejectsReadableCredentialFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, File)
+	data := strings.Replace(composeExample, "  path: services/api\n", `  path: services/api
+  auth:
+    type: https
+    token: token-super-secret
+`, 1)
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), "permissions 0600") {
+		t.Fatalf("Load() error = %v, want restrictive-permissions failure", err)
+	}
+	if strings.Contains(err.Error(), "token-super-secret") {
+		t.Fatalf("Load() error leaked token: %v", err)
+	}
+}
+
+func TestLoad_AcceptsPrivateCredentialFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, File)
+	data := strings.Replace(composeExample, "  path: services/api\n", `  path: services/api
+  auth:
+    type: https
+    token: token-super-secret
+`, 1)
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	if _, err := Load(dir); err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+}
+
+func TestLoad_RejectsReadableURLCredentialFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, File)
+	data := strings.Replace(composeExample,
+		"git@github.com:acme/infra.git", "https://user:token-super-secret@git.internal/acme/infra.git", 1)
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), "permissions 0600") {
+		t.Fatalf("Load() error = %v, want restrictive-permissions failure", err)
+	}
+	if strings.Contains(err.Error(), "token-super-secret") {
+		t.Fatalf("Load() error leaked token: %v", err)
+	}
+}
+
+func TestValidateCredentialFileMode_Errors(t *testing.T) {
+	if err := validateCredentialFileMode("missing", nil); err != nil {
+		t.Fatalf("validateCredentialFileMode(nil) = %v, want nil", err)
+	}
+	project := &Project{Source: Source{Auth: Auth{Token: "secret"}}}
+	err := validateCredentialFileMode(filepath.Join(t.TempDir(), "missing"), project)
+	if err == nil || !strings.Contains(err.Error(), "inspect permissions") {
+		t.Fatalf("validateCredentialFileMode(missing) = %v, want stat failure", err)
+	}
+}
+
 func TestParse_UnknownFieldRejected(t *testing.T) {
 	src := composeExample + "bogus_field: oops\n"
 	_, err := Parse([]byte(src))

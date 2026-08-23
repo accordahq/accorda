@@ -671,6 +671,19 @@ func TestPlan_NilDesired_IsError(t *testing.T) {
 	}
 }
 
+func TestPlan_RejectsOptionShapedServiceNameBeforeRuntimeRead(t *testing.T) {
+	path := writeComposeFile(t)
+	cli := &fakeDockerClient{listErr: errors.New("runtime should not be read")}
+	tgt := newTarget(t, path, cli)
+	desired := &state.DesiredState{Services: map[string]state.Service{
+		"--remove-orphans": {Image: "api:1"},
+	}}
+	_, err := tgt.Plan(t.Context(), desired, nil)
+	if err == nil || !strings.Contains(err.Error(), "name must start with an alphanumeric") {
+		t.Fatalf("Plan() error = %v, want invalid service name", err)
+	}
+}
+
 func TestApply_MapsActionsToComposeCommands(t *testing.T) {
 	// Each non-noop action kind must map to the expected `docker compose`
 	// subcommand scoped to the changed service; noop actions are skipped.
@@ -697,12 +710,12 @@ func TestApply_MapsActionsToComposeCommands(t *testing.T) {
 	}
 
 	want := [][]string{
-		{"up", "-d", "api"},
-		{"up", "-d", "worker"},
-		{"up", "-d", "db"},
+		{"up", "-d", "--", "api"},
+		{"up", "-d", "--", "worker"},
+		{"up", "-d", "--", "db"},
 		{"up", "-d", "--remove-orphans"},
-		{"pull", "api"},
-		{"stop", "legacy"},
+		{"pull", "--", "api"},
+		{"stop", "--", "legacy"},
 	}
 	if len(runner.calls) != len(want) {
 		t.Fatalf("got %d runner calls, want %d: %v", len(runner.calls), len(want), runner.calls)
@@ -711,6 +724,32 @@ func TestApply_MapsActionsToComposeCommands(t *testing.T) {
 		if !reflect.DeepEqual(runner.calls[i], w) {
 			t.Errorf("call[%d] = %v, want %v", i, runner.calls[i], w)
 		}
+	}
+}
+
+func TestApply_RejectsOptionShapedServiceNames(t *testing.T) {
+	path := writeComposeFile(t)
+	for _, service := range []string{"-V", "--remove-orphans", "-d"} {
+		t.Run(service, func(t *testing.T) {
+			runner := &fakeRunner{}
+			tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+				WithDockerClient(&fakeDockerClient{}), WithRunner(runner))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			for _, kind := range []plan.ActionKind{
+				plan.ActionCreate, plan.ActionRecreate, plan.ActionStart, plan.ActionPull, plan.ActionStop,
+			} {
+				p := plan.New("", "acme/infra", "abc123", time.Now()).
+					AddAction(plan.Action{Kind: kind, Service: service})
+				if err := tgt.Apply(t.Context(), p); err == nil || !strings.Contains(err.Error(), "name must start with an alphanumeric") {
+					t.Fatalf("Apply(%s, %q) error = %v, want invalid service name", kind, service, err)
+				}
+			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("runner calls = %v, want none", runner.calls)
+			}
+		})
 	}
 }
 
@@ -785,6 +824,25 @@ func TestApply_RunnerFails_IsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "api") {
 		t.Errorf("err = %v, want one naming the failing service", err)
+	}
+}
+
+func TestApply_RunnerFailuresForServiceCommands(t *testing.T) {
+	path := writeComposeFile(t)
+	for _, kind := range []plan.ActionKind{plan.ActionStart, plan.ActionPull, plan.ActionStop} {
+		t.Run(string(kind), func(t *testing.T) {
+			runner := &fakeRunner{err: errors.New("command failed")}
+			tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+				WithDockerClient(&fakeDockerClient{}), WithRunner(runner))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			p := plan.New("", "acme/infra", "abc123", time.Now()).
+				AddAction(plan.Action{Kind: kind, Service: "api"})
+			if err := tgt.Apply(t.Context(), p); err == nil || !strings.Contains(err.Error(), "command failed") {
+				t.Fatalf("Apply(%s) error = %v, want runner failure", kind, err)
+			}
+		})
 	}
 }
 

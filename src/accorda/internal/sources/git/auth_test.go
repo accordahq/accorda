@@ -2,7 +2,12 @@ package git
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,12 +18,7 @@ import (
 // memory for go-git's SSH transport (docs/ACCORDA.md §15). The key path must
 // point at a readable file.
 func TestApplyAuth_SSHReadsKey(t *testing.T) {
-	// Create a temporary dummy key file so applyAuth can read it.
-	keyPath := t.TempDir() + "/test.key"
-	const dummyKey = "-----BEGIN OPENSSH PRIVATE KEY-----\ndummy\n-----END OPENSSH PRIVATE KEY-----"
-	if err := writeFile(keyPath, dummyKey); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
+	keyPath, keyBytes := writeValidKey(t)
 	g := New(config.Source{
 		Type:   "git",
 		URL:    "git@git.internal:acme/infra.git",
@@ -28,8 +28,8 @@ func TestApplyAuth_SSHReadsKey(t *testing.T) {
 	if !g.auth.isSSH {
 		t.Fatal("auth.isSSH = false after auth.type=ssh")
 	}
-	if string(g.auth.sshKey) != dummyKey {
-		t.Errorf("sshKey = %q, want the file content", string(g.auth.sshKey))
+	if string(g.auth.sshKey) != string(keyBytes) {
+		t.Error("sshKey does not match the private key file")
 	}
 	if g.auth.sshUser != "git" {
 		t.Errorf("sshUser = %q, want default git", g.auth.sshUser)
@@ -39,10 +39,7 @@ func TestApplyAuth_SSHReadsKey(t *testing.T) {
 // TestApplyAuth_SSHCustomUser verifies that an explicit username is used for
 // SSH auth rather than the default "git".
 func TestApplyAuth_SSHCustomUser(t *testing.T) {
-	keyPath := t.TempDir() + "/test.key"
-	if err := writeFile(keyPath, "dummy"); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
+	keyPath, _ := writeValidKey(t)
 	g := New(config.Source{
 		Type:   "git",
 		URL:    "git@git.internal:acme/infra.git",
@@ -51,6 +48,46 @@ func TestApplyAuth_SSHCustomUser(t *testing.T) {
 	})
 	if g.auth.sshUser != "deploy" {
 		t.Errorf("sshUser = %q, want deploy", g.auth.sshUser)
+	}
+}
+
+func TestValidateAuth_SSHKeyFailuresAreFatal(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{name: "missing", key: filepath.Join(dir, "missing"), want: "read auth.key"},
+		{name: "unreadable type", key: dir, want: "read auth.key"},
+		{name: "invalid", key: writeTestKey(t, "invalid", "not a private key"), want: "parse auth.key"},
+		{name: "encrypted unsupported", key: writeTestKey(t, "encrypted", "-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n-----END ENCRYPTED PRIVATE KEY-----\n"), want: "parse auth.key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := New(config.Source{
+				URL: "ssh://git@git.internal/acme/infra.git", Branch: "main",
+				Auth: config.Auth{Type: config.AuthSSH, Key: tc.key},
+			})
+			err := g.Validate(t.Context())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, tc.want)
+			}
+			if g.auth.method != nil {
+				t.Fatal("invalid explicit SSH key initialized an auth method")
+			}
+		})
+	}
+}
+
+func TestValidateAuth_SSHValidKey(t *testing.T) {
+	keyPath, _ := writeValidKey(t)
+	g := New(config.Source{
+		URL: "ssh://git@git.internal/acme/infra.git", Branch: "main",
+		Auth: config.Auth{Type: config.AuthSSH, Key: keyPath},
+	})
+	if err := g.Validate(t.Context()); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
 	}
 }
 
@@ -256,4 +293,31 @@ func TestRedactURL(t *testing.T) {
 // writeFile is a minimal helper for creating test key files.
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func writeValidKey(t *testing.T) (string, []byte) {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+	encoded, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	keyBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})
+	path := filepath.Join(t.TempDir(), "test.key")
+	if err := os.WriteFile(path, keyBytes, 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+	return path, keyBytes
+}
+
+func writeTestKey(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name+".key")
+	if err := writeFile(path, content); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	return path
 }

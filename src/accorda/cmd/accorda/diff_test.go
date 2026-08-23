@@ -81,8 +81,7 @@ func TestBuildDiff_RemovedService(t *testing.T) {
 }
 
 // TestBuildDiff_EnvKey verifies that a differing environment variable produces
-// a nested node keyed by the variable name with deployed/desired values,
-// matching the §11 diff example.
+// a nested node keyed by the variable name without exposing either value.
 func TestBuildDiff_EnvKey(t *testing.T) {
 	deployed := &state.DesiredState{Services: map[string]state.Service{
 		"api": {Image: "api:1", Env: map[string]string{"LOG_LEVEL": "info"}},
@@ -103,8 +102,46 @@ func TestBuildDiff_EnvKey(t *testing.T) {
 	if level == nil {
 		t.Fatal("expected LOG_LEVEL child node")
 	}
-	if level.deployed != "info" || level.desired != "warning" {
-		t.Errorf("LOG_LEVEL deployed/desired = %q/%q, want info/warning", level.deployed, level.desired)
+	if level.deployed != "<redacted>" || level.desired != "<redacted>" {
+		t.Errorf("LOG_LEVEL deployed/desired = %q/%q, want redacted values", level.deployed, level.desired)
+	}
+	var output bytes.Buffer
+	writeDiff(&output, roots)
+	if strings.Contains(output.String(), "info") || strings.Contains(output.String(), "warning") {
+		t.Fatalf("diff output leaked environment values: %q", output.String())
+	}
+}
+
+func TestBuildDiff_EnvAdditionShowsPresenceWithoutValue(t *testing.T) {
+	desired := &state.DesiredState{Services: map[string]state.Service{
+		"api": {Image: "api:1", Env: map[string]string{"API_TOKEN": "token-super-secret"}},
+	}}
+	roots := buildDiff(&state.DesiredState{Services: map[string]state.Service{
+		"api": {Image: "api:1"},
+	}}, desired)
+	var output bytes.Buffer
+	writeDiff(&output, roots)
+	got := output.String()
+	if !strings.Contains(got, "deployed: <unset>") || !strings.Contains(got, "desired:  <redacted>") {
+		t.Fatalf("diff output = %q, want unset-to-redacted transition", got)
+	}
+	if strings.Contains(got, "token-super-secret") {
+		t.Fatalf("diff output leaked secret: %q", got)
+	}
+}
+
+func TestDiffSensitiveKV_UnchangedAndRemoval(t *testing.T) {
+	if got := diffSensitiveKV("environment",
+		map[string]string{"TOKEN": "same"}, map[string]string{"TOKEN": "same"}); got != nil {
+		t.Fatalf("diffSensitiveKV(unchanged) = %v, want nil", got)
+	}
+	got := diffSensitiveKV("environment", map[string]string{"TOKEN": "secret"}, nil)
+	if len(got) != 1 || len(got[0].children) != 1 {
+		t.Fatalf("diffSensitiveKV(removal) = %v, want one child", got)
+	}
+	child := got[0].children[0]
+	if child.deployed != "<redacted>" || child.desired != "<unset>" {
+		t.Fatalf("removal values = %q/%q, want redacted/unset", child.deployed, child.desired)
 	}
 }
 

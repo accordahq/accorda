@@ -15,27 +15,35 @@ jobs:
       - name: Set up Go
         uses: ./.github/actions/setup-go
 
-      - name: Check formatting
-        run: |
-          find src/accorda -name '*.go' -print0 | xargs -0 gofmt -w
-          git diff --exit-code -- src/accorda
-
       - name: Start Docker daemon
         run: |
           sudo systemctl start docker
           docker info
 
-      # The integration tag is additive: `-tags integration` compiles and runs
-      # the integration-tagged tests *and* all regular unit tests in one pass,
-      # so a separate `go test ./...` would re-run the same unit tests. This
-      # single command runs the full suite and produces one coverage profile.
-      - name: Run full test suite with coverage
-        run: |
-          cd src/accorda
-          go test -tags integration -coverprofile=coverage.out ./...
+      - name: Run full validation
+        run: scripts/test.sh
 
+      - name: Scan reachable Go vulnerabilities
+        uses: golang/govulncheck-action@v1.1.0
+        with:
+          go-version-input: "1.25.13"
+          go-package: ./...
+          work-dir: src/accorda
+          repo-checkout: false
+          cache-dependency-path: src/accorda/go.sum
+          output-format: json
+          output-file: /tmp/accorda-govulncheck.json
 
-      - name: Build
+      - name: Reject unaccepted reachable vulnerabilities
         run: |
-          cd src/accorda
-          go build ./...
+          unexpected="$(jq -rs '
+            [.[].finding
+              | select(. != null and ((.trace[0].function // "") != ""))
+              | .osv
+              | select(. != "GO-2026-4883" and . != "GO-2026-4887")]
+            | unique | .[]' /tmp/accorda-govulncheck.json)"
+          if [ -n "$unexpected" ]; then
+            echo "Unexpected reachable vulnerabilities:"
+            echo "$unexpected"
+            exit 1
+          fi
