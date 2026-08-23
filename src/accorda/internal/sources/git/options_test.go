@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,29 @@ func TestCacheDir_CollidingLegacyURLsAreDistinct(t *testing.T) {
 	}
 }
 
+func TestCacheBaseFallbacks(t *testing.T) {
+	failure := func() (string, error) { return "", errors.New("unavailable") }
+	cache := func() (string, error) { return "/private/cache", nil }
+	configDir := func() (string, error) { return "/private/config", nil }
+	tests := []struct {
+		name       string
+		userCache  func() (string, error)
+		userConfig func() (string, error)
+		want       string
+	}{
+		{name: "user cache", userCache: cache, userConfig: failure, want: "/private/cache/accorda/git"},
+		{name: "config fallback", userCache: failure, userConfig: configDir, want: "/private/config/accorda/git-cache"},
+		{name: "temp fallback", userCache: failure, userConfig: failure, want: filepath.Join(os.TempDir(), "accorda-private-git-cache")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cacheBase(tc.userCache, tc.userConfig); got != tc.want {
+				t.Fatalf("cacheBase() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyOrigin_RejectsMismatchedCache(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "cache")
 	repo, err := git.PlainInit(dir, false)
@@ -64,6 +88,22 @@ func TestVerifyOrigin_RejectsMismatchedCache(t *testing.T) {
 	g := New(config.Source{URL: "https://git.internal/acme/prod.git", Branch: "main"}, WithCacheDir(dir))
 	if err := g.verifyOrigin(dir); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("verifyOrigin() error = %v, want mismatch", err)
+	}
+}
+
+func TestVerifyOrigin_ReportsInvalidCaches(t *testing.T) {
+	g := New(config.Source{URL: "https://git.internal/acme/prod.git", Branch: "main"})
+	if err := g.verifyOrigin(filepath.Join(t.TempDir(), "missing")); err == nil || !strings.Contains(err.Error(), "open cache") {
+		t.Fatalf("verifyOrigin(missing) error = %v, want open-cache failure", err)
+	}
+	dir := filepath.Join(t.TempDir(), "cache")
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	defer func() { _ = repo.Close() }()
+	if err := g.verifyOrigin(dir); err == nil || !strings.Contains(err.Error(), "origin remote") {
+		t.Fatalf("verifyOrigin(no origin) error = %v, want origin failure", err)
 	}
 }
 
@@ -150,6 +190,20 @@ func TestEnsurePrivateCacheParent_RejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestEnsurePrivateCacheParent_CreatesPrivateDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cache", "git")
+	if err := ensurePrivateCacheParent(dir); err != nil {
+		t.Fatalf("ensurePrivateCacheParent: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o700 {
+		t.Fatalf("cache parent permissions = %o, want 700", mode)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name string
@@ -185,5 +239,15 @@ func TestRepoExists(t *testing.T) {
 	}
 	if exists, err := repoExists(dir); err != nil || !exists {
 		t.Errorf("repoExists(.git) = %v, %v; want true, nil", exists, err)
+	}
+}
+
+func TestRepoExists_RejectsUnsafeGitPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir"), 0o600); err != nil {
+		t.Fatalf("write .git: %v", err)
+	}
+	if exists, err := repoExists(dir); err == nil || exists {
+		t.Fatalf("repoExists(file) = %v, %v; want false, error", exists, err)
 	}
 }

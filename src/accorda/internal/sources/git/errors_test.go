@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,6 +138,29 @@ func TestApplyClientOptions(t *testing.T) {
 			}
 			if len(opts) != tt.want {
 				t.Errorf("options = %d, want %d", len(opts), tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyClientOptionsRejectsInvalidSSHState(t *testing.T) {
+	tests := []struct {
+		name string
+		auth transportAuth
+		want string
+	}{
+		{name: "stored auth error", auth: transportAuth{err: errors.New("key failed")}, want: "key failed"},
+		{name: "missing SSH method", auth: transportAuth{isSSH: true}, want: "not initialized"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &Git{auth: tc.auth}
+			var opts []client.Option
+			if err := g.applyClientOptions(&opts); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("applyClientOptions() error = %v, want %q", err, tc.want)
+			}
+			if len(opts) != 0 {
+				t.Fatalf("options = %d, want none", len(opts))
 			}
 		})
 	}

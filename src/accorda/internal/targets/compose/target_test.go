@@ -827,6 +827,25 @@ func TestApply_RunnerFails_IsError(t *testing.T) {
 	}
 }
 
+func TestApply_RunnerFailuresForServiceCommands(t *testing.T) {
+	path := writeComposeFile(t)
+	for _, kind := range []plan.ActionKind{plan.ActionStart, plan.ActionPull, plan.ActionStop} {
+		t.Run(string(kind), func(t *testing.T) {
+			runner := &fakeRunner{err: errors.New("command failed")}
+			tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+				WithDockerClient(&fakeDockerClient{}), WithRunner(runner))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			p := plan.New("", "acme/infra", "abc123", time.Now()).
+				AddAction(plan.Action{Kind: kind, Service: "api"})
+			if err := tgt.Apply(t.Context(), p); err == nil || !strings.Contains(err.Error(), "command failed") {
+				t.Fatalf("Apply(%s) error = %v, want runner failure", kind, err)
+			}
+		})
+	}
+}
+
 func TestApply_RunnerFailureReportsCompletedAndFailedActions(t *testing.T) {
 	path := writeComposeFile(t)
 	runner := &fakeRunner{errs: []error{nil, errors.New("worker boom")}}

@@ -265,10 +265,14 @@ func (g *Git) cacheDir() string {
 }
 
 func defaultCacheBase() string {
-	if base, err := os.UserCacheDir(); err == nil {
+	return cacheBase(os.UserCacheDir, os.UserConfigDir)
+}
+
+func cacheBase(userCacheDir, userConfigDir func() (string, error)) string {
+	if base, err := userCacheDir(); err == nil {
 		return filepath.Join(base, "accorda", "git")
 	}
-	if base, err := os.UserConfigDir(); err == nil {
+	if base, err := userConfigDir(); err == nil {
 		return filepath.Join(base, "accorda", "git-cache")
 	}
 	return filepath.Join(os.TempDir(), "accorda-private-git-cache")

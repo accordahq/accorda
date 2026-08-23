@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,6 +140,43 @@ func TestRun_Init_DoesNotOverwriteExistingProject(t *testing.T) {
 	}
 	if string(got) != existing {
 		t.Fatalf("existing project changed to %q", got)
+	}
+}
+
+type failingProjectFile struct {
+	writeErr error
+	closeErr error
+}
+
+func (f *failingProjectFile) Write(data []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	return len(data), nil
+}
+
+func (f *failingProjectFile) Close() error { return f.closeErr }
+
+func TestInitProject_ReportsFileWriteAndCloseErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		file *failingProjectFile
+		want string
+	}{
+		{name: "write", file: &failingProjectFile{writeErr: errors.New("write failed")}, want: "write failed"},
+		{name: "close", file: &failingProjectFile{closeErr: errors.New("close failed")}, want: "close failed"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			original := createProjectFile
+			createProjectFile = func(string) (io.WriteCloser, error) { return tc.file, nil }
+			t.Cleanup(func() { createProjectFile = original })
+			_, err := initProject(t.TempDir(), "production", "https://git.internal/acme/repo.git",
+				"main", config.DefaultComposeFile, "", "")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("initProject() error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

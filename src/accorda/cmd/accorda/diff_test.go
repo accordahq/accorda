@@ -130,6 +130,21 @@ func TestBuildDiff_EnvAdditionShowsPresenceWithoutValue(t *testing.T) {
 	}
 }
 
+func TestDiffSensitiveKV_UnchangedAndRemoval(t *testing.T) {
+	if got := diffSensitiveKV("environment",
+		map[string]string{"TOKEN": "same"}, map[string]string{"TOKEN": "same"}); got != nil {
+		t.Fatalf("diffSensitiveKV(unchanged) = %v, want nil", got)
+	}
+	got := diffSensitiveKV("environment", map[string]string{"TOKEN": "secret"}, nil)
+	if len(got) != 1 || len(got[0].children) != 1 {
+		t.Fatalf("diffSensitiveKV(removal) = %v, want one child", got)
+	}
+	child := got[0].children[0]
+	if child.deployed != "<redacted>" || child.desired != "<unset>" {
+		t.Fatalf("removal values = %q/%q, want redacted/unset", child.deployed, child.desired)
+	}
+}
+
 // TestWriteDiff_Format verifies the rendered output matches the YAML-like
 // tree shape from docs/ACCORDA.md §11 (deployed/desired pairs indented under
 // the service and field).

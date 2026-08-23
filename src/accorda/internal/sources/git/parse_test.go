@@ -46,6 +46,13 @@ func TestRepoDirName(t *testing.T) {
 	}
 }
 
+func TestCanonicalRepositoryURL_InvalidURLFallsBackSafely(t *testing.T) {
+	const invalid = "https://git.internal/%zz"
+	if got := canonicalRepositoryURL(invalid); got != invalid {
+		t.Fatalf("canonicalRepositoryURL() = %q, want original invalid URL", got)
+	}
+}
+
 func TestIsComposeFile(t *testing.T) {
 	cases := []struct {
 		in   string
