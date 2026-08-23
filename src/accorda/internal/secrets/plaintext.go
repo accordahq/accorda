@@ -25,10 +25,30 @@ const (
 // this function only when an external target renderer requires a file path.
 //
 // The callback must not retain, copy, or move the file. A cleanup failure is
-// returned together with any callback error so plaintext cannot be silently
-// left behind.
+// returned together with any callback error. If cleanup fails while the
+// callback is panicking, WithPlaintextFile re-panics with a PanicCleanupError
+// that preserves both failures so plaintext cannot be silently left behind.
 func WithPlaintextFile(plaintext []byte, use func(path string) error) error {
 	return withPlaintextFile(RuntimeDir, plaintext, use)
+}
+
+// PanicCleanupError preserves a callback panic together with the error that
+// prevented its plaintext runtime file from being removed. PanicValue is the
+// exact value recovered from the callback; CleanupError is also available via
+// errors.Is and errors.As through Unwrap.
+type PanicCleanupError struct {
+	PanicValue   any
+	CleanupError error
+}
+
+func (e *PanicCleanupError) Error() string {
+	return fmt.Sprintf("secrets: plaintext cleanup failed during panic: %v", e.CleanupError)
+}
+
+// Unwrap exposes the cleanup failure without flattening the original panic
+// value into an error string.
+func (e *PanicCleanupError) Unwrap() error {
+	return e.CleanupError
 }
 
 func withPlaintextFile(runtimeDir string, plaintext []byte, use func(path string) error) (err error) {
@@ -52,9 +72,14 @@ func withPlaintextFile(runtimeDir string, plaintext []byte, use func(path string
 	}
 	defer func() {
 		removeErr := root.Remove(name)
-		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			err = errors.Join(err, fmt.Errorf("secrets: remove plaintext runtime file: %w", removeErr))
+		if removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+			return
 		}
+		cleanupErr := fmt.Errorf("secrets: remove plaintext runtime file: %w", removeErr)
+		if panicValue := recover(); panicValue != nil {
+			panic(&PanicCleanupError{PanicValue: panicValue, CleanupError: cleanupErr})
+		}
+		err = errors.Join(err, cleanupErr)
 	}()
 
 	if err := writePlaintext(file, plaintext); err != nil {

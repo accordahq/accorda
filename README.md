@@ -128,9 +128,10 @@ plaintext only under the memory-backed `/run/accorda` runtime directory, using
 a private `0700` directory and a `0600` file. The file exists only while the
 consumer callback runs and is removed immediately afterward, including when
 the callback returns an error or panics. Cleanup failures are surfaced to the
-caller rather than silently leaving plaintext behind. SOPS decryption remains
-separate from this lifecycle policy and is delegated to SOPS rather than
-implemented by Accorda.
+caller rather than silently leaving plaintext behind; if cleanup fails during
+panic unwinding, the re-panic preserves both the callback panic and cleanup
+error. SOPS decryption remains separate from this lifecycle policy and is
+delegated to SOPS rather than implemented by Accorda.
 
 ## Compose target
 

@@ -47,15 +47,7 @@ func TestWithPlaintextFile_ReportsCleanupFailure(t *testing.T) {
 	wantErr := errors.New("renderer failed")
 
 	err := withPlaintextFile(runtimeDir, []byte(plaintextFixture), func(path string) error {
-		if err := os.Remove(path); err != nil {
-			t.Fatalf("Remove: %v", err)
-		}
-		if err := os.Mkdir(path, runtimeDirMode); err != nil {
-			t.Fatalf("Mkdir replacement: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(path, "occupied"), nil, plaintextFileMode); err != nil {
-			t.Fatalf("WriteFile replacement: %v", err)
-		}
+		replacePlaintextWithNonEmptyDir(t, path)
 		return wantErr
 	})
 	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "remove plaintext runtime file") {
@@ -66,20 +58,53 @@ func TestWithPlaintextFile_ReportsCleanupFailure(t *testing.T) {
 func TestWithPlaintextFile_CleansUpAfterPanic(t *testing.T) {
 	runtimeDir := filepath.Join(t.TempDir(), "accorda")
 	var plaintextPath string
+	wantPanic := "renderer panicked"
 
+	var recovered any
 	func() {
 		defer func() {
-			if recover() == nil {
-				t.Fatal("withPlaintextFile() did not propagate callback panic")
-			}
+			recovered = recover()
 		}()
 		_ = withPlaintextFile(runtimeDir, []byte(plaintextFixture), func(path string) error {
 			plaintextPath = path
-			panic("renderer panicked")
+			panic(wantPanic)
 		})
 	}()
 
+	if recovered != wantPanic {
+		t.Fatalf("recovered value = %v, want original panic %q", recovered, wantPanic)
+	}
 	assertPlaintextRemoved(t, plaintextPath)
+}
+
+func TestWithPlaintextFile_PreservesPanicAndCleanupFailure(t *testing.T) {
+	runtimeDir := filepath.Join(t.TempDir(), "accorda")
+	wantPanic := errors.New("renderer panicked")
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+		_ = withPlaintextFile(runtimeDir, []byte(plaintextFixture), func(path string) error {
+			replacePlaintextWithNonEmptyDir(t, path)
+			panic(wantPanic)
+		})
+	}()
+
+	got, ok := recovered.(*PanicCleanupError)
+	if !ok {
+		t.Fatalf("recovered value = %T(%v), want *PanicCleanupError", recovered, recovered)
+	}
+	if got.PanicValue != wantPanic {
+		t.Fatalf("PanicValue = %v, want original panic %v", got.PanicValue, wantPanic)
+	}
+	if got.CleanupError == nil || !strings.Contains(got.CleanupError.Error(), "remove plaintext runtime file") {
+		t.Fatalf("CleanupError = %v, want removal failure", got.CleanupError)
+	}
+	if !errors.Is(got, got.CleanupError) {
+		t.Fatal("PanicCleanupError does not unwrap to CleanupError")
+	}
 }
 
 func TestWithPlaintextFile_RejectsUnsafeInputs(t *testing.T) {
@@ -196,6 +221,19 @@ func (f *fakePlaintextFile) Write(data []byte) (int, error) {
 func (f *fakePlaintextFile) Close() error {
 	f.closeCalls++
 	return f.closeErr
+}
+
+func replacePlaintextWithNonEmptyDir(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if err := os.Mkdir(path, runtimeDirMode); err != nil {
+		t.Fatalf("Mkdir replacement: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "occupied"), nil, plaintextFileMode); err != nil {
+		t.Fatalf("WriteFile replacement: %v", err)
+	}
 }
 
 func assertPlaintextFile(t *testing.T, path string) {

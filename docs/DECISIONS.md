@@ -1135,10 +1135,11 @@ requires the runtime directory to be private (`0700` or stricter) and not a
 symbolic link, creates a cryptographically unpredictable file with mode `0600`,
 and exposes its path only for the duration of a callback. A deferred removal
 runs after callback success, error, or panic; removal failures are joined with
-the callback error and returned instead of being hidden. The directory remains
-for reuse but never contains plaintext outside the callback lifetime. SOPS
-continues to own cryptography; this package owns only plaintext lifecycle and
-shared redaction.
+the callback error and returned instead of being hidden. During panic unwinding,
+a `PanicCleanupError` re-panic preserves the exact original panic value and the
+cleanup failure. The directory remains for reuse but never contains plaintext
+outside the callback lifetime. SOPS continues to own cryptography; this package
+owns only plaintext lifecycle and shared redaction.
 
 **Consequence.** Future decryptors and target renderers cannot choose ad hoc
 persistent temporary locations. Cleanup behavior and permissions are enforced
