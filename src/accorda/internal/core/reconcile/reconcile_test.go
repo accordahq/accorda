@@ -76,6 +76,7 @@ type fakeTarget struct {
 	health         *health.Health
 	runtime        *state.RuntimeState
 	applied        []*plan.Plan
+	planCalls      int
 	applyCalls     int
 	deployDone     bool
 	// changedPlan makes Plan return a plan with a non-noop action so the
@@ -91,6 +92,7 @@ func (f *fakeTarget) Current(context.Context) (*state.RuntimeState, error) {
 	return f.runtime, nil
 }
 func (f *fakeTarget) Plan(_ context.Context, desired *state.DesiredState, _ *state.DeployedState) (*plan.Plan, error) {
+	f.planCalls++
 	if f.planErr != nil {
 		return nil, f.planErr
 	}
@@ -273,7 +275,7 @@ func TestReconcile_ApplyFailure_RollsBack(t *testing.T) {
 			"prev123": previousDesired(),
 		},
 	}
-	tgt := &fakeTarget{applyErr: errors.New("apply boom")}
+	tgt := &fakeTarget{applyErr: errors.New("apply boom"), changedPlan: true}
 	prev := &state.DeployedState{
 		DeploymentID: "dep_0",
 		Commit:       "prev123",
@@ -549,10 +551,10 @@ func TestReconcile_DriftRepair_EmitsDetectedAndReconciled(t *testing.T) {
 	if reconciled != 1 {
 		t.Errorf("drift.reconciled events = %d, want 1", reconciled)
 	}
-	// Repair re-plans and re-applies: one Apply from the deploy phase plus
-	// one from the repair.
-	if tgt.applyCalls != 2 {
-		t.Errorf("apply calls = %d, want 2 (deploy + repair)", tgt.applyCalls)
+	// The unchanged deployment plan does not mutate the target; drift repair
+	// is the only Apply call.
+	if tgt.applyCalls != 1 {
+		t.Errorf("apply calls = %d, want 1 (repair only)", tgt.applyCalls)
 	}
 }
 
@@ -593,9 +595,8 @@ func TestReconcile_DriftDisabled_NoEventsNoRepair(t *testing.T) {
 	if reconciled != 0 {
 		t.Errorf("drift.reconciled events = %d, want 0", reconciled)
 	}
-	// Only the deploy-phase Apply runs; no repair Apply.
-	if tgt.applyCalls != 1 {
-		t.Errorf("apply calls = %d, want 1 (deploy only)", tgt.applyCalls)
+	if tgt.applyCalls != 0 {
+		t.Errorf("apply calls = %d, want 0", tgt.applyCalls)
 	}
 }
 
@@ -636,8 +637,8 @@ func TestReconcile_DriftReport_DetectedOnly(t *testing.T) {
 	if reconciled != 0 {
 		t.Errorf("drift.reconciled events = %d, want 0", reconciled)
 	}
-	if tgt.applyCalls != 1 {
-		t.Errorf("apply calls = %d, want 1 (deploy only)", tgt.applyCalls)
+	if tgt.applyCalls != 0 {
+		t.Errorf("apply calls = %d, want 0", tgt.applyCalls)
 	}
 }
 
@@ -656,6 +657,7 @@ func TestReconcile_DriftRepair_ApplyFails_NoReconciled(t *testing.T) {
 			},
 		},
 		repairApplyErr: errors.New("repair boom"),
+		deployDone:     true,
 	}
 	bus := events.NewBus()
 	var detected, reconciled int
@@ -728,6 +730,13 @@ type fakeStore struct {
 	appendCalls int
 }
 
+func requireReceiptCount(t *testing.T, store *fakeStore, want int) {
+	t.Helper()
+	if got := len(store.appended); got != want {
+		t.Fatalf("appended receipts = %d, want %d", got, want)
+	}
+}
+
 func (f *fakeStore) Append(_ context.Context, r history.Receipt) error {
 	f.appendCalls++
 	if f.err != nil {
@@ -764,9 +773,7 @@ func TestReconcile_RecordsReceiptOnChangedDeployment(t *testing.T) {
 	if res.Phase != PhaseSynced {
 		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
 	}
-	if len(store.appended) != 2 {
-		t.Fatalf("appended receipts = %d, want 2 (in_progress + healthy)", len(store.appended))
-	}
+	requireReceiptCount(t, store, 2)
 	if store.appended[0].Result != history.OutcomeInProgress {
 		t.Errorf("first receipt result = %q, want %q", store.appended[0].Result, history.OutcomeInProgress)
 	}
@@ -825,12 +832,10 @@ func TestReconcile_NoopPlan_NoReceipt(t *testing.T) {
 	if res.Phase != PhaseSynced {
 		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseSynced)
 	}
-	if len(store.appended) != 0 {
-		t.Errorf("appended receipts = %d, want 0", len(store.appended))
-	}
+	requireReceiptCount(t, store, 0)
 }
 
-func TestReconcile_ResumesUnfinishedDeployment(t *testing.T) {
+func TestReconcile_ResumesUnfinishedDeploymentAtCachedHead(t *testing.T) {
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123", Branch: "main"},
 		desired: healthyDesired(),
@@ -843,17 +848,20 @@ func TestReconcile_ResumesUnfinishedDeployment(t *testing.T) {
 		Changes:      []string{"api"},
 	}}}
 
-	res := New(src, tgt, events.NewBus()).WithReceiptStore(store).Reconcile(context.Background())
+	r := New(src, tgt, events.NewBus()).WithReceiptStore(store)
+	r.lastDesired = healthyDesired()
+	res := r.Reconcile(context.Background())
 
 	if res.Phase != PhaseSynced {
 		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
 	}
-	if len(store.appended) != 2 {
-		t.Fatalf("receipts = %d, want pending + recovered healthy", len(store.appended))
-	}
+	requireReceiptCount(t, store, 2)
 	recovered := store.appended[1]
 	if recovered.DeploymentID != "dep_recover" || recovered.Result != history.OutcomeHealthy {
 		t.Errorf("recovered receipt = %+v", recovered)
+	}
+	if tgt.planCalls != 1 {
+		t.Errorf("Plan calls = %d, want 1 recovery plan", tgt.planCalls)
 	}
 	if want := []string{"api"}; !reflect.DeepEqual(recovered.Changes, want) {
 		t.Errorf("recovered changes = %v, want %v", recovered.Changes, want)
@@ -958,9 +966,7 @@ func TestReconcile_CheckpointError_PreventsDeployment(t *testing.T) {
 	if res.Phase != PhaseFailed {
 		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseFailed, res.Err)
 	}
-	if len(store.appended) != 0 {
-		t.Errorf("appended receipts = %d, want 0 (the store errored)", len(store.appended))
-	}
+	requireReceiptCount(t, store, 0)
 	if store.appendCalls != 1 {
 		t.Errorf("store append calls = %d, want 1", store.appendCalls)
 	}
@@ -977,7 +983,7 @@ func TestReconcile_ApplyFailure_RecordsFailedReceipt(t *testing.T) {
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
 	}
-	tgt := &fakeTarget{applyErr: errors.New("apply boom")}
+	tgt := &fakeTarget{applyErr: errors.New("apply boom"), changedPlan: true}
 	store := &fakeStore{}
 	r := New(src, tgt, events.NewBus()).
 		WithEnvironment("production").
@@ -987,10 +993,8 @@ func TestReconcile_ApplyFailure_RecordsFailedReceipt(t *testing.T) {
 	if res.Phase != PhaseFailed {
 		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
 	}
-	if len(store.appended) != 1 {
-		t.Fatalf("appended receipts = %d, want 1", len(store.appended))
-	}
-	rc := store.appended[0]
+	requireReceiptCount(t, store, 2)
+	rc := store.appended[1]
 	if rc.Result != history.OutcomeFailed {
 		t.Errorf("receipt result = %q, want %q", rc.Result, history.OutcomeFailed)
 	}
@@ -1031,9 +1035,7 @@ func TestReconcile_HealthFailure_RecordsFailedReceipt(t *testing.T) {
 	if res.Phase != PhaseFailed {
 		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
 	}
-	if len(store.appended) != 2 {
-		t.Fatalf("appended receipts = %d, want 2 (in_progress + failed)", len(store.appended))
-	}
+	requireReceiptCount(t, store, 2)
 	if rc := store.appended[1]; rc.Result != history.OutcomeFailed {
 		t.Errorf("receipt result = %q, want %q", rc.Result, history.OutcomeFailed)
 	}
@@ -1122,9 +1124,7 @@ func TestReconcile_ApplyFailure_RollsBackAndRecordsReceipt(t *testing.T) {
 	}
 
 	// History records the failed deployment and the rollback.
-	if len(store.appended) != 3 {
-		t.Fatalf("appended receipts = %d, want 3 (in_progress + failed + rolled_back)", len(store.appended))
-	}
+	requireReceiptCount(t, store, 3)
 	rb := store.appended[2]
 	if rb.Result != history.OutcomeRolledBack {
 		t.Errorf("receipt result = %q, want %q", rb.Result, history.OutcomeRolledBack)
@@ -1177,9 +1177,7 @@ func TestReconcile_HealthFailure_NoPrevious_NoRollback(t *testing.T) {
 		t.Errorf("applied plans = %d, want 1 (deploy only, no rollback)", len(tgt.applied))
 	}
 	// Only the failed deployment is recorded; no rollback receipt.
-	if len(store.appended) != 2 {
-		t.Fatalf("appended receipts = %d, want 2 (in_progress + failed)", len(store.appended))
-	}
+	requireReceiptCount(t, store, 2)
 	if rc := store.appended[1]; rc.Result != history.OutcomeFailed {
 		t.Errorf("receipt result = %q, want %q", rc.Result, history.OutcomeFailed)
 	}

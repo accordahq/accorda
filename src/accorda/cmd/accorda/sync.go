@@ -21,10 +21,9 @@ import (
 	"accorda/internal/targets/compose"
 )
 
-// newSyncCmd builds the `accorda sync` command (docs/ACCORDA.md §11). It
-// triggers one reconciliation pass on demand: it loads the project file,
-// constructs the Git source and Compose target from it, and drives the
-// reconciliation lifecycle state machine (docs/ACCORDA.md §6) to completion.
+// newSyncCmd builds the `accorda sync` command (docs/ACCORDA.md §11). It loads
+// the project file, constructs the Git source and Compose target, and drives
+// either one reconciliation pass or the continuous --watch loop.
 //
 // The command is the production wiring point for the core packages that were
 // previously only exercised by tests: the Reconciler (internal/core/reconcile),
@@ -33,28 +32,33 @@ import (
 // pull policy, and health timeout into the reconciler and target
 // (docs/DECISIONS.md #18, #21, #22).
 func newSyncCmd() *cobra.Command {
-	var dir string
+	var (
+		dir   string
+		watch bool
+	)
 	c := &cobra.Command{
 		Use:   "sync",
 		Short: "run reconciliation",
 		Long: "Run one reconciliation pass: fetch the desired state from Git,\n" +
 			"plan the changes, apply them to the target, and verify health.\n" +
+			"With --watch, run immediately and then continuously at sync.interval.\n" +
 			"The project file (accorda.yaml) is read from the project directory.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := runSync(cmd, dir); err != nil {
+			if err := runSync(cmd, dir, watch); err != nil {
 				return fmt.Errorf("sync: %w", err)
 			}
 			return nil
 		},
 	}
 	c.Flags().StringVar(&dir, "dir", ".", "project directory")
+	c.Flags().BoolVar(&watch, "watch", false, "continuously reconcile at sync.interval")
 	return c
 }
 
 // runSync loads the project configuration, constructs the source and target,
-// and runs a single reconciliation cycle, printing the terminal phase and the
-// desired/deployed/runtime comparison to the command's output.
-func runSync(cmd *cobra.Command, dir string) error {
+// and runs one reconciliation cycle or the continuous polling loop, printing
+// each terminal phase and desired/deployed/runtime comparison.
+func runSync(cmd *cobra.Command, dir string, watch bool) error {
 	proj, err := config.Load(dir)
 	if err != nil {
 		return err
@@ -72,8 +76,21 @@ func runSync(cmd *cobra.Command, dir string) error {
 		WithEnvironment(proj.Environment).
 		WithReceiptStore(store).
 		WithLocker(locking.NewFileLocker(deploymentLockPath(dir, proj.Target)))
-	res := r.Reconcile(cmd.Context())
+	ctx := cmd.Context()
+	if watch {
+		return r.Run(ctx, proj.Sync.Interval, func(res *reconcile.Result) {
+			if resultErr := writeSyncResult(cmd, res); resultErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "sync: %v\n", resultErr)
+			}
+		})
+	}
+	return writeSyncResult(cmd, r.Reconcile(ctx))
+}
 
+// writeSyncResult prints one reconciliation cycle. A failed cycle is returned
+// as an error for one-shot sync; watch mode logs it and keeps polling so a
+// transient source or target failure can recover without restarting Accorda.
+func writeSyncResult(cmd *cobra.Command, res *reconcile.Result) error {
 	if res.Phase == reconcile.PhaseFailed {
 		if res.RolledBack {
 			// A failed deployment was rolled back to a known previous commit.

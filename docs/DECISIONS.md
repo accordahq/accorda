@@ -1144,3 +1144,27 @@ owns only plaintext lifecycle and shared redaction.
 **Consequence.** Future decryptors and target renderers cannot choose ad hoc
 persistent temporary locations. Cleanup behavior and permissions are enforced
 centrally and covered by tests before SOPS integration begins.
+
+### 39. Continuous reconciliation is a mode of the existing CLI process
+
+**Context.** Issue #55 and `docs/ACCORDA.md` §45 require Git polling at
+`sync.interval`, while operators and existing automation still need a bounded
+one-shot sync. A second daemon binary would duplicate configuration and
+reconciler wiring without adding a distinct responsibility.
+
+**Decision.** `Reconciler.Run` wraps the existing lifecycle with one immediate
+cycle followed by timer-driven cycles until context cancellation. Each cycle
+fetches the tracked branch through `Source.Fetch`; an unchanged HEAD produces
+no target mutation but still evaluates workload health, emits `health.changed`,
+and continues through runtime comparison for drift handling. An unhealthy
+unchanged deployment cannot be reported as `SYNCED`.
+Failed cycles are reported without stopping the loop so transient dependencies
+can recover. `accorda sync` remains one-shot and `accorda sync --watch` invokes
+the loop using the project's `sync.interval`. The CLI process installs SIGINT
+and SIGTERM cancellation, which is passed through `cmd.Context()` to both modes.
+
+**Consequence.** Accorda ships one binary and one reconciliation implementation.
+Interactive users and jobs keep a terminating `sync`, while deployments run
+`sync --watch` under an external process supervisor such as systemd or Docker.
+The supervisor owns restart and startup policy; Accorda owns polling,
+reconciliation, and graceful in-flight cancellation.

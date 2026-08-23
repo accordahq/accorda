@@ -8,6 +8,8 @@ This repository intentionally stays focused on the OSS product and does not incl
 
 This repository is being bootstrapped as a Go-based foundation for the Accorda OSS runtime. The CLI (`cmd/accorda`) implements the command surface from `docs/ACCORDA.md` §11 and §45; `accorda version`, `accorda init`, `accorda sync`, `accorda status`, `accorda diff`, `accorda plan`, `accorda history`, `accorda inspect`, `accorda logs`, and `accorda doctor` are functional. The unified project format and its loader (`internal/config`) are implemented; see "Project file" below. The core abstractions from `docs/ACCORDA.md` §12 are defined: the `Target` interface (`internal/targets`), the `Source` interface (`internal/sources`), and the typed `state`, `plan`, and `health` structs (`internal/core`), with compile-time interface checks and unit tests for value semantics. The generic Git source adapter (`internal/sources/git`) is implemented: it clones, fetches, checks out, and returns HEAD commit metadata against any Git server over SSH or HTTPS, with no GitHub-specific calls; see "Git source" below. The Docker Compose target driver (`internal/targets/compose`) is implemented through its reconciliation and logs operations: it parses a Compose file into Accorda's normalized service model, validates required fields, reads runtime state through the Docker engine SDK, computes and applies deployment plans, verifies health, and fetches or follows service logs; see "Compose target" below. Deployment history is recorded as an append-only local journal of deployment receipts (`internal/core/history`), capturing each cycle's commit, result (`healthy`/`failed`), and changed services, stored under `$XDG_STATE_HOME/accorda/receipts/<project>.jsonl` by `accorda sync`.
 
+`accorda sync` runs one reconciliation pass for interactive use and automation. `accorda sync --watch` runs the same reconciler continuously: one immediate pass followed by Git polling at `sync.interval`. An unchanged branch HEAD does not plan or mutate the target, but the cycle still evaluates workload health, checks runtime drift, and applies the configured drift policy. Failed cycles are reported and polling continues; SIGINT or SIGTERM cancels an in-flight source/target operation and shuts the loop down cleanly. There is no separate daemon binary—the watch command is the daemon process and should be supervised by systemd, Docker, or the platform's service manager in production.
+
 The `accorda status` command (`cmd/accorda/status.go`, `docs/ACCORDA.md` §11) prints the project's posture: environment, repository, branch, Git HEAD, deployed commit, sync/runtime status, last deploy time, and a per-service table of state/health/image. It is read-only: it fetches the Git source for the HEAD commit, reads the last healthy deployment receipt from the journal, and reads the target's runtime state, without mutating either.
 
 The `accorda diff` command (`cmd/accorda/diff.go`, `docs/ACCORDA.md` §11) shows the per-field deployed vs desired changes. The deployed side is the last healthy deployment, re-read from Git at the deployed commit; the desired side is the current Git HEAD. Environment keys and change state are shown, but their values are always redacted. It is read-only and works from Git plus the deployment history, so it needs no running Docker daemon.
@@ -29,6 +31,7 @@ cd src/accorda
 go build ./cmd/accorda
 ./accorda version
 ./accorda init --env production --repo git@github.com:acme/backend.git --branch main
+./accorda sync --watch
 ```
 
 `accorda init` writes a minimal `accorda.yaml` project file in the current directory (override with `--dir <path>`) using the unified project format (§25), so `accorda sync` can load it directly. New project files use mode `0600`, and `init` refuses to overwrite an existing file. Run `accorda init --help` for the available flags (source auth type, Compose file path). `accorda version` prints the build version, falling back to VCS revision info from the Go build. The CLI is built on [cobra](https://github.com/spf13/cobra); run `accorda --help` or `accorda <command> --help` for details.
@@ -163,7 +166,7 @@ The CLI implements the minimum command set from `docs/ACCORDA.md` §79 Step 6 pl
 | `status`  | implemented         | show environment, repo, branch, Git HEAD, deployed SHA... |
 | `diff`    | implemented         | show deployed vs desired changes                          |
 | `plan`    | implemented         | show intended actions without deploying                   |
-| `sync`    | implemented         | run reconciliation                                        |
+| `sync`    | implemented         | run once, or continuously with `--watch`                  |
 | `history` | implemented         | show deployment history                                   |
 | `inspect` | implemented         | show details for a specific deployment                    |
 | `logs`    | implemented         | fetch or follow logs for a service                        |
