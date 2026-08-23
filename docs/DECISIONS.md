@@ -1073,13 +1073,18 @@ only genuinely unfinished checkpoints as `in_progress`.
 
 **Context.** Issue #83 found that repository caches, explicit credentials,
 Git-controlled Compose names, CLI diffs, local config permissions, and the
-build toolchain crossed trust boundaries without sufficient validation.
+build toolchain crossed trust boundaries without sufficient validation. A
+predictable cache root under the shared temporary directory could also be
+pre-seeded by another local user; changing its mode would not change ownership.
 
 **Decision.** Git cache names are the SHA-256 digest of a canonical,
 credential-free repository URL under a private user cache; cache paths reject
-symlinks, use mode `0700`, and verify the cached `origin` before reuse. Explicit
-SSH keys are read and parsed during source validation, and any failure is fatal
-rather than falling back to ambient credentials. Environment values in
+symlinks, use mode `0700`, and verify the cached `origin` before reuse.
+Automatic cache discovery uses the user cache directory, falls back only to
+the user config directory, and fails closed if neither provides a non-empty
+root; no shared temporary-directory fallback is used. Explicit SSH keys are
+read and parsed during source validation, and any failure is fatal rather than
+falling back to ambient credentials. Environment values in
 `accorda diff` are represented only as `<redacted>`/`<unset>`. Compose service
 names must start with an alphanumeric character, contain only Compose-safe
 identifier characters, and are passed after `--` when used as CLI operands.
@@ -1091,11 +1096,13 @@ on every reachable finding except the two Docker SDK advisories whose
 unreachable plugin/AuthZ paths are accepted in decision #25.
 
 **Consequence.** Cached state and ambient credentials can no longer silently
-change deployment identity, Git content cannot inject Compose flags or expose
-environment plaintext through default output, credential files are private,
-and release builds use a patched standard library with continuous vulnerability
-checking. This supersedes decision #24's Go 1.25.6 CI pin and minimum-toolchain
-choice.
+change deployment identity, and an attacker cannot regain cache control by
+pre-seeding a shared temporary path. Service accounts without a discoverable
+user cache or config directory must provide a valid user environment. Git
+content cannot inject Compose flags or expose environment plaintext through
+default output, credential files are private, and release builds use a patched
+standard library with continuous vulnerability checking. This supersedes
+decision #24's Go 1.25.6 CI pin and minimum-toolchain choice.
 
 ### 37. Full validation enforces aggregate statement coverage
 
@@ -1113,20 +1120,3 @@ commands. Sonar remains responsible for its distinct new-code coverage gate.
 **Consequence.** Contributors and CI receive the same validation and an
 immediate aggregate coverage regression signal. The local gate complements,
 rather than attempts to reproduce, Sonar's baseline-aware changed-line metric.
-
-### 38. Git cache discovery has no shared temporary fallback
-
-**Context.** A predictable cache root under the system temporary directory can
-be pre-created by another local user. Restricting its mode does not change
-ownership, so a privileged Accorda process could trust an attacker-controlled
-repository even after verifying its configured origin.
-
-**Decision.** Automatic Git cache discovery uses the current user's cache
-directory, falling back only to the current user's configuration directory. If
-neither lookup returns a non-empty private root, Git operations fail closed.
-Accorda never derives its repository cache from a shared temporary directory.
-
-**Consequence.** Service accounts without a discoverable user cache or config
-directory must provide a valid user environment rather than silently using a
-predictable shared path. An attacker cannot regain cache control by pre-seeding
-the former `/tmp` fallback.
