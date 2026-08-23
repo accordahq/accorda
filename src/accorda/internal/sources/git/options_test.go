@@ -36,7 +36,11 @@ func TestCacheDir(t *testing.T) {
 	baseDir := t.TempDir()
 	g := New(config.Source{URL: "https://example.com/acme/repo.git", Branch: "main"}, WithBaseDir(baseDir))
 	want := filepath.Join(baseDir, repoDirName("https://example.com/acme/repo.git"))
-	if got := g.cacheDir(); got != want {
+	got, err := g.cacheDir()
+	if err != nil {
+		t.Fatalf("cacheDir: %v", err)
+	}
+	if got != want {
 		t.Errorf("cacheDir() = %q, want %q", got, want)
 	}
 }
@@ -45,8 +49,13 @@ func TestCacheDir_CollidingLegacyURLsAreDistinct(t *testing.T) {
 	baseDir := t.TempDir()
 	first := New(config.Source{URL: "https://git.internal/acme/prod", Branch: "main"}, WithBaseDir(baseDir))
 	second := New(config.Source{URL: "https://git.internal/acme-prod", Branch: "main"}, WithBaseDir(baseDir))
-	if first.cacheDir() == second.cacheDir() {
-		t.Fatalf("cache paths collide: %q", first.cacheDir())
+	firstDir, firstErr := first.cacheDir()
+	secondDir, secondErr := second.cacheDir()
+	if firstErr != nil || secondErr != nil {
+		t.Fatalf("cacheDir() errors = %v, %v", firstErr, secondErr)
+	}
+	if firstDir == secondDir {
+		t.Fatalf("cache paths collide: %q", firstDir)
 	}
 }
 
@@ -59,14 +68,26 @@ func TestCacheBaseFallbacks(t *testing.T) {
 		userCache  func() (string, error)
 		userConfig func() (string, error)
 		want       string
+		wantErr    bool
 	}{
 		{name: "user cache", userCache: cache, userConfig: failure, want: "/private/cache/accorda/git"},
 		{name: "config fallback", userCache: failure, userConfig: configDir, want: "/private/config/accorda/git-cache"},
-		{name: "temp fallback", userCache: failure, userConfig: failure, want: filepath.Join(os.TempDir(), "accorda-private-git-cache")},
+		{name: "no private root", userCache: failure, userConfig: failure, wantErr: true},
+		{name: "empty roots", userCache: func() (string, error) { return "", nil }, userConfig: func() (string, error) { return " ", nil }, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := cacheBase(tc.userCache, tc.userConfig); got != tc.want {
+			got, err := cacheBase(tc.userCache, tc.userConfig)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "determine private cache root") {
+					t.Fatalf("cacheBase() error = %v, want private-root failure", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("cacheBase: %v", err)
+			}
+			if got != tc.want {
 				t.Fatalf("cacheBase() = %q, want %q", got, tc.want)
 			}
 		})

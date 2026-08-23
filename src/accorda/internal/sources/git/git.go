@@ -56,6 +56,9 @@ type Git struct {
 	// in New. It is applied to clone and fetch operations. Secret values
 	// are never logged (docs/ACCORDA.md §18, §56).
 	auth transportAuth
+	// cacheRoot discovers the platform-specific private cache base. Keeping
+	// this dependency explicit makes fail-closed discovery testable.
+	cacheRoot func() (string, error)
 }
 
 // transportAuth carries the go-git auth method and a flag distinguishing SSH
@@ -90,7 +93,7 @@ type transportAuth struct {
 // Secret values are never logged. Error messages reference field names, not
 // values.
 func New(src config.Source, opts ...Option) *Git {
-	g := &Git{Source: src}
+	g := &Git{Source: src, cacheRoot: defaultCacheBase}
 	for _, opt := range opts {
 		opt(g)
 	}
@@ -184,7 +187,10 @@ func (g *Git) Fetch(ctx context.Context) (sources.Commit, error) {
 	if err := g.ensureReady(ctx); err != nil {
 		return sources.Commit{}, err
 	}
-	dir := g.cacheDir()
+	dir, err := g.cacheDir()
+	if err != nil {
+		return sources.Commit{}, err
+	}
 	if err := secureCacheDir(dir); err != nil {
 		return sources.Commit{}, err
 	}
@@ -253,29 +259,47 @@ func (g *Git) ensureReady(ctx context.Context) error {
 
 // cacheDir returns the configured cache directory or derives a
 // collision-resistant identity under a user-private cache root.
-func (g *Git) cacheDir() string {
+func (g *Git) cacheDir() (string, error) {
 	if g.CacheDir != "" {
-		return g.CacheDir
+		return g.CacheDir, nil
 	}
 	base := g.BaseDir
 	if base == "" {
-		base = defaultCacheBase()
+		root := g.cacheRoot
+		if root == nil {
+			root = defaultCacheBase
+		}
+		var err error
+		base, err = root()
+		if err != nil {
+			return "", err
+		}
 	}
-	return filepath.Join(base, repoDirName(g.Source.URL))
+	return filepath.Join(base, repoDirName(g.Source.URL)), nil
 }
 
-func defaultCacheBase() string {
+func defaultCacheBase() (string, error) {
 	return cacheBase(os.UserCacheDir, os.UserConfigDir)
 }
 
-func cacheBase(userCacheDir, userConfigDir func() (string, error)) string {
-	if base, err := userCacheDir(); err == nil {
-		return filepath.Join(base, "accorda", "git")
+func cacheBase(userCacheDir, userConfigDir func() (string, error)) (string, error) {
+	cacheDir, cacheErr := userCacheDir()
+	if cacheErr == nil && strings.TrimSpace(cacheDir) != "" {
+		return filepath.Join(cacheDir, "accorda", "git"), nil
 	}
-	if base, err := userConfigDir(); err == nil {
-		return filepath.Join(base, "accorda", "git-cache")
+	configDir, configErr := userConfigDir()
+	if configErr == nil && strings.TrimSpace(configDir) != "" {
+		return filepath.Join(configDir, "accorda", "git-cache"), nil
 	}
-	return filepath.Join(os.TempDir(), "accorda-private-git-cache")
+	return "", fmt.Errorf("git source: determine private cache root: user cache: %v; user config: %v",
+		cacheRootError(cacheErr), cacheRootError(configErr))
+}
+
+func cacheRootError(err error) error {
+	if err != nil {
+		return err
+	}
+	return errors.New("empty path")
 }
 
 // secureCacheDir rejects symlinked cache paths and makes existing cache
@@ -435,7 +459,10 @@ func (g *Git) resolveCommit(ctx context.Context, ref *sources.Commit) (sources.C
 	if ref != nil && ref.SHA != "" {
 		return *ref, nil
 	}
-	dir := g.cacheDir()
+	dir, err := g.cacheDir()
+	if err != nil {
+		return sources.Commit{}, err
+	}
 	if exists, err := repoExists(dir); err != nil || !exists {
 		if err != nil {
 			return sources.Commit{}, fmt.Errorf("git source: inspect cache: %w", err)
@@ -460,7 +487,10 @@ func (g *Git) resolveCommit(ctx context.Context, ref *sources.Commit) (sources.C
 // from the commit tree and loaded from an in-memory file set.
 func (g *Git) parseServices(ctx context.Context, sha string) (map[string]state.Service, error) {
 	path := servicesPath(g.Source.Path)
-	dir := g.cacheDir()
+	dir, err := g.cacheDir()
+	if err != nil {
+		return nil, err
+	}
 
 	data, err := g.readServicesFile(ctx, dir, sha, path)
 	if err != nil {

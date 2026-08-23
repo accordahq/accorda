@@ -16,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 
 	"accorda/internal/config"
+	"accorda/internal/sources"
 )
 
 func TestFetchAndDesiredRejectInvalidSource(t *testing.T) {
@@ -25,6 +26,21 @@ func TestFetchAndDesiredRejectInvalidSource(t *testing.T) {
 	}
 	if _, err := g.Desired(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "url is required") {
 		t.Errorf("Desired() error = %v, want URL validation error", err)
+	}
+}
+
+func TestGitOperationsFailWithoutPrivateCacheRoot(t *testing.T) {
+	g := New(config.Source{URL: "https://example.com/repo.git", Branch: "main"})
+	g.cacheRoot = func() (string, error) { return "", errors.New("private root unavailable") }
+	if _, err := g.Fetch(t.Context()); err == nil || !strings.Contains(err.Error(), "private root unavailable") {
+		t.Fatalf("Fetch() error = %v, want cache-root failure", err)
+	}
+	if _, err := g.Desired(t.Context(), nil); err == nil || !strings.Contains(err.Error(), "private root unavailable") {
+		t.Fatalf("Desired(nil) error = %v, want cache-root failure", err)
+	}
+	ref := &sources.Commit{SHA: "abc", Branch: "main"}
+	if _, err := g.Desired(t.Context(), ref); err == nil || !strings.Contains(err.Error(), "private root unavailable") {
+		t.Fatalf("Desired(ref) error = %v, want cache-root failure", err)
 	}
 }
 
@@ -308,7 +324,15 @@ func TestApplyClientOptionsRejectsInvalidSSHState(t *testing.T) {
 
 func TestCacheDirDefaultsToUserCache(t *testing.T) {
 	g := New(config.Source{URL: "https://example.com/repo.git", Branch: "main"})
-	if got := g.cacheDir(); filepath.Dir(got) != filepath.Clean(defaultCacheBase()) {
-		t.Errorf("cacheDir() = %q, want path under %q", got, defaultCacheBase())
+	got, err := g.cacheDir()
+	if err != nil {
+		t.Fatalf("cacheDir: %v", err)
+	}
+	base, err := defaultCacheBase()
+	if err != nil {
+		t.Fatalf("defaultCacheBase: %v", err)
+	}
+	if filepath.Dir(got) != filepath.Clean(base) {
+		t.Errorf("cacheDir() = %q, want path under %q", got, base)
 	}
 }

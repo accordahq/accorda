@@ -1105,7 +1105,7 @@ suite could pass while aggregate coverage regressed, and local validation could
 diverge from the pull-request workflow.
 
 **Decision.** `scripts/test.sh` derives aggregate statement coverage from its
-Go coverage profile and fails below 80%. `ACCORDA_MIN_COVERAGE` may override
+Go coverage profile and fails below 85%. `ACCORDA_MIN_COVERAGE` may override
 the threshold for local diagnostics, while CI uses the repository default and
 invokes the same script instead of maintaining separate format, test, and build
 commands. Sonar remains responsible for its distinct new-code coverage gate.
@@ -1113,3 +1113,20 @@ commands. Sonar remains responsible for its distinct new-code coverage gate.
 **Consequence.** Contributors and CI receive the same validation and an
 immediate aggregate coverage regression signal. The local gate complements,
 rather than attempts to reproduce, Sonar's baseline-aware changed-line metric.
+
+### 38. Git cache discovery has no shared temporary fallback
+
+**Context.** A predictable cache root under the system temporary directory can
+be pre-created by another local user. Restricting its mode does not change
+ownership, so a privileged Accorda process could trust an attacker-controlled
+repository even after verifying its configured origin.
+
+**Decision.** Automatic Git cache discovery uses the current user's cache
+directory, falling back only to the current user's configuration directory. If
+neither lookup returns a non-empty private root, Git operations fail closed.
+Accorda never derives its repository cache from a shared temporary directory.
+
+**Consequence.** Service accounts without a discoverable user cache or config
+directory must provide a valid user environment rather than silently using a
+predictable shared path. An attacker cannot regain cache control by pre-seeding
+the former `/tmp` fallback.

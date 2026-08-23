@@ -106,7 +106,10 @@ source:
 - `auth.type: https` supplies the token directly to go-git's HTTP transport without changing the repository URL. Credentials are never placed on the command line or in logs.
 - An absent `auth` section means "use the ambient Git environment" (SSH agent, Git credential helpers), which remains the default for local development.
 
-The cache directory is configurable with `git.WithCacheDir` or derived under `git.WithBaseDir`; the default is a private per-user cache.
+The cache directory is configurable with `git.WithCacheDir` or derived under
+`git.WithBaseDir`; the default is a private per-user cache. Git operations fail
+closed when the platform cannot discover either a user cache or user config
+directory—there is no shared temporary-directory fallback.
 
 Unit tests cover the services-file parser and path/URL helpers. Integration tests (build tag `integration`, requiring the `git` executable) create a local repository, clone and check it out, and assert that `Fetch` returns the correct HEAD commit info and that `Desired` returns the declared services:
 
@@ -222,7 +225,7 @@ For full validation — gofmt check, build, unit suite, and the integration/E2E 
 scripts/test.sh
 ```
 
-The script also fails when aggregate statement coverage is below 80%. Set
+The script also fails when aggregate statement coverage is below 85%. Set
 `ACCORDA_MIN_COVERAGE` to exercise a different threshold locally; CI uses the
 repository default.
 
