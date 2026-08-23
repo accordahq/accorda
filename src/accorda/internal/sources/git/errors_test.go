@@ -7,8 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	gitlib "github.com/go-git/go-git/v6"
+	gitconfig "github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/object"
 
 	"accorda/internal/config"
 )
@@ -71,6 +76,141 @@ func TestFetchRejectsPreExistingNonRepositoryCache(t *testing.T) {
 	}
 	if data, err := os.ReadFile(marker); err != nil || string(data) != "keep" {
 		t.Fatalf("pre-existing cache content = %q, %v; want preserved", data, err)
+	}
+}
+
+func TestFetchReportsCacheAndRepositoryErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T) (string, string)
+		want  string
+	}{
+		{
+			name: "unsafe cache path",
+			setup: func(t *testing.T) (string, string) {
+				path := filepath.Join(t.TempDir(), "cache")
+				if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+					t.Fatalf("write cache file: %v", err)
+				}
+				return path, "https://example.com/repo.git"
+			},
+			want: "cache path",
+		},
+		{
+			name: "unsafe git metadata",
+			setup: func(t *testing.T) (string, string) {
+				dir := t.TempDir()
+				if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("not a directory"), 0o600); err != nil {
+					t.Fatalf("write .git file: %v", err)
+				}
+				return dir, "https://example.com/repo.git"
+			},
+			want: "inspect cache",
+		},
+		{
+			name: "missing origin",
+			setup: func(t *testing.T) (string, string) {
+				dir := initCacheRepository(t)
+				return dir, "https://example.com/repo.git"
+			},
+			want: "origin remote",
+		},
+		{
+			name: "fetch failure",
+			setup: func(t *testing.T) (string, string) {
+				dir := initCacheRepository(t)
+				url := filepath.Join(t.TempDir(), "missing-origin")
+				addOrigin(t, dir, url)
+				return dir, url
+			},
+			want: "fetch \"main\"",
+		},
+		{
+			name: "checkout failure",
+			setup: func(t *testing.T) (string, string) {
+				dir := initCacheRepository(t)
+				commitCacheBranch(t, dir, "main")
+				addOrigin(t, dir, dir)
+				corruptRepositoryIndex(t, dir)
+				return dir, dir
+			},
+			want: "index",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, url := tc.setup(t)
+			g := New(config.Source{URL: url, Branch: "main"}, WithCacheDir(dir))
+			if _, err := g.Fetch(t.Context()); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Fetch() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func initCacheRepository(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	repo, err := gitlib.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatalf("close repository: %v", err)
+	}
+	return dir
+}
+
+func addOrigin(t *testing.T, dir, url string) {
+	t.Helper()
+	repo, err := gitlib.PlainOpen(dir)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	defer func() { _ = repo.Close() }()
+	if _, err := repo.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{url}}); err != nil {
+		t.Fatalf("CreateRemote: %v", err)
+	}
+}
+
+func commitCacheBranch(t *testing.T, dir, branch string) {
+	t.Helper()
+	repo, err := gitlib.PlainOpen(dir)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	defer func() { _ = repo.Close() }()
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("Worktree: %v", err)
+	}
+	path := filepath.Join(dir, "README.md")
+	if err := os.WriteFile(path, []byte("cache fixture\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if _, err := worktree.Add("README.md"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	hash, err := worktree.Commit("fixture", &gitlib.CommitOptions{Author: &object.Signature{
+		Name: "Accorda Test", Email: "test@accorda.dev", When: time.Unix(1, 0).UTC(),
+	}})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := repo.Storer.SetReference(plumbing.NewHashReference(
+		plumbing.NewBranchReferenceName(branch), hash)); err != nil {
+		t.Fatalf("set branch: %v", err)
+	}
+}
+
+func corruptRepositoryIndex(t *testing.T, dir string) {
+	t.Helper()
+	path := filepath.Join(dir, ".git", "index")
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove index: %v", err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("create invalid index: %v", err)
 	}
 }
 
