@@ -172,14 +172,18 @@ that it could not be posted to GitHub.
 
 Gather the initial context with the bundled `scripts/prepare-issue-context.sh`
 instead of repeating the `gh`/`git` commands by hand. Pass the issue number; the
-script fetches the issue, finds the PRs that reference it, and prints the PR
+script fetches the issue, finds the PRs that reference it, and gathers the PR
 metadata, diff, CI checks, the local diff of each head branch against its base,
 and whether the working tree is on the PR head — all in one read-only call.
-Redirect the output to a file so the agent can load it into session memory:
+Run it without redirecting stdout:
 
 ```bash
-scripts/prepare-issue-context.sh <ISSUE> > /tmp/ctx.txt
+scripts/prepare-issue-context.sh <ISSUE>
 ```
+
+The script writes the complete context to a deterministic temporary file and
+prints that file's path. Read the reported file; redirecting stdout captures
+only the location notice, not the gathered context.
 
 Useful read-only commands include:
 
