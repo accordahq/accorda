@@ -120,6 +120,18 @@ go test ./internal/sources/git/ -tags integration
 
 Provider integrations (`internal/providers`) and the remaining target drivers will build on these interfaces in later milestones.
 
+## Secret handling
+
+Plaintext secrets stay in memory whenever possible. When a target renderer
+requires a file path, `internal/secrets.WithPlaintextFile` materializes the
+plaintext only under the memory-backed `/run/accorda` runtime directory, using
+a private `0700` directory and a `0600` file. The file exists only while the
+consumer callback runs and is removed immediately afterward, including when
+the callback returns an error or panics. Cleanup failures are surfaced to the
+caller rather than silently leaving plaintext behind. SOPS decryption remains
+separate from this lifecycle policy and is delegated to SOPS rather than
+implemented by Accorda.
+
 ## Compose target
 
 The Docker Compose target driver (`internal/targets/compose`, `docs/ACCORDA.md §8`) implements the `targets.Target` interface. The load/validate phase is implemented: `compose.LoadFile(path)` (or `compose.Parse(data)` for raw bytes) uses the [compose-go](https://github.com/compose-spec/compose-go) loader to parse the Compose file (handling the full Compose schema: interpolation, extends, short and long forms), then normalizes each service into a `state.Service` with image, command, environment, ports, volumes, networks, labels, healthcheck, and dependencies. Required fields are validated: a service must declare an image.

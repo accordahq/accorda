@@ -1120,3 +1120,26 @@ commands. Sonar remains responsible for its distinct new-code coverage gate.
 **Consequence.** Contributors and CI receive the same validation and an
 immediate aggregate coverage regression signal. The local gate complements,
 rather than attempts to reproduce, Sonar's baseline-aware changed-line metric.
+
+### 38. Plaintext files have a callback-scoped runtime lifecycle
+
+**Context.** Issue #23 and `docs/ACCORDA.md` §18 require plaintext secrets to
+remain in memory whenever possible and, when a file is unavoidable, to use a
+memory-backed runtime location with restrictive permissions and immediate,
+verified cleanup. SOPS decryption (issue #22) needs this policy before it can
+safely hand plaintext to target renderers.
+
+**Decision.** `internal/secrets.WithPlaintextFile` is the single file-backed
+plaintext boundary. It materializes plaintext only under `/run/accorda`,
+requires the runtime directory to be private (`0700` or stricter) and not a
+symbolic link, creates a cryptographically unpredictable file with mode `0600`,
+and exposes its path only for the duration of a callback. A deferred removal
+runs after callback success, error, or panic; removal failures are joined with
+the callback error and returned instead of being hidden. The directory remains
+for reuse but never contains plaintext outside the callback lifetime. SOPS
+continues to own cryptography; this package owns only plaintext lifecycle and
+shared redaction.
+
+**Consequence.** Future decryptors and target renderers cannot choose ad hoc
+persistent temporary locations. Cleanup behavior and permissions are enforced
+centrally and covered by tests before SOPS integration begins.
