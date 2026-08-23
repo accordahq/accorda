@@ -76,14 +76,15 @@ func runSync(cmd *cobra.Command, dir string, watch bool) error {
 		WithEnvironment(proj.Environment).
 		WithReceiptStore(store).
 		WithLocker(locking.NewFileLocker(deploymentLockPath(dir, proj.Target)))
+	ctx := cmd.Context()
 	if watch {
-		return r.Run(cmd.Context(), proj.Sync.Interval, func(res *reconcile.Result) {
+		return r.Run(ctx, proj.Sync.Interval, func(res *reconcile.Result) {
 			if resultErr := writeSyncResult(cmd, res); resultErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "sync: %v\n", resultErr)
 			}
 		})
 	}
-	return writeSyncResult(cmd, r.Reconcile(cmd.Context()))
+	return writeSyncResult(cmd, r.Reconcile(ctx))
 }
 
 // writeSyncResult prints one reconciliation cycle. A failed cycle is returned
