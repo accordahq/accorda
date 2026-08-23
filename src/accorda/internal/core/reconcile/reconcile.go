@@ -287,7 +287,9 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) *Result {
 		return res
 	}
 	res.Commit = commit.SHA
-	if r.lastDesired != nil && commit.SHA == r.lastDesired.Commit {
+	// Durable recovery takes precedence over the cached-HEAD shortcut so an
+	// unfinished receipt can be resumed and closed even when Git is unchanged.
+	if r.pending == nil && r.lastDesired != nil && commit.SHA == r.lastDesired.Commit {
 		r.unchanged = true
 		return r.checkDrift(ctx, res, commit)
 	}

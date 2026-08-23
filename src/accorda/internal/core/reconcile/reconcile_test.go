@@ -835,7 +835,7 @@ func TestReconcile_NoopPlan_NoReceipt(t *testing.T) {
 	requireReceiptCount(t, store, 0)
 }
 
-func TestReconcile_ResumesUnfinishedDeployment(t *testing.T) {
+func TestReconcile_ResumesUnfinishedDeploymentAtCachedHead(t *testing.T) {
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123", Branch: "main"},
 		desired: healthyDesired(),
@@ -848,7 +848,9 @@ func TestReconcile_ResumesUnfinishedDeployment(t *testing.T) {
 		Changes:      []string{"api"},
 	}}}
 
-	res := New(src, tgt, events.NewBus()).WithReceiptStore(store).Reconcile(context.Background())
+	r := New(src, tgt, events.NewBus()).WithReceiptStore(store)
+	r.lastDesired = healthyDesired()
+	res := r.Reconcile(context.Background())
 
 	if res.Phase != PhaseSynced {
 		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
@@ -857,6 +859,9 @@ func TestReconcile_ResumesUnfinishedDeployment(t *testing.T) {
 	recovered := store.appended[1]
 	if recovered.DeploymentID != "dep_recover" || recovered.Result != history.OutcomeHealthy {
 		t.Errorf("recovered receipt = %+v", recovered)
+	}
+	if tgt.planCalls != 1 {
+		t.Errorf("Plan calls = %d, want 1 recovery plan", tgt.planCalls)
 	}
 	if want := []string{"api"}; !reflect.DeepEqual(recovered.Changes, want) {
 		t.Errorf("recovered changes = %v, want %v", recovered.Changes, want)
