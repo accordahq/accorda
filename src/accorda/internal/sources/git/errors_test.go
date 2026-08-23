@@ -58,6 +58,21 @@ func TestCloneReportsCacheParentError(t *testing.T) {
 	}
 }
 
+func TestFetchRejectsPreExistingNonRepositoryCache(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "user-owned")
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	g := New(config.Source{URL: "https://example.com/repo.git", Branch: "main"}, WithCacheDir(dir))
+	if _, err := g.Fetch(t.Context()); err == nil {
+		t.Fatal("Fetch() error = nil, want pre-existing cache rejection")
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "keep" {
+		t.Fatalf("pre-existing cache content = %q, %v; want preserved", data, err)
+	}
+}
+
 func TestResolveCommitReportsCacheInspectionError(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(parent, []byte("not a directory"), 0o600); err != nil {
@@ -117,7 +132,9 @@ func TestApplyClientOptions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var opts []client.Option
-			tt.git.applyClientOptions(&opts)
+			if err := tt.git.applyClientOptions(&opts); err != nil {
+				t.Fatalf("applyClientOptions: %v", err)
+			}
 			if len(opts) != tt.want {
 				t.Errorf("options = %d, want %d", len(opts), tt.want)
 			}
@@ -125,9 +142,9 @@ func TestApplyClientOptions(t *testing.T) {
 	}
 }
 
-func TestCacheDirDefaultsToTemp(t *testing.T) {
+func TestCacheDirDefaultsToUserCache(t *testing.T) {
 	g := New(config.Source{URL: "https://example.com/repo.git", Branch: "main"})
-	if got := g.cacheDir(); filepath.Dir(got) != filepath.Clean(os.TempDir()) {
-		t.Errorf("cacheDir() = %q, want path under %q", got, os.TempDir())
+	if got := g.cacheDir(); filepath.Dir(got) != filepath.Clean(defaultCacheBase()) {
+		t.Errorf("cacheDir() = %q, want path under %q", got, defaultCacheBase())
 	}
 }

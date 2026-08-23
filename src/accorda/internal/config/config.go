@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,13 +81,12 @@ type Source struct {
 // (docs/ACCORDA.md §13, §15). The Type selects the interpretation of the
 // remaining fields:
 //
-//   - ssh:   Auth.Key is a filesystem path to a private key. It is surfaced
-//     to Git via GIT_SSH_COMMAND; the key material is never read or logged
-//     by Accorda.
-//   - https: Auth.Token is a personal access token or installation token
-//     embedded in the remote URL (or supplied via the Git credential
-//     helper environment). Auth.Username is optional and defaults to the
-//     user embedded in the URL or "oauth2" for token auth.
+//   - ssh:   Auth.Key is a filesystem path to a private key. The Git adapter
+//     reads and parses it for go-git's SSH transport; key material is never
+//     logged.
+//   - https: Auth.Token is a personal access token or installation token used
+//     as go-git HTTP basic authentication. Auth.Username is optional and
+//     defaults to the user embedded in the URL or "oauth2" for token auth.
 //
 // When Type is empty, the Git source inherits the user's environment (SSH
 // agent, Git credential helpers), which remains the default for local
@@ -228,7 +228,40 @@ func Load(dir string) (*Project, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	return Parse(data)
+	project, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCredentialFileMode(path, project); err != nil {
+		return nil, err
+	}
+	return project, nil
+}
+
+func validateCredentialFileMode(path string, project *Project) error {
+	if project == nil || !hasInlineCredential(project.Source) {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("config: inspect permissions: %w", err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("config: %q contains credentials and must have permissions 0600 or stricter", File)
+	}
+	return nil
+}
+
+func hasInlineCredential(source Source) bool {
+	if strings.TrimSpace(source.Auth.Token) != "" {
+		return true
+	}
+	parsed, err := url.Parse(strings.TrimSpace(source.URL))
+	if err != nil || parsed.User == nil {
+		return false
+	}
+	_, hasPassword := parsed.User.Password()
+	return hasPassword
 }
 
 // Parse decodes and validates an Accorda project file from raw YAML bytes.

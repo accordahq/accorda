@@ -2,9 +2,13 @@ package git
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-git/v6"
+	gitconfig "github.com/go-git/go-git/v6/config"
 
 	"accorda/internal/config"
 )
@@ -30,9 +34,119 @@ func TestOptions(t *testing.T) {
 func TestCacheDir(t *testing.T) {
 	baseDir := t.TempDir()
 	g := New(config.Source{URL: "https://example.com/acme/repo.git", Branch: "main"}, WithBaseDir(baseDir))
-	want := filepath.Join(baseDir, "accorda-example.com-acme-repo")
+	want := filepath.Join(baseDir, repoDirName("https://example.com/acme/repo.git"))
 	if got := g.cacheDir(); got != want {
 		t.Errorf("cacheDir() = %q, want %q", got, want)
+	}
+}
+
+func TestCacheDir_CollidingLegacyURLsAreDistinct(t *testing.T) {
+	baseDir := t.TempDir()
+	first := New(config.Source{URL: "https://git.internal/acme/prod", Branch: "main"}, WithBaseDir(baseDir))
+	second := New(config.Source{URL: "https://git.internal/acme-prod", Branch: "main"}, WithBaseDir(baseDir))
+	if first.cacheDir() == second.cacheDir() {
+		t.Fatalf("cache paths collide: %q", first.cacheDir())
+	}
+}
+
+func TestVerifyOrigin_RejectsMismatchedCache(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cache")
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	defer func() { _ = repo.Close() }()
+	if _, err := repo.CreateRemote(&gitconfig.RemoteConfig{
+		Name: "origin", URLs: []string{"https://git.internal/acme/other.git"},
+	}); err != nil {
+		t.Fatalf("CreateRemote: %v", err)
+	}
+	g := New(config.Source{URL: "https://git.internal/acme/prod.git", Branch: "main"}, WithCacheDir(dir))
+	if err := g.verifyOrigin(dir); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("verifyOrigin() error = %v, want mismatch", err)
+	}
+}
+
+func TestVerifyOrigin_AcceptsExactMatch(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cache")
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	defer func() { _ = repo.Close() }()
+	if _, err := repo.CreateRemote(&gitconfig.RemoteConfig{
+		Name: "origin", URLs: []string{"https://git.internal/acme/prod.git"},
+	}); err != nil {
+		t.Fatalf("CreateRemote: %v", err)
+	}
+	g := New(config.Source{URL: "https://git.internal/acme/prod.git", Branch: "main"}, WithCacheDir(dir))
+	if err := g.verifyOrigin(dir); err != nil {
+		t.Fatalf("verifyOrigin() error = %v, want nil", err)
+	}
+}
+
+func TestVerifyOrigin_RejectsDifferentSSHUser(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cache")
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	defer func() { _ = repo.Close() }()
+	if _, err := repo.CreateRemote(&gitconfig.RemoteConfig{
+		Name: "origin", URLs: []string{"ssh://git@git.internal/acme/prod.git"},
+	}); err != nil {
+		t.Fatalf("CreateRemote: %v", err)
+	}
+	g := New(config.Source{URL: "ssh://deploy@git.internal/acme/prod.git", Branch: "main"}, WithCacheDir(dir))
+	if err := g.verifyOrigin(dir); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("verifyOrigin() error = %v, want exact-origin mismatch", err)
+	}
+}
+
+func TestSecureCacheDir_RejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	link := filepath.Join(root, "cache")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if err := secureCacheDir(link); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("secureCacheDir() error = %v, want symlink rejection", err)
+	}
+}
+
+func TestSecureCacheDir_RestrictsPermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cache")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := secureCacheDir(dir); err != nil {
+		t.Fatalf("secureCacheDir: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("cache permissions = %o, want 700", got)
+	}
+}
+
+func TestEnsurePrivateCacheParent_RejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	link := filepath.Join(root, "parent")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if err := ensurePrivateCacheParent(link); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("ensurePrivateCacheParent() error = %v, want symlink rejection", err)
 	}
 }
 
@@ -66,8 +180,8 @@ func TestRepoExists(t *testing.T) {
 		t.Errorf("repoExists(empty) = %v, %v; want false, nil", exists, err)
 	}
 	gitPath := filepath.Join(dir, ".git")
-	if err := writeFile(gitPath, "gitdir"); err != nil {
-		t.Fatalf("write .git: %v", err)
+	if err := os.Mkdir(gitPath, 0o700); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
 	}
 	if exists, err := repoExists(dir); err != nil || !exists {
 		t.Errorf("repoExists(.git) = %v, %v; want true, nil", exists, err)

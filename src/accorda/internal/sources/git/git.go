@@ -2,9 +2,12 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,7 +45,7 @@ type Git struct {
 	// a directory under BaseDir named after the repo is used.
 	CacheDir string
 	// BaseDir is the root used to derive CacheDir when CacheDir is empty.
-	// If both are empty, the system temp directory is used.
+	// If both are empty, a private directory under the user's cache is used.
 	BaseDir string
 	// SSHCommand overrides the GIT_SSH_COMMAND used for SSH transports.
 	// Kept for API compatibility; with go-git the SSH key is read from
@@ -59,11 +62,11 @@ type Git struct {
 // from HTTPS so callers can avoid importing the transport packages.
 type transportAuth struct {
 	method    any
+	err       error
 	isSSH     bool
 	isHTTPS   bool
 	sshUser   string
 	sshKey    []byte
-	sshPass   string
 	httpUser  string
 	httpToken string
 }
@@ -141,6 +144,7 @@ func (g *Git) Validate(_ context.Context) error {
 	if strings.TrimSpace(g.Source.Branch) == "" {
 		return errors.New("git source: branch is required")
 	}
+	g.applyAuth()
 	return g.validateAuth()
 }
 
@@ -164,6 +168,9 @@ func (g *Git) validateAuth() error {
 		return fmt.Errorf("git source: auth.type %q is not supported (want %q or %q)",
 			a.Type, config.AuthSSH, config.AuthHTTPS)
 	}
+	if g.auth.err != nil {
+		return g.auth.err
+	}
 	return nil
 }
 
@@ -178,6 +185,9 @@ func (g *Git) Fetch(ctx context.Context) (sources.Commit, error) {
 		return sources.Commit{}, err
 	}
 	dir := g.cacheDir()
+	if err := secureCacheDir(dir); err != nil {
+		return sources.Commit{}, err
+	}
 	exists, err := repoExists(dir)
 	if err != nil {
 		return sources.Commit{}, fmt.Errorf("git source: inspect cache: %w", err)
@@ -187,6 +197,9 @@ func (g *Git) Fetch(ctx context.Context) (sources.Commit, error) {
 			return sources.Commit{}, err
 		}
 	} else {
+		if err := g.verifyOrigin(dir); err != nil {
+			return sources.Commit{}, err
+		}
 		if err := g.fetch(ctx, dir); err != nil {
 			return sources.Commit{}, err
 		}
@@ -238,17 +251,63 @@ func (g *Git) ensureReady(ctx context.Context) error {
 	return g.Validate(ctx)
 }
 
-// cacheDir returns the configured cache directory or derives one under
-// BaseDir (or the temp directory) named after the repository URL.
+// cacheDir returns the configured cache directory or derives a
+// collision-resistant identity under a user-private cache root.
 func (g *Git) cacheDir() string {
 	if g.CacheDir != "" {
 		return g.CacheDir
 	}
 	base := g.BaseDir
 	if base == "" {
-		base = os.TempDir()
+		base = defaultCacheBase()
 	}
 	return filepath.Join(base, repoDirName(g.Source.URL))
+}
+
+func defaultCacheBase() string {
+	if base, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(base, "accorda", "git")
+	}
+	if base, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(base, "accorda", "git-cache")
+	}
+	return filepath.Join(os.TempDir(), "accorda-private-git-cache")
+}
+
+// secureCacheDir rejects symlinked cache paths and makes existing cache
+// directories private before they are inspected or reused.
+func secureCacheDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("git source: inspect cache path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("git source: cache path must be a private directory, not a symlink or file")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("git source: secure cache directory: %w", err)
+	}
+	return nil
+}
+
+func ensurePrivateCacheParent(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("git source: create cache parent: %w", err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("git source: inspect cache parent: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("git source: cache parent must be a private directory, not a symlink or file")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("git source: secure cache parent: %w", err)
+	}
+	return nil
 }
 
 // clone clones the configured URL into dir using go-git. Auth is applied
@@ -256,8 +315,8 @@ func (g *Git) cacheDir() string {
 // references the clean Source.URL so credentials are never leaked
 // (docs/ACCORDA.md §18, §56).
 func (g *Git) clone(ctx context.Context, dir string) error {
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return fmt.Errorf("git source: create cache parent: %w", err)
+	if err := ensurePrivateCacheParent(filepath.Dir(dir)); err != nil {
+		return err
 	}
 	cloneOpts := &git.CloneOptions{
 		URL:           g.Source.URL,
@@ -266,9 +325,33 @@ func (g *Git) clone(ctx context.Context, dir string) error {
 		SingleBranch:  true,
 		NoCheckout:    true,
 	}
-	g.applyClientOptions(&cloneOpts.ClientOptions)
+	if err := g.applyClientOptions(&cloneOpts.ClientOptions); err != nil {
+		return err
+	}
 	if _, err := git.PlainCloneContext(ctx, dir, cloneOpts); err != nil {
 		return fmt.Errorf("git source: clone %q: %w", RedactURL(g.Source.URL), err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("git source: secure cloned repository: %w", err)
+	}
+	return nil
+}
+
+// verifyOrigin ensures a pre-existing cache belongs to the configured
+// repository before go-git follows its stored origin.
+func (g *Git) verifyOrigin(dir string) error {
+	r, err := git.PlainOpen(dir)
+	if err != nil {
+		return fmt.Errorf("git source: open cache: %w", err)
+	}
+	defer func() { _ = r.Close() }()
+	remote, err := r.Remote("origin")
+	if err != nil {
+		return fmt.Errorf("git source: origin remote: %w", err)
+	}
+	urls := remote.Config().URLs
+	if len(urls) != 1 || strings.TrimSpace(urls[0]) != strings.TrimSpace(g.Source.URL) {
+		return errors.New("git source: cached origin does not match configured source")
 	}
 	return nil
 }
@@ -289,7 +372,9 @@ func (g *Git) fetch(ctx context.Context, dir string) error {
 			gitconfig.RefSpec("+refs/heads/" + g.Source.Branch + ":refs/remotes/origin/" + g.Source.Branch),
 		},
 	}
-	g.applyClientOptions(&fetchOpts.ClientOptions)
+	if err := g.applyClientOptions(&fetchOpts.ClientOptions); err != nil {
+		return err
+	}
 	if err := remote.FetchContext(ctx, fetchOpts); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("git source: fetch %q: %w", g.Source.Branch, err)
 	}
@@ -459,7 +544,7 @@ func (g *Git) applyAuth() {
 		}
 		keyBytes, err := os.ReadFile(key)
 		if err != nil {
-			// Defer the error to clone/fetch time; don't fail construction.
+			g.auth.err = fmt.Errorf("git source: read auth.key: %w", err)
 			return
 		}
 		user := strings.TrimSpace(g.Source.Auth.Username)
@@ -469,6 +554,12 @@ func (g *Git) applyAuth() {
 		g.auth.isSSH = true
 		g.auth.sshUser = user
 		g.auth.sshKey = keyBytes
+		method, err := gossh.NewPublicKeys(user, keyBytes, "")
+		if err != nil {
+			g.auth.err = fmt.Errorf("git source: parse auth.key: %w", err)
+			return
+		}
+		g.auth.method = method
 	case config.AuthHTTPS:
 		user := strings.TrimSpace(g.Source.Auth.Username)
 		if user == "" {
@@ -483,12 +574,15 @@ func (g *Git) applyAuth() {
 // applyClientOptions configures the go-git client options with the derived
 // auth method. For SSH it creates a PublicKeys auth from the in-memory key;
 // for HTTPS it creates a BasicAuth from the token.
-func (g *Git) applyClientOptions(opts *[]client.Option) {
+func (g *Git) applyClientOptions(opts *[]client.Option) error {
+	if g.auth.err != nil {
+		return g.auth.err
+	}
 	switch {
 	case g.auth.isSSH:
-		method, err := gossh.NewPublicKeys(g.auth.sshUser, g.auth.sshKey, g.auth.sshPass)
-		if err != nil {
-			return
+		method, ok := g.auth.method.(*gossh.PublicKeys)
+		if !ok || method == nil {
+			return errors.New("git source: explicit SSH authentication is not initialized")
 		}
 		*opts = append(*opts, client.WithSSHAuth(method))
 	case g.auth.isHTTPS:
@@ -498,6 +592,7 @@ func (g *Git) applyClientOptions(opts *[]client.Option) {
 		}
 		*opts = append(*opts, client.WithHTTPAuth(method))
 	}
+	return nil
 }
 
 // defaultSSHUser returns the username to use for SSH auth when none is
@@ -521,14 +616,16 @@ func defaultHTTPSUser(rawURL string) string {
 
 // repoExists reports whether dir looks like an existing Git repository.
 func repoExists(dir string) (bool, error) {
-	info, err := os.Stat(filepath.Join(dir, ".git"))
+	info, err := os.Lstat(filepath.Join(dir, ".git"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
 		return false, err
 	}
-	_ = info
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false, errors.New("cache .git path must be a directory, not a symlink or file")
+	}
 	return true, nil
 }
 
@@ -556,27 +653,38 @@ func isComposeFile(path string) bool {
 	}
 }
 
-// repoDirName derives a filesystem-safe directory name from a repository
-// URL by stripping scheme, credentials, and trailing .git.
-func repoDirName(url string) string {
-	s := url
-	s = strings.TrimSpace(s)
-	if i := strings.Index(s, "://"); i >= 0 {
-		s = s[i+3:]
-	} else if strings.HasPrefix(s, "git@") {
-		s = strings.Replace(s, ":", "/", 1)
-		s = strings.TrimPrefix(s, "git@")
+// repoDirName hashes a canonical, credential-free repository identity so
+// distinct URLs cannot collide through lossy filename replacement.
+func repoDirName(rawURL string) string {
+	sum := sha256.Sum256([]byte(canonicalRepositoryURL(rawURL)))
+	return "accorda-" + hex.EncodeToString(sum[:])
+}
+
+func canonicalRepositoryURL(rawURL string) string {
+	s := strings.TrimSpace(RedactURL(rawURL))
+	if !strings.Contains(s, "://") {
+		if at := strings.LastIndex(s, "@"); at >= 0 {
+			s = s[at+1:]
+		}
+		if colon := strings.Index(s, ":"); colon >= 0 {
+			s = "ssh://" + strings.ToLower(s[:colon]) + "/" + s[colon+1:]
+		} else {
+			return filepath.Clean(s)
+		}
 	}
-	if i := strings.Index(s, "@"); i >= 0 {
-		s = s[i+1:]
+	u, err := url.Parse(s)
+	if err != nil {
+		return s
 	}
-	s = strings.TrimSuffix(s, ".git")
-	s = strings.Trim(s, "/")
-	s = strings.ReplaceAll(s, string(filepath.Separator), "-")
-	if s == "" {
-		s = "accorda-repo"
+	u.User = nil
+	u.Scheme = strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	if port := u.Port(); port != "" {
+		host += ":" + port
 	}
-	return "accorda-" + s
+	u.Host = host
+	u.Path = strings.TrimSuffix(strings.TrimRight(u.Path, "/"), ".git")
+	return u.String()
 }
 
 // urlUser extracts the userinfo username from rawURL, if present.

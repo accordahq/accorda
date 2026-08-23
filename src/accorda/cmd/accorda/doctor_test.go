@@ -53,6 +53,37 @@ target:
 	}
 }
 
+func TestDiagnoseRejectsInvalidExplicitSSHKey(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "invalid.key")
+	if err := os.WriteFile(keyPath, []byte("not a private key"), 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	project := `version: 1
+environment: production
+source:
+  type: git
+  url: ssh://git@git.example.test/acme/app.git
+  branch: main
+  auth:
+    type: ssh
+    key: ` + keyPath + `
+target:
+  type: compose
+  file: compose.yaml
+`
+	if err := os.WriteFile(filepath.Join(dir, config.File), []byte(project), 0o600); err != nil {
+		t.Fatalf("write project: %v", err)
+	}
+	results := diagnose(t.Context(), dir)
+	if len(results) < 2 || results[1].status != doctorFail || !strings.Contains(results[1].detail, "parse auth.key") {
+		t.Fatalf("diagnose() source result = %+v, want invalid-key failure", results)
+	}
+	if strings.Contains(results[1].detail, "not a private key") {
+		t.Fatalf("diagnose() leaked key material: %q", results[1].detail)
+	}
+}
+
 func TestWriteDoctorReport(t *testing.T) {
 	cases := []struct {
 		name       string

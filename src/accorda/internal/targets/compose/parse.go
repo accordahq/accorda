@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"time"
@@ -14,6 +15,8 @@ import (
 
 	"accorda/internal/core/state"
 )
+
+var composeServiceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // LoadFile reads and validates a Docker Compose file at path, returning the
 // normalized services keyed by service name. The path is resolved relative
@@ -112,6 +115,9 @@ func normalizeService(name string, sc types.ServiceConfig) (state.Service, error
 // image; Accorda's service model is image-centric, so a build-only service
 // fails validation at load time.
 func validateService(name string, svc state.Service) error {
+	if err := validateServiceName(name); err != nil {
+		return err
+	}
 	if svc.Image == "" {
 		return fmt.Errorf("service %q: image is required", name)
 	}
@@ -124,6 +130,13 @@ func validateService(name string, svc state.Service) error {
 		if v.Target == "" {
 			return fmt.Errorf("service %q: volumes[%d]: target is required", name, i)
 		}
+	}
+	return nil
+}
+
+func validateServiceName(name string) error {
+	if !composeServiceNamePattern.MatchString(name) {
+		return fmt.Errorf("service %q: name must start with an alphanumeric character and contain only alphanumerics, dots, underscores, or hyphens", name)
 	}
 	return nil
 }

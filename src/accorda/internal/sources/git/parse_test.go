@@ -1,6 +1,7 @@
 package git
 
 import (
+	"strings"
 	"testing"
 
 	"accorda/internal/config"
@@ -25,19 +26,23 @@ func TestServicesPath(t *testing.T) {
 }
 
 func TestRepoDirName(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"git@github.com:acme/infra.git", "accorda-github.com-acme-infra"},
-		{"ssh://git@git.internal/acme/prod.git", "accorda-git.internal-acme-prod"},
-		{"https://git.internal/acme/prod", "accorda-git.internal-acme-prod"},
-		{"https://user:token@git.internal/acme/prod", "accorda-git.internal-acme-prod"},
-		{"", "accorda-accorda-repo"},
+	cases := []string{
+		"git@github.com:acme/infra.git",
+		"ssh://git@git.internal/acme/prod.git",
+		"https://git.internal/acme/prod",
+		"https://user:token@git.internal/acme/prod",
+		"",
 	}
-	for _, c := range cases {
-		if got := repoDirName(c.in); got != c.want {
-			t.Errorf("repoDirName(%q) = %q, want %q", c.in, got, c.want)
+	for _, input := range cases {
+		got := repoDirName(input)
+		if !strings.HasPrefix(got, "accorda-") || len(got) != len("accorda-")+64 {
+			t.Errorf("repoDirName(%q) = %q, want accorda- plus SHA-256 hex", input, got)
 		}
+	}
+	clean := repoDirName("https://git.internal/acme/prod")
+	credentialed := repoDirName("https://user:token@git.internal/acme/prod.git/")
+	if clean != credentialed {
+		t.Errorf("canonical repository identities differ: %q != %q", clean, credentialed)
 	}
 }
 

@@ -279,6 +279,18 @@ func TestParse_BuildWithoutImage_IsError(t *testing.T) {
 	}
 }
 
+func TestParse_RejectsOptionShapedServiceNames(t *testing.T) {
+	for _, name := range []string{"-V", "--remove-orphans", "-d"} {
+		t.Run(name, func(t *testing.T) {
+			data := []byte("services:\n  " + name + ":\n    image: api:1\n")
+			_, err := Parse(data)
+			if err == nil || !strings.Contains(err.Error(), "name must start with an alphanumeric") {
+				t.Fatalf("Parse() error = %v, want invalid service name", err)
+			}
+		})
+	}
+}
+
 func TestParse_PortWithoutContainer_IsError(t *testing.T) {
 	data := []byte(`services:
   api:

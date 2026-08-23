@@ -24,6 +24,7 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/history"
 	"accorda/internal/core/state"
+	"accorda/internal/secrets"
 	"accorda/internal/sources"
 	"accorda/internal/sources/git"
 	"accorda/internal/targets/compose"
@@ -209,7 +210,7 @@ func diffService(d, s state.Service) []diffNode {
 	var fields []diffNode
 	fields = append(fields, diffScalar("image", d.Image, s.Image)...)
 	fields = append(fields, diffJoined("command", d.Command, s.Command)...)
-	fields = append(fields, diffKV("environment", d.Env, s.Env)...)
+	fields = append(fields, diffSensitiveKV("environment", d.Env, s.Env)...)
 	fields = append(fields, diffJoined("ports", compose.StringPorts(d.Ports), compose.StringPorts(s.Ports))...)
 	fields = append(fields, diffJoined("volumes", compose.StringVolumes(d.Volumes), compose.StringVolumes(s.Volumes))...)
 	fields = append(fields, diffJoined("networks", d.Networks, s.Networks)...)
@@ -239,25 +240,13 @@ func diffJoined(name string, deployed, desired []string) []diffNode {
 	return []diffNode{{label: name, hasValue: true, deployed: strings.Join(deployed, ", "), desired: strings.Join(desired, ", ")}}
 }
 
-// diffKV returns a nested node of key→deployed/desired leaves for map-typed
-// fields (environment, labels) when any key differs. The keys are sorted for
+// diffKV returns a nested node of key→deployed/desired leaves for non-sensitive
+// map-typed fields when any key differs. The keys are sorted for
 // deterministic output (docs/DECISIONS.md #12).
 func diffKV(name string, deployed, desired map[string]string) []diffNode {
-	keys := make(map[string]struct{}, len(deployed)+len(desired))
-	for k := range deployed {
-		keys[k] = struct{}{}
-	}
-	for k := range desired {
-		keys[k] = struct{}{}
-	}
-	sorted := make([]string, 0, len(keys))
-	for k := range keys {
-		sorted = append(sorted, k)
-	}
-	sort.Strings(sorted)
-
-	children := make([]diffNode, 0, len(sorted))
-	for _, k := range sorted {
+	keys := sortedMapKeys(deployed, desired)
+	children := make([]diffNode, 0, len(keys))
+	for _, k := range keys {
 		if deployed[k] == desired[k] {
 			continue
 		}
@@ -267,6 +256,47 @@ func diffKV(name string, deployed, desired map[string]string) []diffNode {
 		return nil
 	}
 	return []diffNode{{label: name, children: children}}
+}
+
+// diffSensitiveKV reports changed keys without exposing either plaintext
+// value. Presence is retained so additions and removals remain clear.
+func diffSensitiveKV(name string, deployed, desired map[string]string) []diffNode {
+	keys := sortedMapKeys(deployed, desired)
+	children := make([]diffNode, 0, len(keys))
+	for _, key := range keys {
+		deployedValue, deployedPresent := deployed[key]
+		desiredValue, desiredPresent := desired[key]
+		if deployedPresent == desiredPresent && deployedValue == desiredValue {
+			continue
+		}
+		children = append(children, diffNode{
+			label:    key,
+			hasValue: true,
+			deployed: secrets.DisplayValue(deployedValue, deployedPresent),
+			desired:  secrets.DisplayValue(desiredValue, desiredPresent),
+		})
+	}
+	if len(children) == 0 {
+		return nil
+	}
+	return []diffNode{{label: name, children: children}}
+}
+
+func sortedMapKeys(first, second map[string]string) []string {
+	keys := make(map[string]struct{}, len(first)+len(second))
+	for key := range first {
+		keys[key] = struct{}{}
+	}
+	for key := range second {
+		keys[key] = struct{}{}
+	}
+	sorted := make([]string, 0, len(keys))
+	for key := range keys {
+		sorted = append(sorted, key)
+	}
+	sort.Strings(sorted)
+
+	return sorted
 }
 
 // diffHealthcheck returns a leaf node when the two healthchecks differ. A

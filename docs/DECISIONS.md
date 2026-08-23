@@ -1067,3 +1067,31 @@ reconciles cannot mutate one target concurrently; and in-flight Git updates are
 not lost. The append-only journal retains immutable checkpoints while
 `accorda history` collapses a closed checkpoint into its terminal row and shows
 only genuinely unfinished checkpoints as `in_progress`.
+
+### 36. MVP command trust boundaries fail closed
+
+**Context.** Issue #83 found that repository caches, explicit credentials,
+Git-controlled Compose names, CLI diffs, local config permissions, and the
+build toolchain crossed trust boundaries without sufficient validation.
+
+**Decision.** Git cache names are the SHA-256 digest of a canonical,
+credential-free repository URL under a private user cache; cache paths reject
+symlinks, use mode `0700`, and verify the cached `origin` before reuse. Explicit
+SSH keys are read and parsed during source validation, and any failure is fatal
+rather than falling back to ambient credentials. Environment values in
+`accorda diff` are represented only as `<redacted>`/`<unset>`. Compose service
+names must start with an alphanumeric character, contain only Compose-safe
+identifier characters, and are passed after `--` when used as CLI operands.
+`accorda init` creates `accorda.yaml` exclusively with mode `0600`, while the
+loader rejects group/world-readable files containing an HTTPS token or inline
+URL password. The
+module and CI require Go 1.25.13, and CI runs symbol-level `govulncheck`, failing
+on every reachable finding except the two Docker SDK advisories whose
+unreachable plugin/AuthZ paths are accepted in decision #25.
+
+**Consequence.** Cached state and ambient credentials can no longer silently
+change deployment identity, Git content cannot inject Compose flags or expose
+environment plaintext through default output, credential files are private,
+and release builds use a patched standard library with continuous vulnerability
+checking. This supersedes decision #24's Go 1.25.6 CI pin and minimum-toolchain
+choice.

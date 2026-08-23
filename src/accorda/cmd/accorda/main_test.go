@@ -101,6 +101,13 @@ func TestRun_Init_CreatesProjectFile(t *testing.T) {
 	if !strings.Contains(out.String(), "Initialized Accorda project") {
 		t.Fatalf("expected init success message, got %q", out.String())
 	}
+	info, err := os.Stat(filepath.Join(dir, config.File))
+	if err != nil {
+		t.Fatalf("stat project file: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("project file permissions = %o, want 600", mode)
+	}
 
 	// The file must be consumable by config.Load so `accorda sync` works
 	// (issue #68): init and sync share the unified project format.
@@ -110,6 +117,27 @@ func TestRun_Init_CreatesProjectFile(t *testing.T) {
 	}
 	if proj.Environment != "production" || proj.Source.URL != "git@github.com:acme/backend.git" {
 		t.Fatalf("loaded project = %+v, want production/git@github.com:acme/backend.git", proj)
+	}
+}
+
+func TestRun_Init_DoesNotOverwriteExistingProject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, config.File)
+	const existing = "user-owned project\n"
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatalf("write existing project: %v", err)
+	}
+	var out bytes.Buffer
+	err := run([]string{"init", "--dir", dir, "--repo", "git@github.com:acme/backend.git"}, &out, nil)
+	if err == nil || !strings.Contains(err.Error(), "file exists") {
+		t.Fatalf("run(init) error = %v, want existing-file failure", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read existing project: %v", readErr)
+	}
+	if string(got) != existing {
+		t.Fatalf("existing project changed to %q", got)
 	}
 }
 

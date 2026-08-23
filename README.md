@@ -10,7 +10,7 @@ This repository is being bootstrapped as a Go-based foundation for the Accorda O
 
 The `accorda status` command (`cmd/accorda/status.go`, `docs/ACCORDA.md` §11) prints the project's posture: environment, repository, branch, Git HEAD, deployed commit, sync/runtime status, last deploy time, and a per-service table of state/health/image. It is read-only: it fetches the Git source for the HEAD commit, reads the last healthy deployment receipt from the journal, and reads the target's runtime state, without mutating either.
 
-The `accorda diff` command (`cmd/accorda/diff.go`, `docs/ACCORDA.md` §11) shows the per-field deployed vs desired changes. The deployed side is the last healthy deployment, re-read from Git at the deployed commit; the desired side is the current Git HEAD. It is read-only and works from Git plus the deployment history, so it needs no running Docker daemon.
+The `accorda diff` command (`cmd/accorda/diff.go`, `docs/ACCORDA.md` §11) shows the per-field deployed vs desired changes. The deployed side is the last healthy deployment, re-read from Git at the deployed commit; the desired side is the current Git HEAD. Environment keys and change state are shown, but their values are always redacted. It is read-only and works from Git plus the deployment history, so it needs no running Docker daemon.
 
 The `accorda plan` command (`cmd/accorda/plan.go`, `docs/ACCORDA.md` §11) shows the intended per-service actions Accorda would take to reconcile the desired state with the target's current state, without deploying. It computes the same plan a `sync` would apply (including image pulls per the project's pull policy) and prints a `CHANGED`/`UNCHANGED` summary.
 
@@ -31,7 +31,7 @@ go build ./cmd/accorda
 ./accorda init --env production --repo git@github.com:acme/backend.git --branch main
 ```
 
-`accorda init` writes a minimal `accorda.yaml` project file in the current directory (override with `--dir <path>`) using the unified project format (§25), so `accorda sync` can load it directly. Run `accorda init --help` for the available flags (source auth type, Compose file path). `accorda version` prints the build version, falling back to VCS revision info from the Go build. The CLI is built on [cobra](https://github.com/spf13/cobra); run `accorda --help` or `accorda <command> --help` for details.
+`accorda init` writes a minimal `accorda.yaml` project file in the current directory (override with `--dir <path>`) using the unified project format (§25), so `accorda sync` can load it directly. New project files use mode `0600`, and `init` refuses to overwrite an existing file. Run `accorda init --help` for the available flags (source auth type, Compose file path). `accorda version` prints the build version, falling back to VCS revision info from the Go build. The CLI is built on [cobra](https://github.com/spf13/cobra); run `accorda --help` or `accorda <command> --help` for details.
 
 ## Project file
 
@@ -59,7 +59,7 @@ health:
   timeout: 120s
 ```
 
-`config.Load(dir)` reads and validates `accorda.yaml` from a directory; `config.Parse(data)` does the same for raw YAML bytes. The loader is target-agnostic (Compose, Kubernetes, and Helm target types are recognized), applies defaults for omitted optional fields, rejects unknown fields, and returns field-oriented errors for invalid configuration. See the package documentation in `src/accorda/internal/config` for the accepted fields and validation rules.
+`config.Load(dir)` reads and validates `accorda.yaml` from a directory; `config.Parse(data)` does the same for raw YAML bytes. A file containing `source.auth.token` or an inline URL password must have mode `0600` or stricter. The loader is target-agnostic (Compose, Kubernetes, and Helm target types are recognized), applies defaults for omitted optional fields, rejects unknown fields, and returns field-oriented errors for invalid configuration. See the package documentation in `src/accorda/internal/config` for the accepted fields and validation rules.
 
 ## Core interfaces
 
@@ -77,7 +77,7 @@ The core abstractions defined in `docs/ACCORDA.md` §12 are implemented so that 
 
 The generic Git source adapter (`internal/sources/git`, `docs/ACCORDA.md` §13) implements `sources.Source` and works against any Git server over SSH or HTTPS, including on-premises servers, with zero SaaS dependency and no GitHub-specific calls. It uses the [go-git](https://github.com/go-git/go-git) library for Git operations (clone, fetch, checkout, reading files at commits), so the system `git` CLI is not required at runtime. Auth is handled via go-git transport methods: SSH key auth, HTTPS token auth, or ambient (SSH agent / unauthenticated HTTPS).
 
-`git.New(config.Source, opts...)` constructs a source configured from `accorda.yaml`. `Validate` checks the source configuration without cloning. `Fetch` clones the repository into a local cache directory on first use (via go-git), then fetches and checks out the configured branch on subsequent calls, returning the `Commit` (SHA, branch, authored time) that `HEAD` points to. `Desired` reads the Compose-style services file under the configured `source.path` and returns a `state.DesiredState` carrying the repository, branch, commit, and declared services.
+`git.New(config.Source, opts...)` constructs a source configured from `accorda.yaml`. `Validate` checks the source configuration without cloning, including reading and parsing an explicitly configured SSH key. `Fetch` clones into a private per-user cache keyed by a SHA-256 repository identity on first use, verifies a cached repository's `origin` before every reuse, then fetches and checks out the configured branch. `Desired` reads the Compose-style services file under the configured `source.path` and returns a `state.DesiredState` carrying the repository, branch, commit, and declared services.
 
 Authentication follows §15 and is configured explicitly via `source.auth` in `accorda.yaml` (or `git.WithAuth` in code):
 
@@ -102,11 +102,11 @@ source:
     username: x-access-token   # optional; defaults to "oauth2"
 ```
 
-- `auth.type: ssh` sets `GIT_SSH_COMMAND` to `ssh -i <key> -o IdentitiesOnly=yes` (override with `git.WithSSHCommand`). The key material is never read or logged by Accorda.
-- `auth.type: https` embeds the token in the remote URL so Git's HTTPS transport uses it directly. Credentials are never placed on the command line or in logs.
+- `auth.type: ssh` reads and parses the configured key for go-git's SSH transport. An unreadable, invalid, encrypted, or unsupported key fails validation rather than falling back to the ambient SSH agent. Key material is never logged.
+- `auth.type: https` supplies the token directly to go-git's HTTP transport without changing the repository URL. Credentials are never placed on the command line or in logs.
 - An absent `auth` section means "use the ambient Git environment" (SSH agent, Git credential helpers), which remains the default for local development.
 
-The cache directory is configurable with `git.WithCacheDir` or derived under `git.WithBaseDir`.
+The cache directory is configurable with `git.WithCacheDir` or derived under `git.WithBaseDir`; the default is a private per-user cache.
 
 Unit tests cover the services-file parser and path/URL helpers. Integration tests (build tag `integration`, requiring the `git` executable) create a local repository, clone and check it out, and assert that `Fetch` returns the correct HEAD commit info and that `Desired` returns the declared services:
 
@@ -125,7 +125,7 @@ The runtime-state reader is implemented: `compose.New(config.Target, opts...)` c
 
 The optional logs capability is separate from the five-method reconciliation interface. `Target.Logs` selects containers by Compose project and service labels, fetches snapshot logs or follows live output through the Docker engine API, and decodes Docker's multiplexed stdout/stderr framing. Scaled replicas are read deterministically for snapshots and concurrently while following.
 
-The plan phase is implemented: `Target.Plan` reads the runtime state and delegates the desired-vs-deployed diff to the target-agnostic `plan.DriftActions` helper, producing a per-service `CHANGED`/`UNCHANGED` plan (docs/ACCORDA.md §9) without applying anything. It also prepends pull actions according to the image pull policy (`images.pull` in `accorda.yaml`, or `compose.WithPullPolicy`): `changed` pulls only changed services' images, `missing` pulls only images not already local, `always` pulls every image, and `never` pulls nothing. The apply phase is implemented: `Target.Apply` runs the equivalent of `docker compose up -d` scoped to only the changed services (docs/ACCORDA.md §9), mapping each plan action to a `docker compose` subcommand (`up -d`, `up -d --remove-orphans`, `pull`, `stop`) and skipping noop services, with partial failures reported per service. The health phase is implemented: `Target.Health` reads the runtime state and maps each service's Docker healthcheck status to a `health.Status` (healthy, starting, unhealthy, or unknown when no healthcheck is declared), waiting up to the health timeout (`health.timeout` in `accorda.yaml`, or `compose.WithHealthTimeout`) for services to become healthy (docs/ACCORDA.md §19).
+The plan phase is implemented: `Target.Plan` reads the runtime state and delegates the desired-vs-deployed diff to the target-agnostic `plan.DriftActions` helper, producing a per-service `CHANGED`/`UNCHANGED` plan (docs/ACCORDA.md §9) without applying anything. It also prepends pull actions according to the image pull policy (`images.pull` in `accorda.yaml`, or `compose.WithPullPolicy`): `changed` pulls only changed services' images, `missing` pulls only images not already local, `always` pulls every image, and `never` pulls nothing. The apply phase is implemented: `Target.Apply` runs the equivalent of `docker compose up -d` scoped to only the changed services (docs/ACCORDA.md §9), mapping each plan action to a `docker compose` subcommand (`up -d`, `up -d --remove-orphans`, `pull`, `stop`) and skipping noop services, with partial failures reported per service. Service names are validated before planning/applying and passed after an end-of-options delimiter so Git-controlled names cannot become Compose flags. The health phase is implemented: `Target.Health` reads the runtime state and maps each service's Docker healthcheck status to a `health.Status` (healthy, starting, unhealthy, or unknown when no healthcheck is declared), waiting up to the health timeout (`health.timeout` in `accorda.yaml`, or `compose.WithHealthTimeout`) for services to become healthy (docs/ACCORDA.md §19).
 
 The reconciliation lifecycle state machine (`internal/core/reconcile`) orchestrates a `Source` and a `Target` through the §6 phases, emitting state transitions and deployment events on an `events.Bus`, and rolling back to the previous deployment when apply or health verification fails (§20). Reconciliation is hardened for §47: each changed deployment is checkpointed before target mutation, unmatched checkpoints resume idempotently after restart, target-scoped locks prevent concurrent `sync` processes from racing, and a commit that lands during deployment is reconciled before the lock is released. Partial Compose apply failures report both completed actions and the failed service/action.
 
