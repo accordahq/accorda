@@ -25,7 +25,7 @@
 # statement-coverage threshold fail.
 set -euo pipefail
 
-minimum_coverage="${ACCORDA_MIN_COVERAGE:-80.0}"
+minimum_coverage="${ACCORDA_MIN_COVERAGE:-85.0}"
 if [[ ! "$minimum_coverage" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
   ! awk -v minimum="$minimum_coverage" 'BEGIN { exit !(minimum + 0 <= 100) }'; then
   echo "error: ACCORDA_MIN_COVERAGE must be a number from 0 to 100" >&2
