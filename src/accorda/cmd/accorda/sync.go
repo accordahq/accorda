@@ -75,7 +75,10 @@ func runSync(cmd *cobra.Command, dir string, watch bool) error {
 	}
 
 	store := history.NewFileStore(receiptPath(dir))
-	r := reconcile.New(src, tgt, events.NewBus()).
+	bus := events.NewBus()
+	unsubscribe := bus.Subscribe(syncProgressWriter(cmd.OutOrStdout()))
+	defer unsubscribe()
+	r := reconcile.New(src, tgt, bus).
 		WithDriftPolicy(driftPolicy(proj.Reconcile.Drift)).
 		WithEnvironment(proj.Environment).
 		WithReceiptStore(store).
@@ -91,16 +94,39 @@ func runSync(cmd *cobra.Command, dir string, watch bool) error {
 	return writeSyncResult(cmd, r.Reconcile(ctx))
 }
 
+// syncProgressWriter returns an event handler that prints lifecycle progress
+// while reconciliation is running. Terminal phases are left to
+// writeSyncResult so each cycle has one unambiguous final outcome line.
+func syncProgressWriter(w io.Writer) events.Handler {
+	return func(_ context.Context, event events.Event) {
+		if event.Type != events.EventStateTransition {
+			return
+		}
+		transition, ok := event.Payload.(reconcile.StateTransition)
+		if !ok || transition.To == reconcile.PhaseSynced || transition.To == reconcile.PhaseFailed {
+			return
+		}
+		fmt.Fprintf(w, "sync: %s", transition.To)
+		if transition.Commit != "" {
+			fmt.Fprintf(w, " commit=%s", shortSHA(transition.Commit))
+		}
+		if transition.DeploymentID != "" {
+			fmt.Fprintf(w, " deployment=%s", transition.DeploymentID)
+		}
+		fmt.Fprintln(w)
+	}
+}
+
 // writeSyncResult prints one reconciliation cycle. A failed cycle is returned
 // as an error for one-shot sync; watch mode logs it and keeps polling so a
 // transient source or target failure can recover without restarting Accorda.
 func writeSyncResult(cmd *cobra.Command, res *reconcile.Result) error {
 	if res.Phase == reconcile.PhaseFailed {
+		fmt.Fprintf(cmd.OutOrStdout(), "sync: %s\n", res.Phase)
 		if res.RolledBack {
 			// A failed deployment was rolled back to a known previous commit.
 			// Report the rollback clearly so a user sees what was restored and
 			// why the active state is healthy (docs/ACCORDA.md §20).
-			fmt.Fprintf(cmd.OutOrStdout(), "sync: %s\n", res.Phase)
 			fmt.Fprintf(cmd.OutOrStdout(), "rollback: restored to commit %s\n", res.RolledBackTo)
 			return fmt.Errorf("reconciliation failed and was rolled back: %w", res.Err)
 		}

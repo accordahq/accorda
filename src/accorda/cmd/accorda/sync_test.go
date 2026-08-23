@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"accorda/internal/config"
+	"accorda/internal/core/events"
 	"accorda/internal/core/history"
 	"accorda/internal/core/reconcile"
 	gitSource "accorda/internal/sources/git"
@@ -34,6 +36,67 @@ func TestSyncCommand_WatchFlag(t *testing.T) {
 	}
 	if flag.DefValue != "false" {
 		t.Errorf("sync --watch default = %q, want false", flag.DefValue)
+	}
+}
+
+func TestSyncProgressWriter_PrintsNonTerminalTransitions(t *testing.T) {
+	var out bytes.Buffer
+	write := syncProgressWriter(&out)
+	write(context.Background(), events.Event{Type: events.EventDeploymentDetected})
+	write(context.Background(), events.Event{Type: events.EventStateTransition, Payload: "invalid"})
+	for _, transition := range []reconcile.StateTransition{
+		{To: reconcile.PhaseFetching},
+		{To: reconcile.PhaseValidating, Commit: "1234567890abcdef"},
+		{To: reconcile.PhaseDeploying, Commit: "1234567890abcdef", DeploymentID: "dep_123"},
+		{To: reconcile.PhaseSynced, Commit: "1234567890abcdef", DeploymentID: "dep_123"},
+		{To: reconcile.PhaseFailed, Commit: "1234567890abcdef", DeploymentID: "dep_123"},
+	} {
+		write(context.Background(), events.Event{Type: events.EventStateTransition, Payload: transition})
+	}
+
+	want := "sync: FETCHING\n" +
+		"sync: VALIDATING commit=1234567\n" +
+		"sync: DEPLOYING commit=1234567 deployment=dep_123\n"
+	if out.String() != want {
+		t.Fatalf("progress output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestWriteSyncResult_PrintsTerminalOutcome(t *testing.T) {
+	cases := []struct {
+		name    string
+		result  *reconcile.Result
+		wantOut string
+		wantErr string
+	}{
+		{
+			name:    "synced",
+			result:  &reconcile.Result{Phase: reconcile.PhaseSynced},
+			wantOut: "sync: SYNCED\nsync= reasons=0 services=0\n",
+		},
+		{
+			name:    "failed",
+			result:  &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("apply failed")},
+			wantOut: "sync: FAILED\n",
+			wantErr: "reconciliation failed: apply failed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cmd := newSyncCmd()
+			cmd.SetOut(&out)
+			err := writeSyncResult(cmd, tc.result)
+			if out.String() != tc.wantOut {
+				t.Errorf("output = %q, want %q", out.String(), tc.wantOut)
+			}
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("writeSyncResult: %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || err.Error() != tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

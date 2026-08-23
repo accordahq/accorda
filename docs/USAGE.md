@@ -123,6 +123,10 @@ deployment receipt:
 accorda sync --dir "$HOME/accorda/projects/backend-production"
 ```
 
+The command prints each reconciliation phase as it progresses and finishes
+with `sync: SYNCED` or `sync: FAILED`, so long fetch, pull, deployment, and
+health-verification operations remain visible.
+
 Accorda attempts rollback to the previous healthy deployment when apply or
 health verification fails and a previous healthy deployment is available.
 
