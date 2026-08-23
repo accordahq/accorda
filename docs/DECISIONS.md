@@ -1155,7 +1155,9 @@ reconciler wiring without adding a distinct responsibility.
 **Decision.** `Reconciler.Run` wraps the existing lifecycle with one immediate
 cycle followed by timer-driven cycles until context cancellation. Each cycle
 fetches the tracked branch through `Source.Fetch`; an unchanged HEAD produces
-no target mutation but continues through runtime comparison for drift handling.
+no target mutation but still evaluates workload health, emits `health.changed`,
+and continues through runtime comparison for drift handling. An unhealthy
+unchanged deployment cannot be reported as `SYNCED`.
 Failed cycles are reported without stopping the loop so transient dependencies
 can recover. `accorda sync` remains one-shot and `accorda sync --watch` invokes
 the loop using the project's `sync.interval`. The CLI process installs SIGINT

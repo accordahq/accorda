@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"accorda/internal/core/events"
+	"accorda/internal/core/health"
 	"accorda/internal/core/state"
 	"accorda/internal/sources"
 )
@@ -97,6 +98,50 @@ func TestRun_UnchangedHeadRepairsDrift(t *testing.T) {
 	}
 	if got := tgt.runtime.Services["api"].Status; got != state.RunningStatus {
 		t.Errorf("runtime status = %q, want %q", got, state.RunningStatus)
+	}
+}
+
+func TestRun_UnchangedHeadReportsUnhealthyWorkload(t *testing.T) {
+	src := &fakeSource{commit: sources.Commit{SHA: "abc123"}, desired: healthyDesired()}
+	tgt := &fakeTarget{health: healthyHealth(), runtime: healthyRuntime()}
+	bus := events.NewBus()
+	healthEvents := 0
+	bus.Subscribe(func(_ context.Context, event events.Event) {
+		if event.Type == events.EventHealthChanged {
+			healthEvents++
+		}
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	cycles := 0
+	var unhealthyResult *Result
+
+	err := New(src, tgt, bus).Run(ctx, testPollInterval, func(result *Result) {
+		cycles++
+		if cycles == 1 {
+			unhealthy := health.New(time.Unix(0, 0))
+			unhealthy.SetService("api", health.StatusUnhealthy, "probe failed")
+			unhealthy.Summarize()
+			tgt.health = &unhealthy
+			return
+		}
+		unhealthyResult = result
+		cancel()
+	})
+
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if unhealthyResult == nil || unhealthyResult.Phase != PhaseFailed {
+		t.Fatalf("unhealthy result = %+v, want FAILED", unhealthyResult)
+	}
+	if unhealthyResult.Health == nil || unhealthyResult.Health.Overall != health.StatusUnhealthy {
+		t.Errorf("health = %+v, want unhealthy", unhealthyResult.Health)
+	}
+	if healthEvents != 2 {
+		t.Errorf("health.changed events = %d, want 2", healthEvents)
+	}
+	if tgt.planCalls != 1 || tgt.applyCalls != 0 {
+		t.Errorf("plan/apply calls = %d/%d, want 1/0", tgt.planCalls, tgt.applyCalls)
 	}
 }
 

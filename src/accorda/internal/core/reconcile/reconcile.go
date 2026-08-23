@@ -416,11 +416,18 @@ func (r *Reconciler) validate(ctx context.Context, res *Result, commit sources.C
 }
 
 // checkDrift handles a polling cycle whose Git HEAD is unchanged. It reads
-// runtime state and applies only the configured drift policy, avoiding plan,
-// pull, deploy, and health operations that belong to a new Git revision.
+// health and runtime state and applies only the configured drift policy,
+// avoiding plan, pull, and deploy operations that belong to a new Git
+// revision.
 func (r *Reconciler) checkDrift(ctx context.Context, res *Result, commit sources.Commit) *Result {
 	cloned := r.lastDesired.Clone()
 	desired := &cloned
+	h, err := r.assessHealth(ctx)
+	if err != nil {
+		return r.fail(ctx, res, PhaseFetching, commit.SHA, "", err)
+	}
+	res.Health = h
+	r.emit(ctx, events.EventHealthChanged, h)
 	runtime, err := r.target.Current(ctx)
 	if err != nil {
 		return r.fail(ctx, res, PhaseFetching, commit.SHA, "", err)
@@ -430,8 +437,15 @@ func (r *Reconciler) checkDrift(ctx context.Context, res *Result, commit sources
 	if res.Comparison.Result == state.ResultDrifted {
 		res.Phase = PhaseHealthy
 		r.handleDrift(ctx, res, desired, deployed)
-		return res
+		if h.Overall != health.StatusUnhealthy {
+			return res
+		}
 	}
+	if h.Overall == health.StatusUnhealthy {
+		return r.fail(ctx, res, PhaseFetching, commit.SHA, "",
+			fmt.Errorf("reconcile: health check failed: %s", h.Overall))
+	}
+	h.Synced = true
 	res.Phase = PhaseSynced
 	r.transition(ctx, PhaseFetching, PhaseSynced, commit.SHA, "", nil)
 	return res
@@ -483,31 +497,14 @@ func (r *Reconciler) deploy(ctx context.Context, res *Result, desired *state.Des
 // was attempted).
 func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.DesiredState, commit sources.Commit, p *plan.Plan) (*health.Health, bool) {
 	r.transition(ctx, PhaseDeploying, PhaseVerifying, commit.SHA, p.DeploymentID, nil)
-	h, err := r.target.Health(ctx)
+	h, err := r.assessHealth(ctx)
 	if err != nil {
-		if !errors.Is(err, targets.ErrNotImplemented) {
-			r.failedDeploymentID = p.DeploymentID
-			r.fail(ctx, res, PhaseVerifying, commit.SHA, p.DeploymentID, err)
-			r.recordReceipt(ctx, desired, commit, nil, p, history.OutcomeFailed)
-			r.rollback(ctx, res, desired)
-			return nil, false
-		}
-		// Health verification is not implemented by this target (for example
-		// the Stub, or a driver that has not yet landed its Health method).
-		// Treat the deployment as healthy so the lifecycle can proceed to
-		// SYNCED; the health gate is active for targets that implement
-		// Health (docs/ACCORDA.md §19).
-		return &health.Health{Deployed: true, Healthy: true}, true
+		r.failedDeploymentID = p.DeploymentID
+		r.fail(ctx, res, PhaseVerifying, commit.SHA, p.DeploymentID, err)
+		r.recordReceipt(ctx, desired, commit, nil, p, history.OutcomeFailed)
+		r.rollback(ctx, res, desired)
+		return nil, false
 	}
-	if h == nil {
-		// A nil Health with no error means the target has no health data to
-		// report (for example no healthchecks are declared). Treat it as
-		// healthy so a target without health checks is not failed and rolled
-		// back; this mirrors the ErrNotImplemented bypass above.
-		return &health.Health{Deployed: true, Healthy: true}, true
-	}
-	h.Deployed = true
-	h.Summarize()
 	// Only a genuinely unhealthy deployment fails verification and triggers
 	// rollback. A deployment whose services have no healthchecks reports
 	// Overall == StatusUnknown, which is not a failure: DEPLOYED, HEALTHY,
@@ -525,6 +522,25 @@ func (r *Reconciler) verify(ctx context.Context, res *Result, desired *state.Des
 		return nil, false
 	}
 	return h, true
+}
+
+// assessHealth reads and normalizes target health for both new deployments
+// and unchanged-HEAD polling cycles. Targets without health data remain
+// deployable and syncable, matching the lifecycle's existing behavior.
+func (r *Reconciler) assessHealth(ctx context.Context) (*health.Health, error) {
+	h, err := r.target.Health(ctx)
+	if err != nil {
+		if errors.Is(err, targets.ErrNotImplemented) {
+			return &health.Health{Deployed: true, Healthy: true}, nil
+		}
+		return nil, err
+	}
+	if h == nil {
+		return &health.Health{Deployed: true, Healthy: true}, nil
+	}
+	h.Deployed = true
+	h.Summarize()
+	return h, nil
 }
 
 // sync runs the HEALTHY and SYNCED phases, comparing desired against deployed
