@@ -408,31 +408,39 @@ func writeStatus(w io.Writer, info statusInfo) {
 	if info.Checkout != "" {
 		fmt.Fprintf(w, "Checkout      %s\n", info.Checkout)
 	}
-	if len(info.EnvOverrides) > 0 {
-		names := make([]string, 0, len(info.EnvOverrides))
-		for name := range info.EnvOverrides {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		fmt.Fprintln(w, "Env overrides")
-		for _, name := range names {
-			svc := info.EnvOverrides[name]
-			parts := make([]string, 0, 2)
-			if len(svc.EnvFiles) > 0 {
-				paths := make([]string, 0, len(svc.EnvFiles))
-				for _, f := range svc.EnvFiles {
-					paths = append(paths, f.Path)
-				}
-				parts = append(parts, fmt.Sprintf("%d file(s): %s", len(svc.EnvFiles), strings.Join(paths, ", ")))
-			}
-			if len(svc.Env) > 0 {
-				parts = append(parts, fmt.Sprintf("%d inline value(s)", len(svc.Env)))
-			}
-			fmt.Fprintf(w, "  %-12s %s\n", name, strings.Join(parts, "; "))
-		}
-	}
+	writeEnvOverridesStatus(w, info.EnvOverrides)
 	fmt.Fprintf(w, "SERVICE      STATE       HEALTH      IMAGE\n")
 	for _, r := range info.services {
 		fmt.Fprintf(w, "%-12s %-11s %-11s %s\n", r.name, r.state, r.health, r.image)
+	}
+}
+
+// writeEnvOverridesStatus prints the per-service env overrides section so the
+// operator can see which services have deploy-time env inputs configured
+// (docs/DECISIONS.md #45). Nothing is printed when no overrides are set.
+func writeEnvOverridesStatus(w io.Writer, overrides map[string]config.ServiceOverride) {
+	if len(overrides) == 0 {
+		return
+	}
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	fmt.Fprintln(w, "Env overrides")
+	for _, name := range names {
+		svc := overrides[name]
+		parts := make([]string, 0, 2)
+		if len(svc.EnvFiles) > 0 {
+			paths := make([]string, 0, len(svc.EnvFiles))
+			for _, f := range svc.EnvFiles {
+				paths = append(paths, f.Path)
+			}
+			parts = append(parts, fmt.Sprintf("%d file(s): %s", len(svc.EnvFiles), strings.Join(paths, ", ")))
+		}
+		if len(svc.Env) > 0 {
+			parts = append(parts, fmt.Sprintf("%d inline value(s)", len(svc.Env)))
+		}
+		fmt.Fprintf(w, "  %-12s %s\n", name, strings.Join(parts, "; "))
 	}
 }
