@@ -77,6 +77,19 @@ func TestSyncProgressWriter_PrintsNonTerminalTransitions(t *testing.T) {
 	}
 }
 
+func TestSyncProgressWriter_PrintsDriftEvents(t *testing.T) {
+	var out bytes.Buffer
+	write := syncProgressWriter(&out)
+	write(context.Background(), events.Event{Type: events.EventDriftDetected})
+	write(context.Background(), events.Event{Type: events.EventDriftReconciled})
+
+	want := "sync: drift detected\n" +
+		"sync: drift repaired\n"
+	if out.String() != want {
+		t.Fatalf("progress output = %q, want %q", out.String(), want)
+	}
+}
+
 func TestWriteSyncResult_PrintsTerminalOutcome(t *testing.T) {
 	cases := []struct {
 		name    string

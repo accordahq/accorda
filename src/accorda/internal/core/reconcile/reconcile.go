@@ -480,7 +480,13 @@ func (r *Reconciler) checkDrift(ctx context.Context, res *Result, commit sources
 	res.Comparison = state.Compare(desired, deployed, runtime)
 	if res.Comparison.Result == state.ResultDrifted {
 		res.Phase = PhaseHealthy
-		r.handleDrift(ctx, res, desired, deployed)
+		if r.handleDrift(ctx, res, desired, deployed) {
+			// A repair was applied; the pre-repair health snapshot is stale.
+			// The repair is asynchronous (containers start after `up -d`
+			// returns), so convergence is confirmed on the next cycle rather
+			// than failing on the old health reading.
+			return res
+		}
 		if h.Overall != health.StatusUnhealthy {
 			return res
 		}
@@ -752,26 +758,26 @@ func changedServices(p *plan.Plan) []string {
 // policy (docs/ACCORDA.md §5.3). Drift is an observable outcome (§21), so
 // the DriftDetected event is emitted unless the policy is disabled; when the
 // policy is repair, the desired runtime is restored and DriftReconciled is
-// emitted on success.
-//
-// res.Comparison reflects the drift that was detected before repair ran: a
-// successful repair applies the plan but does not re-read the runtime, so the
-// Result still reports DRIFTED even though DriftReconciled was emitted. The
-// repair is applied asynchronously (e.g. `docker compose up -d` returns before
+// emitted on success. It returns true when a repair was applied successfully,
+// so the caller can avoid failing on the pre-repair health snapshot — the
+// repair is asynchronous (e.g. `docker compose up -d` returns before
 // containers are running), so convergence is confirmed on the next
 // reconciliation cycle rather than asserted here.
-func (r *Reconciler) handleDrift(ctx context.Context, res *Result, desired *state.DesiredState, deployed *state.DeployedState) {
+func (r *Reconciler) handleDrift(ctx context.Context, res *Result, desired *state.DesiredState, deployed *state.DeployedState) bool {
 	switch r.driftPolicy {
 	case DriftDisabled:
-		return
+		return false
 	case DriftRepair:
 		r.emit(ctx, events.EventDriftDetected, res.Comparison)
 		if r.repairDrift(ctx, desired, deployed) {
 			r.emit(ctx, events.EventDriftReconciled, res.Comparison)
+			return true
 		}
+		return false
 	default: // DriftReport; any unknown value degrades to report-only (the
 		// config loader validates the policy upstream, so this is defensive).
 		r.emit(ctx, events.EventDriftDetected, res.Comparison)
+		return false
 	}
 }
 
