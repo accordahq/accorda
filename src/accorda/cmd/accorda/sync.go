@@ -256,6 +256,7 @@ func buildTarget(p *config.Project, dir string, src *git.Git) (*compose.Target, 
 		compose.WithPullPolicy(p.Images.Pull),
 		compose.WithHealthTimeout(p.Health.Timeout),
 		compose.WithEnvironment(p.Environment),
+		compose.WithServiceOverrides(p.Target.Services),
 	}
 	if managed {
 		projectDir, err := filepath.Abs(dir)

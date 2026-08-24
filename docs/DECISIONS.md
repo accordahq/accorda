@@ -1287,3 +1287,82 @@ deployment to finish (or the lock to be released) before reading historical
 desired state, eliminating the wrong-revision window. The lock is advisory and
 per-target, so independent projects remain unaffected.
 
+### 45. Per-service env overrides from accorda.yaml
+
+**Context.** Docker Compose resolves `env_file` paths relative to the Compose
+file's directory, which for Accorda is the managed Git checkout. Gitignored
+`.env` files (e.g. `apps/*/.env`) are absent from that checkout, so
+`docker compose up -d` fails with "env file not found". The operator can stage
+them manually (the managed checkout path is surfaced by `doctor`/`status`), but
+that is fragile and not declarative. The existing `secrets:` field is the
+spec-intended home for SOPS-encrypted files committed to Git (§17), but the
+decryption/staging pipeline is not yet implemented, and it does not support
+plaintext key/value overrides.
+
+**Decision.** Add a per-service `services` section under `target` in
+`accorda.yaml` so operators can declare environment inputs for specific
+services without relying on gitignored `env_file` files:
+
+```yaml
+target:
+  type: compose
+  file: docker-compose.yml
+  services:
+    aura-api:
+      env:
+        AURA_API_ROOT_PATH: /api/ai
+        LLM_SERVICE_URL: http://llm-service:8001
+      env_files:
+        - type: file
+          path: /Users/akurilo/.config/accorda/aura-api.env
+    llm-service:
+      env_files:
+        - /Users/akurilo/.config/accorda/llm-service.env
+```
+
+Each service entry accepts two input kinds, combinable:
+
+- **Inline key/value pairs** under `env:` (`KEY: value`) — merged into the
+  service's `environment:` at deploy time. These override any value declared
+  in the Compose file's `environment:` for the same key and add keys not
+  present.
+- **`env_files:`** — a list of local `.env` files. Each entry is either a
+  plain string path (short form) or a mapping with `type: file` and `path:`
+  (long form). Entries are read at deploy time and merged into the service's
+  `environment:` with the same override-and-add semantics. Paths are
+  operator-local (absolute or relative to the `accorda.yaml` directory); they
+  are never committed to Git and their contents are never stored in desired
+  state, receipts, or history.
+
+The merge applies **at deploy time only**, by rendering a deploy Compose file
+that carries the resolved `environment:` for each overridden service before
+`docker compose up -d` runs. The deploy file is written with mode `0600`
+alongside the source in the managed checkout and is removed after `Apply`
+completes (success or failure) so the checkout is not polluted with a
+secret-bearing artifact. A missing or unreadable `env_files` entry is a
+hard error at deploy time, not a silent skip, so a misconfigured path
+fails the deployment with a clear message rather than running without the
+intended values. Desired-state parsing and hashing remain Git-only:
+the overrides do not enter `state.Service.Env` used by `plan`/`diff`/hashing,
+so they cannot cause spurious drift or leak secret values into comparison
+output. Precedence on key collision, from lowest to highest: Compose
+`environment:`, `env_files` entries (in list order), inline `env:` values.
+
+The existing `env_file:` mechanism in Compose is preserved as-is: if the
+Compose file declares `env_file:` and the files exist in the checkout (e.g.
+committed to Git), Accorda does not touch them. If the files are absent
+(gitignored), `docker compose up -d` fails — the developer is responsible for
+providing them in GitOps. The `target.services` overrides are purely additive
+environment inputs that expand on top of whatever the Compose file already
+declares; they do not stage or replace `env_file:` files. SOPS support (§17)
+remains a future enhancement and is not replaced by this decision.
+
+**Consequence.** Operators can remove gitignored `env_file:` declarations from
+the Compose file and declare per-service env inputs declaratively in
+`accorda.yaml`, with either inline values or local file references. The Compose
+file stays clean and portable for non-Accorda use; Accorda layers the
+operator-specific environment on top at deploy time. Secret values in
+`from_file` stay on the operator's machine and are never persisted by Accorda.
+The override is deployment-scoped, so it does not pollute Git-authored desired
+state, receipts, or drift comparisons.
+

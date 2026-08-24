@@ -259,7 +259,7 @@ func TestResolveTargetPaths(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveTargetPaths(): %v", err)
 			}
-			if got != tc.want {
+			if got.Type != tc.want.Type || got.File != tc.want.File || got.Path != tc.want.Path {
 				t.Fatalf("resolveTargetPaths() = %+v, want %+v", got, tc.want)
 			}
 			if managed != tc.managed {

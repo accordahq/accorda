@@ -12,6 +12,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -95,6 +97,7 @@ func runPlan(cmd *cobra.Command, dir string) error {
 		}
 
 		writePlan(cmd.OutOrStdout(), p)
+		writeEnvOverrides(cmd.OutOrStdout(), proj.Target.Services)
 		return nil
 	})
 }
@@ -107,4 +110,35 @@ func runPlan(cmd *cobra.Command, dir string) error {
 func writePlan(w io.Writer, p *plan.Plan) {
 	fmt.Fprintf(w, "Deployment plan\n")
 	fmt.Fprintf(w, "%s", p.String())
+}
+
+// writeEnvOverrides prints a summary of per-service env overrides configured
+// in accorda.yaml (docs/DECISIONS.md #45), so the operator knows which
+// services have deploy-time env inputs and from where (inline values, local
+// files, or both). Nothing is printed when no overrides are configured.
+func writeEnvOverrides(w io.Writer, services map[string]config.ServiceOverride) {
+	if len(services) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Env overrides")
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		svc := services[name]
+		parts := make([]string, 0, 2)
+		if len(svc.EnvFiles) > 0 {
+			paths := make([]string, 0, len(svc.EnvFiles))
+			for _, f := range svc.EnvFiles {
+				paths = append(paths, f.Path)
+			}
+			parts = append(parts, fmt.Sprintf("%d file(s): %s", len(svc.EnvFiles), strings.Join(paths, ", ")))
+		}
+		if len(svc.Env) > 0 {
+			parts = append(parts, fmt.Sprintf("%d inline value(s)", len(svc.Env)))
+		}
+		fmt.Fprintf(w, "  %-12s %s\n", name, strings.Join(parts, "; "))
+	}
 }
