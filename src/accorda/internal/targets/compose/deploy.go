@@ -37,7 +37,10 @@ func renderDeployCompose(sourceFile string, overrides map[string]config.ServiceO
 	if !ok {
 		return "", fmt.Errorf("compose: deploy render: no services map in %q", sourceFile)
 	}
-	mergedEnv := resolveOverrides(overrides)
+	mergedEnv, err := resolveOverrides(overrides)
+	if err != nil {
+		return "", err
+	}
 	for name, env := range mergedEnv {
 		svc, ok := services[name].(map[string]any)
 		if !ok {
@@ -55,7 +58,7 @@ func renderDeployCompose(sourceFile string, overrides map[string]config.ServiceO
 	if err != nil {
 		return "", fmt.Errorf("compose: marshal deploy file: %w", err)
 	}
-	if err := os.WriteFile(deployFile, out, 0o644); err != nil {
+	if err := os.WriteFile(deployFile, out, 0o600); err != nil {
 		return "", fmt.Errorf("compose: write deploy file: %w", err)
 	}
 	return deployFile, nil
@@ -69,18 +72,29 @@ func deployComposePath(sourceFile string) string {
 	return filepath.Join(filepath.Dir(sourceFile), deployFileSuffix)
 }
 
+// cleanupDeployFile removes the rendered deploy Compose file after Apply
+// completes (success or failure) so the managed checkout is not polluted
+// with a secret-bearing artifact (docs/DECISIONS.md #45). It is a no-op when
+// the deploy file is the source file (no overrides were rendered).
+func cleanupDeployFile(deployFile, sourceFile string) {
+	if deployFile == sourceFile {
+		return
+	}
+	_ = os.Remove(deployFile)
+}
+
 // resolveOverrides reads env_files and merges their entries with inline env:
 // values for each overridden service. Precedence (low → high): env_files
 // entries in list order, then inline env: values. The result is a single
 // map[string]string per service ready to merge into the Compose environment:.
-func resolveOverrides(overrides map[string]config.ServiceOverride) map[string]map[string]string {
+func resolveOverrides(overrides map[string]config.ServiceOverride) (map[string]map[string]string, error) {
 	result := make(map[string]map[string]string, len(overrides))
 	for name, svc := range overrides {
 		env := make(map[string]string)
 		for _, ref := range svc.EnvFiles {
 			entries, err := parseEnvFile(ref.Path)
 			if err != nil {
-				continue
+				return nil, fmt.Errorf("service %q: %w", name, err)
 			}
 			for _, e := range entries {
 				env[e.key] = e.value
@@ -93,7 +107,7 @@ func resolveOverrides(overrides map[string]config.ServiceOverride) map[string]ma
 			result[name] = env
 		}
 	}
-	return result
+	return result, nil
 }
 
 // mergeServiceEnv merges resolved override values into a service's existing

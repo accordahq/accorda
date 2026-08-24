@@ -435,6 +435,7 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 	if err != nil {
 		return err
 	}
+	defer cleanupDeployFile(deployFile, t.file)
 	removedOrphans := false
 	completed := make([]plan.Action, 0, len(p.Actions))
 	for _, a := range p.Actions {
@@ -486,13 +487,6 @@ func actionsOfKind(actions []plan.Action, kind plan.ActionKind) []plan.Action {
 		}
 	}
 	return selected
-}
-
-// applyAction executes a single plan action against the Compose project. It
-// returns an error naming the service and action so a partial failure is
-// attributable to the specific service that failed.
-func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
-	return t.applyActionOn(ctx, a, t.file)
 }
 
 // applyActionOn executes a single plan action against the Compose project

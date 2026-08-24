@@ -1336,7 +1336,13 @@ Each service entry accepts two input kinds, combinable:
 
 The merge applies **at deploy time only**, by rendering a deploy Compose file
 that carries the resolved `environment:` for each overridden service before
-`docker compose up -d` runs. Desired-state parsing and hashing remain Git-only:
+`docker compose up -d` runs. The deploy file is written with mode `0600`
+alongside the source in the managed checkout and is removed after `Apply`
+completes (success or failure) so the checkout is not polluted with a
+secret-bearing artifact. A missing or unreadable `env_files` entry is a
+hard error at deploy time, not a silent skip, so a misconfigured path
+fails the deployment with a clear message rather than running without the
+intended values. Desired-state parsing and hashing remain Git-only:
 the overrides do not enter `state.Service.Env` used by `plan`/`diff`/hashing,
 so they cannot cause spurious drift or leak secret values into comparison
 output. Precedence on key collision, from lowest to highest: Compose

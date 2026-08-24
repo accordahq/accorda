@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -175,11 +176,60 @@ func readDeployServiceEnv(t *testing.T, deployFile, service string) map[string]s
 	return result
 }
 
-// yamlUnmarshal is a thin wrapper to keep the test helper self-contained.
-func yamlUnmarshalImpl(data []byte, out *map[string]any) error {
-	return yaml.Unmarshal(data, out)
-}
-
 func stringOf(v any) string {
 	return fmt.Sprint(v)
+}
+
+func TestRenderDeployCompose_DeployFilePermissions(t *testing.T) {
+	source := writeSourceCompose(t, `services:
+  api:
+    image: api:1
+`)
+	overrides := map[string]config.ServiceOverride{
+		"api": {Env: map[string]string{"KEY": "val"}},
+	}
+	deployFile, err := renderDeployCompose(source, overrides)
+	if err != nil {
+		t.Fatalf("renderDeployCompose: %v", err)
+	}
+	info, err := os.Stat(deployFile)
+	if err != nil {
+		t.Fatalf("stat deploy file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("deploy file mode = %04o, want 0600 (secrets may be present)", info.Mode().Perm())
+	}
+	cleanupDeployFile(deployFile, source)
+	if _, err := os.Stat(deployFile); !os.IsNotExist(err) {
+		t.Errorf("deploy file should be removed after cleanup, stat err = %v", err)
+	}
+}
+
+func TestCleanupDeployFile_NoOpForSourceFile(t *testing.T) {
+	source := writeSourceCompose(t, `services:
+  api:
+    image: api:1
+`)
+	// When deployFile == sourceFile (no overrides), cleanup should not remove it.
+	cleanupDeployFile(source, source)
+	if _, err := os.Stat(source); err != nil {
+		t.Errorf("source file should not be removed by cleanup: %v", err)
+	}
+}
+
+func TestRenderDeployCompose_MissingEnvFileIsError(t *testing.T) {
+	source := writeSourceCompose(t, `services:
+  api:
+    image: api:1
+`)
+	overrides := map[string]config.ServiceOverride{
+		"api": {EnvFiles: []config.EnvFileRef{{Path: "/nonexistent/path/file.env"}}},
+	}
+	_, err := renderDeployCompose(source, overrides)
+	if err == nil {
+		t.Fatal("renderDeployCompose with missing env file should return error")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("error should name the missing file: %v", err)
+	}
 }
