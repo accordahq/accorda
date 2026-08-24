@@ -1342,11 +1342,14 @@ so they cannot cause spurious drift or leak secret values into comparison
 output. Precedence on key collision, from lowest to highest: Compose
 `environment:`, `env_files` entries (in list order), inline `env:` values.
 
-The existing `env_file:` mechanism in Compose continues to work unchanged: if
-the Compose file declares `env_file:` and the files exist in the checkout,
-Accorda leaves them as-is. The new `target.services` section is purely
-additive and applies only to services named in `accorda.yaml`. SOPS support
-(§17) remains a future enhancement and is not replaced by this decision.
+The existing `env_file:` mechanism in Compose is preserved as-is: if the
+Compose file declares `env_file:` and the files exist in the checkout (e.g.
+committed to Git), Accorda does not touch them. If the files are absent
+(gitignored), `docker compose up -d` fails — the developer is responsible for
+providing them in GitOps. The `target.services` overrides are purely additive
+environment inputs that expand on top of whatever the Compose file already
+declares; they do not stage or replace `env_file:` files. SOPS support (§17)
+remains a future enhancement and is not replaced by this decision.
 
 **Consequence.** Operators can remove gitignored `env_file:` declarations from
 the Compose file and declare per-service env inputs declaratively in
