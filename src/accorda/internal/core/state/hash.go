@@ -11,8 +11,9 @@ import (
 // Hash returns the canonical SHA-256 hash of the service's normalized
 // configuration (docs/ACCORDA.md §10). The hash is computed over a
 // deterministic canonical representation of the reconciliation-relevant
-// fields (image, command, env, ports, volumes, networks, labels, healthcheck,
-// depends_on), so two services that differ only in the ordering of unordered
+// fields (image, command, env, env_file, ports, volumes, networks, labels,
+// label_file, healthcheck, depends_on), so two services that differ only in
+// the ordering of unordered
 // collections (env, labels, ports, volumes, networks, depends_on) hash
 // identically.
 //
@@ -33,6 +34,10 @@ func (s Service) canonical() string {
 
 	b.WriteString("image=")
 	b.WriteString(s.Image)
+	b.WriteByte('\n')
+
+	b.WriteString("env_files=")
+	writeExternalFiles(&b, s.EnvFiles)
 	b.WriteByte('\n')
 
 	b.WriteString("command=")
@@ -97,6 +102,10 @@ func (s Service) canonical() string {
 	}
 	b.WriteByte('\n')
 
+	b.WriteString("label_files=")
+	writeExternalFiles(&b, s.LabelFiles)
+	b.WriteByte('\n')
+
 	b.WriteString("healthcheck=")
 	b.WriteString(s.Healthcheck.canonical())
 	b.WriteByte('\n')
@@ -111,6 +120,21 @@ func (s Service) canonical() string {
 	b.WriteByte('\n')
 
 	return b.String()
+}
+
+// writeExternalFiles preserves declaration order because later env_file and
+// label_file entries override earlier ones under Compose semantics.
+func writeExternalFiles(b *strings.Builder, files []ExternalFile) {
+	for _, file := range files {
+		b.WriteString(file.Path)
+		b.WriteByte('|')
+		b.WriteString(strconv.FormatBool(file.Required))
+		b.WriteByte('|')
+		b.WriteString(file.Format)
+		b.WriteByte('|')
+		b.WriteString(file.Digest)
+		b.WriteByte(0)
+	}
 }
 
 // canonical returns a deterministic string encoding of the healthcheck. The

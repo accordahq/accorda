@@ -18,7 +18,6 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/history"
 	"accorda/internal/core/plan"
-	"accorda/internal/sources/git"
 )
 
 // newPlanCmd builds the `accorda plan` command (docs/ACCORDA.md §11). It
@@ -54,41 +53,50 @@ func runPlan(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	src := git.New(proj.Source)
-	tgt, err := buildTarget(proj, dir)
+	src, err := buildSource(proj, dir)
+	if err != nil {
+		return err
+	}
+	tgt, err := buildTarget(proj, dir, src)
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
 
-	commit, err := src.Fetch(ctx)
-	if err != nil {
-		return fmt.Errorf("fetch desired state: %w", err)
-	}
-	desired, err := src.Desired(ctx, &commit)
-	if err != nil {
-		return fmt.Errorf("read desired state: %w", err)
-	}
+	// Re-reading the deployed commit from the managed worktree temporarily
+	// checks out a historical revision, so plan takes the same deployment
+	// lock as sync to avoid racing a concurrent deployment
+	// (docs/DECISIONS.md #43).
+	return withDeploymentLock(ctx, dir, proj.Target, func() error {
+		commit, err := src.Fetch(ctx)
+		if err != nil {
+			return fmt.Errorf("fetch desired state: %w", err)
+		}
+		desired, err := src.Desired(ctx, &commit)
+		if err != nil {
+			return fmt.Errorf("read desired state: %w", err)
+		}
 
-	// The plan is computed against the last known-healthy deployment as the
-	// deployed baseline (docs/ACCORDA.md §20). The baseline is the full
-	// service model re-read from the source at the deployed commit (the
-	// receipt journal stores only image/digest), so `accorda plan` and
-	// `accorda diff` agree on the deployed side and a converged service is
-	// not over-reported as CHANGED. Note this differs from `accorda sync`,
-	// whose reconcile loop passes the image-only `previousFromHistory`
-	// baseline to Target.Plan; threading the full-model baseline into sync is
-	// a follow-up. When history has no healthy deployment, the baseline is
-	// nil and the plan treats every desired service as new.
-	store := history.NewFileStore(receiptPath(dir))
-	deployed := deployedStateFromDesired(deployedAtCommit(ctx, src, store, cmd.ErrOrStderr()))
-	p, err := tgt.Plan(ctx, desired, deployed)
-	if err != nil {
-		return err
-	}
+		// The plan is computed against the last known-healthy deployment as the
+		// deployed baseline (docs/ACCORDA.md §20). The baseline is the full
+		// service model re-read from the source at the deployed commit (the
+		// receipt journal stores only image/digest), so `accorda plan` and
+		// `accorda diff` agree on the deployed side and a converged service is
+		// not over-reported as CHANGED. The reconcile loop independently hydrates
+		// its receipt baseline from the same deployed Git commit before planning,
+		// so plan and sync compare equivalent full models. When history has no
+		// healthy deployment, the baseline is nil and the plan treats every
+		// desired service as new.
+		store := history.NewFileStore(receiptPath(dir))
+		deployed := deployedStateFromDesired(deployedAtCommit(ctx, src, store, cmd.ErrOrStderr()))
+		p, err := tgt.Plan(ctx, desired, deployed)
+		if err != nil {
+			return err
+		}
 
-	writePlan(cmd.OutOrStdout(), p)
-	return nil
+		writePlan(cmd.OutOrStdout(), p)
+		return nil
+	})
 }
 
 // writePlan prints the plan in the format shown in docs/ACCORDA.md §11. It

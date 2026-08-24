@@ -37,6 +37,14 @@ type Source interface {
 	Desired(ctx context.Context, ref *Commit) (*state.DesiredState, error)
 }
 
+// RevisionMaterializer is an optional source capability used when a target
+// consumes repository files directly. It makes one already-fetched revision
+// the active managed worktree without contacting the remote. Core uses it
+// before rollback so file-backed target inputs match the restored commit.
+type RevisionMaterializer interface {
+	Materialize(ctx context.Context, ref *Commit) error
+}
+
 // Commit identifies a point in the Git history the source fetched.
 type Commit struct {
 	// SHA is the full or abbreviated commit hash.

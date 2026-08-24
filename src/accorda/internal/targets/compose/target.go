@@ -194,6 +194,17 @@ func (t *Target) Validate(ctx context.Context) error {
 	if _, err := LoadFile(t.file); err != nil {
 		return err
 	}
+	return t.ValidateEnvironment(ctx)
+}
+
+// ValidateEnvironment checks the Docker engine and Compose CLI without
+// reading the Compose file. The doctor command uses it before a managed Git
+// checkout exists; sync still calls Validate after Fetch and therefore
+// validates the fetched Compose document before mutation.
+func (t *Target) ValidateEnvironment(ctx context.Context) error {
+	if t == nil {
+		return errors.New("compose target: nil target")
+	}
 	if t.docker == nil {
 		return errors.New("compose target: docker client is nil")
 	}

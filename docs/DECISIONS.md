@@ -1168,3 +1168,122 @@ Interactive users and jobs keep a terminating `sync`, while deployments run
 `sync --watch` under an external process supervisor such as systemd or Docker.
 The supervisor owns restart and startup policy; Accorda owns polling,
 reconciliation, and graceful in-flight cancellation.
+
+### 40. Compose deploys from the Git source's managed checkout
+
+**Context.** The Git adapter already cloned and updated the declared source in
+a private cache, but CLI wiring resolved a relative Compose target beside
+`accorda.yaml`. Operators therefore had to maintain a second application
+checkout, and a newly fetched commit could be planned while `docker compose`
+applied a stale local file. This contradicted the Git-driven flow in
+`docs/ACCORDA.md` §6, §8, §13, and §25.
+
+**Decision.** `cmd/accorda` resolves repository-relative Compose targets
+through `git.Git.CheckoutPath` and runs the target against the same managed
+worktree updated by `Source.Fetch`. `source.path` may select a Compose file or
+a directory combined with `target.file`; an omitted source path uses the
+target path. Checkout path resolution rejects absolute paths and traversal.
+The Compose project name remains derived from the operator project directory
+so moving the internal cache does not change target identity. Absolute target
+paths remain explicit local overrides. `accorda init` records a relative
+`--file` in both source and target configuration, while `doctor` checks Docker
+without fetching when the managed checkout does not exist yet.
+
+**Consequence.** `accorda.yaml` can live independently from the application
+repository, and the first `plan` or `sync` creates the only checkout Accorda
+needs. Fetch, desired-state parsing, relative Compose resources, deployment,
+and watch updates all use one revision; Core interfaces remain unchanged and
+provider-independent.
+
+### 41. Compose interpolation uses declared defaults, not host values
+
+**Context.** Leaving interpolation disabled preserved `${VAR:-default}` as a
+literal, which compose-go could not normalize in typed fields such as short
+port mappings. Using the process environment instead would make desired state
+host-dependent and could leak secrets into comparisons or output.
+
+**Decision.** `internal/targets/compose.ParseWithContext` enables compose-go
+interpolation with an explicit empty environment. Compose declaration defaults
+therefore resolve (`${PORT:-80}` becomes `80`), while ambient environment values
+are never consulted. `env_file` and `label_file` resolution is skipped while
+parsing desired state so host-local files and secret values are not required or
+ingested; Docker Compose resolves those deployment-time inputs from the managed
+checkout when it applies the target. Variables without declared defaults resolve
+according to Compose's empty-environment semantics.
+
+**Consequence.** Git-authored defaulted ports, URLs, and other typed Compose
+fields parse deterministically on every host without incorporating local
+secrets into desired state.
+
+### 42. Receipt baselines are hydrated from deployed Git revisions
+
+**Context.** Deployment receipts intentionally record image references and
+digests rather than duplicating the complete desired service model. After an
+agent restart, reconstructing `DeployedState` from only those image fields made
+the Compose target compare a partial service against the complete Git model.
+An unchanged healthy commit was therefore planned as a full recreation.
+
+**Decision.** A reconciler that recovers its previous deployment from receipts
+hydrates that image-only baseline before target planning. If the receipt commit
+matches the current validated desired state, it reuses that in-memory model. If
+the commits differ, it reads and validates desired state at the receipt commit
+through the target-agnostic `Source` interface. Failure to recover the complete
+historical model fails reconciliation before target mutation instead of
+planning from partial data. Explicit `WithPrevious` values remain unchanged;
+only receipt-derived baselines require hydration.
+
+**Consequence.** Restarted and one-shot agents treat an unchanged deployment as
+a no-op, while changed commits still receive an accurate full-model comparison.
+Receipts remain compact and image/digest-focused, and Core gains no Compose- or
+provider-specific dependency.
+
+### 43. Managed Compose inputs are isolated and planned with deployment semantics
+
+**Context.** A repository-URL-only cache allowed independent Accorda projects
+to mutate the same checkout, so different branches could race between desired
+state parsing and Compose apply. Compose parsing also lacked the file's project
+directory, discarded `env_file` and `label_file` declarations, and used
+different interpolation inputs than the Compose CLI. Those gaps could apply a
+different revision or configuration than the plan. `doctor` additionally
+treated any missing managed file as an unfetched checkout.
+
+**Decision.** CLI-created Git sources namespace the credential-free repository
+cache identity by the absolute operator project directory. Compose loads with
+the managed file's filename and project directory, retains ordered external
+file declarations, and includes SHA-256 digests for referenced files present
+in the Git revision without retaining their contents. Planning and Compose
+execution share a controlled Docker-operational environment; arbitrary host
+application variables are excluded and implicit `.env` interpolation is
+disabled. Before Compose rollback, sources that implement the optional
+`RevisionMaterializer` capability activate the previous Git revision so its
+file-backed inputs are restored. `doctor` defers missing-file validation only
+when the managed Git checkout itself does not exist.
+
+**Consequence.** Separate project files can safely deploy different branches
+of one repository, file-relative Compose features resolve against the reviewed
+snapshot, and file-backed or interpolated changes cannot bypass plan identity.
+Rollback restores the Compose document and tracked referenced files from the
+same commit, while local untracked secret values remain outside desired state
+and history.
+
+### 44. Read-only commands serialize historical worktree reads with the deployment lock
+
+**Context.** Reading desired state at a historical commit (used by `accorda
+plan` and `accorda diff` to reconstruct the deployed baseline) temporarily
+checks out that revision into the shared managed worktree so Compose's
+`extends`/`includes` and relative resources resolve against the reviewed
+snapshot. A concurrent `sync` that reads the on-disk Compose file during that
+window could apply the wrong revision. `plan` and `diff` are otherwise
+read-only and previously took no lock.
+
+**Decision.** `accorda plan` and `accorda diff` acquire the same target-scoped
+deployment lock that `sync` holds for the duration of their source reads and
+plan computation. The lock is released before the command returns, so the
+read-only commands serialize only their worktree-mutating section against a
+concurrent deployment, not the whole process.
+
+**Consequence.** A `plan` or `diff` running while `sync` deploys waits for the
+deployment to finish (or the lock to be released) before reading historical
+desired state, eliminating the wrong-revision window. The lock is advisory and
+per-target, so independent projects remain unaffected.
+

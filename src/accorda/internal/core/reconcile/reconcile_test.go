@@ -82,6 +82,8 @@ type fakeTarget struct {
 	// changedPlan makes Plan return a plan with a non-noop action so the
 	// reconciler treats the deployment as changed (and records a receipt).
 	changedPlan bool
+	// plannedPrevious captures the deployed baseline passed to Plan.
+	plannedPrevious *state.DeployedState
 }
 
 func (f *fakeTarget) Validate(context.Context) error { return f.validateErr }
@@ -91,8 +93,12 @@ func (f *fakeTarget) Current(context.Context) (*state.RuntimeState, error) {
 	}
 	return f.runtime, nil
 }
-func (f *fakeTarget) Plan(_ context.Context, desired *state.DesiredState, _ *state.DeployedState) (*plan.Plan, error) {
+func (f *fakeTarget) Plan(_ context.Context, desired *state.DesiredState, deployed *state.DeployedState) (*plan.Plan, error) {
 	f.planCalls++
+	if deployed != nil {
+		cloned := deployed.Clone()
+		f.plannedPrevious = &cloned
+	}
 	if f.planErr != nil {
 		return nil, f.planErr
 	}
@@ -835,6 +841,81 @@ func TestReconcile_NoopPlan_NoReceipt(t *testing.T) {
 	requireReceiptCount(t, store, 0)
 }
 
+func TestReconcile_HydratesReceiptBaselineForUnchangedCommit(t *testing.T) {
+	desired := healthyDesired()
+	desired.Services["api"] = state.Service{
+		Image:   "api:2",
+		Command: []string{"serve", "--port", "3000"},
+		Env:     map[string]string{"MODE": "production"},
+	}
+	src := &fakeSource{commit: sources.Commit{SHA: desired.Commit}, desired: desired}
+	tgt := &fakeTarget{health: healthyHealth(), runtime: healthyRuntime()}
+	store := &fakeStore{appended: []history.Receipt{{
+		DeploymentID: "dep_healthy",
+		Commit:       desired.Commit,
+		Result:       history.OutcomeHealthy,
+		Services: map[string]history.ServiceReceipt{
+			"api": {Image: "api:2", Digest: "sha256:91a"},
+		},
+	}}}
+
+	res := New(src, tgt, events.NewBus()).WithReceiptStore(store).Reconcile(context.Background())
+
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	}
+	if tgt.plannedPrevious == nil {
+		t.Fatal("Plan previous state = nil, want hydrated deployed state")
+	}
+	if !reflect.DeepEqual(tgt.plannedPrevious.Services, desired.Services) {
+		t.Errorf("Plan previous services = %+v, want full desired services %+v",
+			tgt.plannedPrevious.Services, desired.Services)
+	}
+	requireReceiptCount(t, store, 1)
+}
+
+// TestReconcile_HydrationFailsClosedWhenPreviousCommitUnavailable verifies
+// the documented fail-closed behavior (docs/DECISIONS.md #42): when the
+// receipt-derived baseline's commit cannot be read from the source (for
+// example the managed cache was cleared or the commit was force-pushed
+// away), reconciliation fails before any target mutation rather than
+// planning from a partial image-only baseline.
+func TestReconcile_HydrationFailsClosedWhenPreviousCommitUnavailable(t *testing.T) {
+	desired := healthyDesired()
+	desired.Commit = "new456"
+	desired.Services["api"] = state.Service{Image: "api:3"}
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "new456", Branch: "main"},
+		desired: desired,
+		// The previous commit is absent from the source, so hydration fails.
+		desiredByCommit: map[string]*state.DesiredState{"prev123": nil},
+	}
+	tgt := &fakeTarget{health: healthyHealth(), runtime: healthyRuntime(), changedPlan: true}
+	store := &fakeStore{appended: []history.Receipt{{
+		DeploymentID: "dep_healthy",
+		Commit:       "prev123",
+		Result:       history.OutcomeHealthy,
+		Services: map[string]history.ServiceReceipt{
+			"api": {Image: "api:1", Digest: "sha256:91a"},
+		},
+	}}}
+
+	res := New(src, tgt, events.NewBus()).WithReceiptStore(store).Reconcile(context.Background())
+
+	if res.Phase != PhaseFailed {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "previous desired state") {
+		t.Errorf("Err = %v, want previous-desired-state failure", res.Err)
+	}
+	if tgt.planCalls != 0 {
+		t.Errorf("Plan calls = %d, want 0 (must fail before planning)", tgt.planCalls)
+	}
+	if tgt.applyCalls != 0 {
+		t.Errorf("Apply calls = %d, want 0 (must fail before target mutation)", tgt.applyCalls)
+	}
+}
+
 func TestReconcile_ResumesUnfinishedDeploymentAtCachedHead(t *testing.T) {
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123", Branch: "main"},
@@ -1190,6 +1271,16 @@ type applyDesiredTarget struct {
 	applyDesired []*state.DesiredState
 }
 
+type materializingFakeSource struct {
+	*fakeSource
+	materialized []string
+}
+
+func (f *materializingFakeSource) Materialize(_ context.Context, ref *sources.Commit) error {
+	f.materialized = append(f.materialized, ref.SHA)
+	return nil
+}
+
 func (f *applyDesiredTarget) ApplyDesired(_ context.Context, desired *state.DesiredState) (*plan.Plan, error) {
 	f.applyDesired = append(f.applyDesired, desired)
 	p := plan.New("", desired.Repository, desired.Commit, time.Unix(0, 0))
@@ -1249,5 +1340,32 @@ func TestReconcile_ApplyFailure_RollsBackViaApplyDesired(t *testing.T) {
 	// The fake's Plan path must not have been used for the rollback.
 	if len(tgt.fakeTarget.applied) != 0 {
 		t.Errorf("Plan-based rollback applied %d plans, want 0 (ApplyDesired used)", len(tgt.fakeTarget.applied))
+	}
+}
+
+func TestReconcile_RollbackMaterializesPreviousSourceRevision(t *testing.T) {
+	src := &materializingFakeSource{fakeSource: &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+		desiredByCommit: map[string]*state.DesiredState{
+			"prev123": previousDesired(),
+		},
+	}}
+	tgt := &applyDesiredTarget{}
+	tgt.applyErr = errors.New("apply boom")
+	tgt.changedPlan = true
+	previous := &state.DeployedState{
+		DeploymentID: "dep_0",
+		Commit:       "prev123",
+		Services:     map[string]state.Service{"api": {Image: "api:1"}},
+	}
+
+	res := New(src, tgt, events.NewBus()).WithPrevious(previous).Reconcile(context.Background())
+
+	if !res.RolledBack {
+		t.Fatalf("RolledBack = false, want true (err=%v)", res.Err)
+	}
+	if !reflect.DeepEqual(src.materialized, []string{"prev123"}) {
+		t.Errorf("materialized revisions = %v, want [prev123]", src.materialized)
 	}
 }

@@ -26,7 +26,6 @@ import (
 	"accorda/internal/core/state"
 	"accorda/internal/secrets"
 	"accorda/internal/sources"
-	"accorda/internal/sources/git"
 	"accorda/internal/targets/compose"
 )
 
@@ -77,26 +76,34 @@ func runDiff(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	src := git.New(proj.Source)
+	src, err := buildSource(proj, dir)
+	if err != nil {
+		return err
+	}
 	ctx := context.Background()
 
-	// Fetch first so the desired side reflects the current remote tip, not a
-	// stale local cache (the git source's Desired only fetches when the cache
-	// is empty). This matches `accorda plan` and `accorda status`.
-	commit, err := src.Fetch(ctx)
-	if err != nil {
-		return fmt.Errorf("fetch desired state: %w", err)
-	}
-	desired, err := src.Desired(ctx, &commit)
-	if err != nil {
-		return fmt.Errorf("read desired state: %w", err)
-	}
+	// Re-reading the deployed commit from the managed worktree temporarily
+	// checks out a historical revision, so diff takes the same deployment lock
+	// as sync to avoid racing a concurrent deployment (docs/DECISIONS.md #43).
+	return withDeploymentLock(ctx, dir, proj.Target, func() error {
+		// Fetch first so the desired side reflects the current remote tip, not a
+		// stale local cache (the git source's Desired only fetches when the cache
+		// is empty). This matches `accorda plan` and `accorda status`.
+		commit, err := src.Fetch(ctx)
+		if err != nil {
+			return fmt.Errorf("fetch desired state: %w", err)
+		}
+		desired, err := src.Desired(ctx, &commit)
+		if err != nil {
+			return fmt.Errorf("read desired state: %w", err)
+		}
 
-	store := history.NewFileStore(receiptPath(dir))
-	deployed := deployedAtCommit(ctx, src, store, cmd.ErrOrStderr())
+		store := history.NewFileStore(receiptPath(dir))
+		deployed := deployedAtCommit(ctx, src, store, cmd.ErrOrStderr())
 
-	writeDiff(cmd.OutOrStdout(), buildDiff(deployed, desired))
-	return nil
+		writeDiff(cmd.OutOrStdout(), buildDiff(deployed, desired))
+		return nil
+	})
 }
 
 // deployedAtCommit returns the full desired state at the last healthy
@@ -211,13 +218,33 @@ func diffService(d, s state.Service) []diffNode {
 	fields = append(fields, diffScalar("image", d.Image, s.Image)...)
 	fields = append(fields, diffJoined("command", d.Command, s.Command)...)
 	fields = append(fields, diffSensitiveKV("environment", d.Env, s.Env)...)
+	fields = append(fields, diffJoined("env_file", externalFileIdentities(d.EnvFiles), externalFileIdentities(s.EnvFiles))...)
 	fields = append(fields, diffJoined("ports", compose.StringPorts(d.Ports), compose.StringPorts(s.Ports))...)
 	fields = append(fields, diffJoined("volumes", compose.StringVolumes(d.Volumes), compose.StringVolumes(s.Volumes))...)
 	fields = append(fields, diffJoined("networks", d.Networks, s.Networks)...)
 	fields = append(fields, diffKV("labels", d.Labels, s.Labels)...)
+	fields = append(fields, diffJoined("label_file", externalFileIdentities(d.LabelFiles), externalFileIdentities(s.LabelFiles))...)
 	fields = append(fields, diffHealthcheck(d.Healthcheck, s.Healthcheck)...)
 	fields = append(fields, diffJoined("depends_on", d.DependsOn, s.DependsOn)...)
 	return fields
+}
+
+func externalFileIdentities(files []state.ExternalFile) []string {
+	out := make([]string, 0, len(files))
+	for _, file := range files {
+		identity := file.Path
+		if !file.Required {
+			identity += " (optional)"
+		}
+		if file.Format != "" {
+			identity += " format=" + file.Format
+		}
+		if file.Digest != "" {
+			identity += " sha256=" + file.Digest[:min(12, len(file.Digest))]
+		}
+		out = append(out, identity)
+	}
+	return out
 }
 
 // diffScalar returns a single-value field node when deployed and desired

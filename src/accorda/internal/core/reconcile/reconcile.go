@@ -141,6 +141,11 @@ type Reconciler struct {
 	// when a deployment fails (docs/ACCORDA.md §20). It may be nil when
 	// there is no prior deployment.
 	previous *state.DeployedState
+	// previousNeedsHydration marks a deployment reconstructed from the
+	// image-only receipt journal. Before planning, the reconciler replaces
+	// that partial state with the complete desired model from its Git commit
+	// so unchanged service configuration is not mistaken for drift.
+	previousNeedsHydration bool
 	// driftPolicy selects how the reconciler reacts to runtime drift
 	// (docs/ACCORDA.md §5.3). It defaults to DriftReport.
 	driftPolicy DriftPolicy
@@ -250,6 +255,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) *Result {
 	r.pending = pending
 	if previous != nil {
 		r.previous = previous
+		r.previousNeedsHydration = true
 	}
 
 	for {
@@ -296,6 +302,9 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) *Result {
 	desired, ok := r.validate(ctx, res, commit)
 	if !ok {
 		return res
+	}
+	if err := r.hydratePrevious(ctx, desired); err != nil {
+		return r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
 	}
 	if err := r.prepareRecovery(ctx, commit); err != nil {
 		return r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
@@ -364,6 +373,41 @@ func deployedFromReceipts(receipts []history.Receipt) *state.DeployedState {
 			Services:     services,
 		}
 	}
+	return nil
+}
+
+// hydratePrevious replaces an image-only receipt baseline with the complete
+// service model declared at the deployed commit. When the current and deployed
+// commits match, the already validated desired state is the exact baseline and
+// no second source read is needed. For different commits, Source.Desired reads
+// the historical revision. Failing closed prevents a partial baseline from
+// causing an unnecessary full recreation.
+func (r *Reconciler) hydratePrevious(ctx context.Context, desired *state.DesiredState) error {
+	if !r.previousNeedsHydration || r.previous == nil {
+		return nil
+	}
+	previousDesired := desired
+	if r.previous.Commit != desired.Commit {
+		var err error
+		previousDesired, err = r.source.Desired(ctx, &sources.Commit{SHA: r.previous.Commit})
+		if err != nil {
+			return fmt.Errorf("reconcile: read previous desired state at %s: %w", r.previous.Commit, err)
+		}
+		if previousDesired == nil {
+			return fmt.Errorf("reconcile: previous desired state at %s is nil", r.previous.Commit)
+		}
+		if err := previousDesired.Validate(); err != nil {
+			return fmt.Errorf("reconcile: validate previous desired state at %s: %w", r.previous.Commit, err)
+		}
+	}
+	services := previousDesired.Clone().Services
+	r.previous = &state.DeployedState{
+		DeploymentID: r.previous.DeploymentID,
+		Commit:       r.previous.Commit,
+		DeployedAt:   r.previous.DeployedAt,
+		Services:     services,
+	}
+	r.previousNeedsHydration = false
 	return nil
 }
 
@@ -774,43 +818,74 @@ func (r *Reconciler) rollback(ctx context.Context, res *Result, failed *state.De
 	if r.previous == nil || r.previous.Commit == "" {
 		return
 	}
-	// Restore the full desired state at the previous commit from the source so
-	// the rollback restores the complete service model (command, env, ports,
-	// volumes, healthcheck, ...), not just the image reference recorded in the
-	// receipt. Fall back to the recorded services if the source cannot be read
-	// (the "where safely possible" qualifier in docs/ACCORDA.md §20).
+	prevDesired := r.resolvePrevDesired(ctx, failed)
+	applied, ok := r.applyRollback(ctx, prevDesired)
+	if !ok {
+		return
+	}
+	res.RolledBack = true
+	res.RolledBackTo = r.previous.Commit
+	r.emit(ctx, events.EventDeploymentRolledBack, nil)
+	r.recordRollbackReceipt(ctx, prevDesired, applied)
+}
+
+// resolvePrevDesired restores the full desired state at the previous commit
+// from the source so the rollback restores the complete service model
+// (command, env, ports, volumes, healthcheck, ...), not just the image
+// reference recorded in the receipt. It falls back to the recorded services
+// if the source cannot be read (the "where safely possible" qualifier in
+// docs/ACCORDA.md §20).
+func (r *Reconciler) resolvePrevDesired(ctx context.Context, failed *state.DesiredState) *state.DesiredState {
 	prevDesired := &state.DesiredState{
 		Repository: failed.Repository,
 		Branch:     failed.Branch,
 		Commit:     r.previous.Commit,
 		Services:   r.previous.Services,
 	}
-	if r.source != nil {
-		if ds, err := r.source.Desired(ctx, &sources.Commit{SHA: r.previous.Commit}); err == nil && ds != nil && len(ds.Services) > 0 {
-			prevDesired = ds
-		}
+	if r.source == nil {
+		return prevDesired
 	}
-	var applied *plan.Plan
+	if ds, err := r.source.Desired(ctx, &sources.Commit{SHA: r.previous.Commit}); err == nil && ds != nil && len(ds.Services) > 0 {
+		return ds
+	}
+	return prevDesired
+}
+
+// applyRollback converges the target to the previous desired state and returns
+// the plan that was applied. A target that implements the desiredApplier
+// capability (for example the Compose target, which materializes the desired
+// services into the on-disk Compose file before `docker compose up -d`) is
+// rolled back by applying the previous desired state directly, so the on-disk
+// artifact reflects the restored services. A target that only implements the
+// Target interface is rolled back by re-planning and re-applying the previous
+// deployed services. It reports ok=false when the rollback cannot be applied.
+func (r *Reconciler) applyRollback(ctx context.Context, prevDesired *state.DesiredState) (*plan.Plan, bool) {
 	if applier, ok := r.target.(desiredApplier); ok {
-		var err error
-		applied, err = applier.ApplyDesired(ctx, prevDesired)
-		if err != nil {
-			return
-		}
-	} else {
-		p, err := r.target.Plan(ctx, prevDesired, nil)
-		if err != nil {
-			return
-		}
-		if err := r.target.Apply(ctx, p); err != nil {
-			return
-		}
-		applied = p
+		return r.applyDesiredRollback(ctx, applier, prevDesired)
 	}
-	res.RolledBack = true
-	res.RolledBackTo = r.previous.Commit
-	r.emit(ctx, events.EventDeploymentRolledBack, nil)
-	r.recordRollbackReceipt(ctx, prevDesired, applied)
+	p, err := r.target.Plan(ctx, prevDesired, nil)
+	if err != nil {
+		return nil, false
+	}
+	if err := r.target.Apply(ctx, p); err != nil {
+		return nil, false
+	}
+	return p, true
+}
+
+// applyDesiredRollback rolls back through the desiredApplier capability,
+// materializing the previous revision first when the source supports it.
+func (r *Reconciler) applyDesiredRollback(ctx context.Context, applier desiredApplier, prevDesired *state.DesiredState) (*plan.Plan, bool) {
+	if materializer, supported := r.source.(sources.RevisionMaterializer); supported {
+		if err := materializer.Materialize(ctx, &sources.Commit{SHA: r.previous.Commit}); err != nil {
+			return nil, false
+		}
+	}
+	applied, err := applier.ApplyDesired(ctx, prevDesired)
+	if err != nil {
+		return nil, false
+	}
+	return applied, true
 }
 
 // recordRollbackReceipt writes a rollback receipt so the deployment history

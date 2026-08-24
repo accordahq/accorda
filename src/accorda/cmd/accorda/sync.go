@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -64,21 +66,36 @@ func runSync(cmd *cobra.Command, dir string, watch bool) error {
 		return err
 	}
 
-	src := git.New(proj.Source)
-	tgt, err := buildTarget(proj, dir)
+	src, err := buildSource(proj, dir)
+	if err != nil {
+		return err
+	}
+	tgt, err := buildTarget(proj, dir, src)
 	if err != nil {
 		return err
 	}
 
 	store := history.NewFileStore(receiptPath(dir))
-	r := reconcile.New(src, tgt, events.NewBus()).
+	bus := events.NewBus()
+	unsubscribe := bus.Subscribe(syncProgressWriter(cmd.OutOrStdout()))
+	defer unsubscribe()
+	r := reconcile.New(src, tgt, bus).
 		WithDriftPolicy(driftPolicy(proj.Reconcile.Drift)).
 		WithEnvironment(proj.Environment).
 		WithReceiptStore(store).
 		WithLocker(locking.NewFileLocker(deploymentLockPath(dir, proj.Target)))
+	return runReconciler(cmd, watch, proj.Sync.Interval, r)
+}
+
+type syncReconciler interface {
+	Reconcile(context.Context) *reconcile.Result
+	Run(context.Context, time.Duration, reconcile.ResultHandler) error
+}
+
+func runReconciler(cmd *cobra.Command, watch bool, interval time.Duration, r syncReconciler) error {
 	ctx := cmd.Context()
 	if watch {
-		return r.Run(ctx, proj.Sync.Interval, func(res *reconcile.Result) {
+		return r.Run(ctx, interval, func(res *reconcile.Result) {
 			if resultErr := writeSyncResult(cmd, res); resultErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "sync: %v\n", resultErr)
 			}
@@ -87,16 +104,39 @@ func runSync(cmd *cobra.Command, dir string, watch bool) error {
 	return writeSyncResult(cmd, r.Reconcile(ctx))
 }
 
+// syncProgressWriter returns an event handler that prints lifecycle progress
+// while reconciliation is running. Terminal phases are left to
+// writeSyncResult so each cycle has one unambiguous final outcome line.
+func syncProgressWriter(w io.Writer) events.Handler {
+	return func(_ context.Context, event events.Event) {
+		if event.Type != events.EventStateTransition {
+			return
+		}
+		transition, ok := event.Payload.(reconcile.StateTransition)
+		if !ok || transition.To == reconcile.PhaseSynced || transition.To == reconcile.PhaseFailed {
+			return
+		}
+		fmt.Fprintf(w, "sync: %s", transition.To)
+		if transition.Commit != "" {
+			fmt.Fprintf(w, " commit=%s", shortSHA(transition.Commit))
+		}
+		if transition.DeploymentID != "" {
+			fmt.Fprintf(w, " deployment=%s", transition.DeploymentID)
+		}
+		fmt.Fprintln(w)
+	}
+}
+
 // writeSyncResult prints one reconciliation cycle. A failed cycle is returned
 // as an error for one-shot sync; watch mode logs it and keeps polling so a
 // transient source or target failure can recover without restarting Accorda.
 func writeSyncResult(cmd *cobra.Command, res *reconcile.Result) error {
 	if res.Phase == reconcile.PhaseFailed {
+		fmt.Fprintf(cmd.OutOrStdout(), "sync: %s\n", res.Phase)
 		if res.RolledBack {
 			// A failed deployment was rolled back to a known previous commit.
 			// Report the rollback clearly so a user sees what was restored and
 			// why the active state is healthy (docs/ACCORDA.md §20).
-			fmt.Fprintf(cmd.OutOrStdout(), "sync: %s\n", res.Phase)
 			fmt.Fprintf(cmd.OutOrStdout(), "rollback: restored to commit %s\n", res.RolledBackTo)
 			return fmt.Errorf("reconciliation failed and was rolled back: %w", res.Err)
 		}
@@ -166,32 +206,78 @@ func lastHealthyReceipt(store history.Store) (*history.Receipt, error) {
 	return nil, nil
 }
 
-// buildTarget constructs the deployment target from the project's target
-// configuration, resolving relative target paths from the directory containing
-// accorda.yaml. Only the Compose target is implemented; other target types are
-// recognized by the config loader but have no driver yet.
-func buildTarget(p *config.Project, dir string) (*compose.Target, error) {
+// buildSource resolves the repository-relative Compose artifact shared by the
+// Git source and Compose target. A source path naming a directory is combined
+// with the target filename; an explicit source YAML path wins.
+func buildSource(p *config.Project, dir string) (*git.Git, error) {
+	source := p.Source
+	targetPath := configuredTargetPath(p.Target)
+	if filepath.IsAbs(targetPath) {
+		targetPath = ""
+	}
+	composePath, err := git.ComposePath(source.Path, targetPath)
+	if err != nil {
+		return nil, err
+	}
+	source.Path = composePath
+	projectDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project directory: %w", err)
+	}
+	return git.New(source, git.WithCacheNamespace(filepath.Clean(projectDir))), nil
+}
+
+// buildTarget constructs the deployment target against the Git source's
+// managed checkout. Only the Compose target is implemented; other target
+// types are recognized by the config loader but have no driver yet.
+func buildTarget(p *config.Project, dir string, src *git.Git) (*compose.Target, error) {
 	if p.Target.Type != config.TargetCompose {
 		return nil, fmt.Errorf("target type %q is not implemented", p.Target.Type)
 	}
-	target := resolveTargetPaths(dir, p.Target)
-	return compose.New(target,
+	target, managed, err := resolveTargetPaths(p.Target, src)
+	if err != nil {
+		return nil, err
+	}
+	options := []compose.Option{
 		compose.WithPullPolicy(p.Images.Pull),
 		compose.WithHealthTimeout(p.Health.Timeout),
 		compose.WithEnvironment(p.Environment),
-	)
+	}
+	if managed {
+		projectDir, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve project directory: %w", err)
+		}
+		options = append(options, compose.WithProjectName(filepath.Base(filepath.Clean(projectDir))))
+	}
+	return compose.New(target, options...)
 }
 
-// resolveTargetPaths interprets relative target paths from the project root.
-// It returns a copy so loading a target never mutates the parsed Project.
-func resolveTargetPaths(dir string, target config.Target) config.Target {
-	if target.File != "" && !filepath.IsAbs(target.File) {
-		target.File = filepath.Join(dir, target.File)
+// resolveTargetPaths points repository-relative Compose targets at the Git
+// source's managed checkout. Absolute target paths remain explicit local
+// overrides for backwards compatibility.
+func resolveTargetPaths(target config.Target, src *git.Git) (config.Target, bool, error) {
+	configured := configuredTargetPath(target)
+	if filepath.IsAbs(configured) {
+		return target, false, nil
 	}
-	if target.Path != "" && !filepath.IsAbs(target.Path) {
-		target.Path = filepath.Join(dir, target.Path)
+	if src == nil {
+		return config.Target{}, false, errors.New("build target: Git source is nil")
 	}
-	return target
+	file, err := src.CheckoutPath(src.Source.Path)
+	if err != nil {
+		return config.Target{}, false, err
+	}
+	target.File = file
+	target.Path = ""
+	return target, true, nil
+}
+
+func configuredTargetPath(target config.Target) string {
+	if target.File != "" {
+		return target.File
+	}
+	return target.Path
 }
 
 // receiptPath returns the path of the deployment receipt journal for the
@@ -204,12 +290,34 @@ func receiptPath(dir string) string {
 	return projectStatePath("receipts", dir, ".jsonl")
 }
 
+// withDeploymentLock acquires the target-scoped deployment lock for the
+// duration of fn and releases it on return. Read-only commands that re-read
+// historical desired state from the managed Git worktree (plan, diff) take
+// the same lock as sync so their temporary worktree checkout cannot race a
+// concurrent deployment that reads the on-disk Compose file
+// (docs/DECISIONS.md #43).
+func withDeploymentLock(ctx context.Context, dir string, target config.Target, fn func() error) error {
+	unlock, err := locking.NewFileLocker(deploymentLockPath(dir, target)).Lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+	return fn()
+}
+
 // deploymentLockPath returns the target-scoped lock file used to serialize
 // reconciliation across CLI processes. Hashing the effective Compose project
 // identity means different Compose files that mutate the same project share a
 // lock without exposing the project name in the state directory.
 func deploymentLockPath(dir string, target config.Target) string {
-	resolved := resolveTargetPaths(dir, target)
+	resolved := target
+	if configured := configuredTargetPath(target); !filepath.IsAbs(configured) {
+		if target.File != "" {
+			resolved.File = filepath.Join(dir, target.File)
+		} else {
+			resolved.Path = filepath.Join(dir, target.Path)
+		}
+	}
 	identity := resolved.Type + "\x00" + compose.ProjectName(resolved)
 	digest := sha256.Sum256([]byte(identity))
 	return filepath.Join(stateBase(), "accorda", "locks", fmt.Sprintf("%x.lock", digest))

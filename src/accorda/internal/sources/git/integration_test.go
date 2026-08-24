@@ -10,7 +10,9 @@ package git
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"accorda/internal/config"
@@ -151,6 +153,102 @@ func TestGitSource_DesiredAtOlderCommit(t *testing.T) {
 	}
 	if got, want := dsHead.Services["redis"].Image, "redis:8"; got != want {
 		t.Errorf("Desired redis.Image at HEAD = %q, want %q", got, want)
+	}
+}
+
+func TestGitSource_ComposeContextAndExternalFileDigests(t *testing.T) {
+	testutil.RequireGit(t)
+	origin := t.TempDir()
+	runGitCommand(t, origin, "init", "--initial-branch=main")
+	runGitCommand(t, origin, "config", "user.email", "accorda@example.test")
+	runGitCommand(t, origin, "config", "user.name", "Accorda Test")
+	deploy := filepath.Join(origin, "deploy")
+	if err := os.MkdirAll(filepath.Join(deploy, "data"), 0o755); err != nil {
+		t.Fatalf("mkdir deploy: %v", err)
+	}
+	writeIntegrationFile(t, filepath.Join(deploy, "base.yaml"), `services:
+  base:
+    image: api:1
+    volumes:
+      - ./data:/data
+`)
+	writeIntegrationFile(t, filepath.Join(deploy, "compose.yaml"), `services:
+  api:
+    extends:
+      file: ./base.yaml
+      service: base
+    env_file:
+      - service.env
+    label_file:
+      - labels.env
+`)
+	writeIntegrationFile(t, filepath.Join(deploy, "service.env"), "MODE=one\n")
+	writeIntegrationFile(t, filepath.Join(deploy, "labels.env"), "tier=one\n")
+	runGitCommand(t, origin, "add", ".")
+	runGitCommand(t, origin, "commit", "-m", "first")
+	oldSHA := runGitCommand(t, origin, "rev-parse", "HEAD")
+	writeIntegrationFile(t, filepath.Join(deploy, "service.env"), "MODE=two\n")
+	runGitCommand(t, origin, "add", "deploy/service.env")
+	runGitCommand(t, origin, "commit", "-m", "second")
+
+	cache := filepath.Join(t.TempDir(), "checkout")
+	g := New(config.Source{
+		Type: "git", URL: "file://" + origin, Branch: "main", Path: "deploy/compose.yaml",
+	}, WithCacheDir(cache))
+	ctx := context.Background()
+	head, err := g.Fetch(ctx)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	headDesired, err := g.Desired(ctx, &head)
+	if err != nil {
+		t.Fatalf("Desired HEAD: %v", err)
+	}
+	oldDesired, err := g.Desired(ctx, &sources.Commit{SHA: oldSHA, Branch: "main"})
+	if err != nil {
+		t.Fatalf("Desired old: %v", err)
+	}
+	if got := oldDesired.Services["api"].Image; got != "api:1" {
+		t.Errorf("extended image = %q, want api:1", got)
+	}
+	if got := oldDesired.Services["api"].Volumes[0].Source; got != "data" {
+		t.Errorf("relative bind source = %q, want data", got)
+	}
+	if headDesired.Services["api"].Hash() == oldDesired.Services["api"].Hash() {
+		t.Fatal("tracked env_file content change did not change service hash")
+	}
+	assertIntegrationFile(t, filepath.Join(cache, "deploy", "service.env"), "MODE=two\n")
+	if err := g.Materialize(ctx, &sources.Commit{SHA: oldSHA}); err != nil {
+		t.Fatalf("Materialize old: %v", err)
+	}
+	assertIntegrationFile(t, filepath.Join(cache, "deploy", "service.env"), "MODE=one\n")
+}
+
+func runGitCommand(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func writeIntegrationFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func assertIntegrationFile(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(got) != want {
+		t.Errorf("%s = %q, want %q", path, got, want)
 	}
 }
 

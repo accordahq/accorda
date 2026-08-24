@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"accorda/internal/config"
+	gitSource "accorda/internal/sources/git"
 )
 
 func TestRun_DoctorReportsMissingProject(t *testing.T) {
@@ -81,6 +83,25 @@ target:
 	}
 	if strings.Contains(results[1].detail, "not a private key") {
 		t.Fatalf("diagnose() leaked key material: %q", results[1].detail)
+	}
+}
+
+func TestManagedTargetPendingOnlyBeforeCheckoutExists(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "checkout")
+	src := gitSource.New(
+		config.Source{URL: "https://example.com/acme/repo.git", Branch: "main"},
+		gitSource.WithCacheDir(cacheDir),
+	)
+	missing := fmt.Errorf("compose missing: %w", os.ErrNotExist)
+	target := config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile}
+	if !managedTargetPending(src, target, missing) {
+		t.Fatal("missing unfetched checkout should be pending")
+	}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("create invalid checkout: %v", err)
+	}
+	if managedTargetPending(src, target, missing) {
+		t.Fatal("missing Compose file in existing or invalid checkout must fail validation")
 	}
 }
 

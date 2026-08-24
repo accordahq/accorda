@@ -10,6 +10,8 @@ package compose
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,12 +44,23 @@ const integrationCompose = `services:
 // temp directory and returns the file path and the derived project name.
 func writeIntegrationCompose(t *testing.T) (path, project string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := integrationProjectDir(t)
 	path = filepath.Join(dir, config.DefaultComposeFile)
 	if err := os.WriteFile(path, []byte(integrationCompose), 0o644); err != nil {
 		t.Fatalf("write compose: %v", err)
 	}
 	return path, composeProjectName(path)
+}
+
+func integrationProjectDir(t *testing.T) string {
+	t.Helper()
+	base := t.TempDir()
+	sum := sha256.Sum256([]byte(base + "\x00" + t.Name()))
+	dir := filepath.Join(base, fmt.Sprintf("accorda-compose-it-%x", sum[:8]))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir integration project: %v", err)
+	}
+	return dir
 }
 
 // newIntegrationTarget builds a real Compose target (no injected seams) for
@@ -157,5 +170,49 @@ func TestComposeTarget_ApplyCurrentHealthLifecycle(t *testing.T) {
 	}
 	if p2.Changed() {
 		t.Errorf("second plan should be unchanged, got %s", p2.String())
+	}
+}
+
+func TestComposeTarget_ApplyUsesControlledInterpolationEnvironment(t *testing.T) {
+	testutil.RequireCompose(t)
+	t.Setenv("ACCORDA_TEST_IMAGE_TAG", "9.9")
+	dir := integrationProjectDir(t)
+	path := filepath.Join(dir, config.DefaultComposeFile)
+	composeFile := `services:
+  api:
+    image: busybox:${ACCORDA_TEST_IMAGE_TAG:-1.36}
+    command: ["sh", "-c", "sleep 300"]
+`
+	if err := os.WriteFile(path, []byte(composeFile), 0o600); err != nil {
+		t.Fatalf("write compose: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("ACCORDA_TEST_IMAGE_TAG=9.9\n"), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	project := composeProjectName(path)
+	t.Cleanup(func() { down(t, path, project) })
+
+	services, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if got := services["api"].Image; got != "busybox:1.36" {
+		t.Fatalf("planned image = %q, want busybox:1.36", got)
+	}
+	tgt := newIntegrationTarget(t, path)
+	desired := &state.DesiredState{Commit: "abc123", Services: services}
+	p, err := tgt.Plan(context.Background(), desired, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if err := tgt.Apply(context.Background(), p); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	runtime, err := tgt.Current(context.Background())
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if got := runtime.Services["api"].Image; got != "busybox:1.36" {
+		t.Errorf("runtime image = %q, want planned busybox:1.36", got)
 	}
 }

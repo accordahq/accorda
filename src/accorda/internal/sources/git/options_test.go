@@ -45,6 +45,41 @@ func TestCacheDir(t *testing.T) {
 	}
 }
 
+func TestCacheDir_NamespaceIsolatesWorktrees(t *testing.T) {
+	baseDir := t.TempDir()
+	source := config.Source{URL: "https://example.com/acme/repo.git", Branch: "main"}
+	first := New(source, WithBaseDir(baseDir), WithCacheNamespace("/projects/production"))
+	second := New(source, WithBaseDir(baseDir), WithCacheNamespace("/projects/staging"))
+	firstDir, firstErr := first.cacheDir()
+	secondDir, secondErr := second.cacheDir()
+	if firstErr != nil || secondErr != nil {
+		t.Fatalf("cacheDir() errors = %v, %v", firstErr, secondErr)
+	}
+	if firstDir == secondDir {
+		t.Fatalf("namespaced cache paths collide: %q", firstDir)
+	}
+}
+
+func TestCacheDir_NamespaceStillCanonicalizesCredentials(t *testing.T) {
+	baseDir := t.TempDir()
+	clean := New(
+		config.Source{URL: "https://git.internal/acme/repo.git", Branch: "main"},
+		WithBaseDir(baseDir), WithCacheNamespace("/projects/production"),
+	)
+	credentialed := New(
+		config.Source{URL: "https://user:token@git.internal/acme/repo.git", Branch: "main"},
+		WithBaseDir(baseDir), WithCacheNamespace("/projects/production"),
+	)
+	cleanDir, cleanErr := clean.cacheDir()
+	credentialedDir, credentialedErr := credentialed.cacheDir()
+	if cleanErr != nil || credentialedErr != nil {
+		t.Fatalf("cacheDir() errors = %v, %v", cleanErr, credentialedErr)
+	}
+	if cleanDir != credentialedDir {
+		t.Errorf("credential-free identities differ: %q != %q", cleanDir, credentialedDir)
+	}
+}
+
 func TestCacheDir_CollidingLegacyURLsAreDistinct(t *testing.T) {
 	baseDir := t.TempDir()
 	first := New(config.Source{URL: "https://git.internal/acme/prod", Branch: "main"}, WithBaseDir(baseDir))

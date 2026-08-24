@@ -76,6 +76,117 @@ func TestParse_FullExample(t *testing.T) {
 	t.Run("postgres", func(t *testing.T) { assertPostgresService(t, services["postgres"]) })
 }
 
+func TestParse_InterpolationUsesDefaultsWithoutAmbientEnvironment(t *testing.T) {
+	t.Setenv("AURA_HTTP_PORT", "9999")
+	data := []byte(`services:
+  gateway:
+    image: gateway:1
+    env_file:
+      - missing-local-secrets.env
+    ports:
+      - "${AURA_HTTP_PORT:-80}:8080"
+    environment:
+      AURA_SITE_ADDRESS: ${AURA_SITE_ADDRESS:-http://localhost}
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	gateway := services["gateway"]
+	if len(gateway.Ports) != 1 || gateway.Ports[0].Host != "80" || gateway.Ports[0].Container != "8080" {
+		t.Errorf("gateway ports = %+v, want host 80 -> container 8080", gateway.Ports)
+	}
+	if got := gateway.Env["AURA_SITE_ADDRESS"]; got != "http://localhost" {
+		t.Errorf("AURA_SITE_ADDRESS = %q, want default http://localhost", got)
+	}
+}
+
+func TestParse_PreservesExternalFileDeclarations(t *testing.T) {
+	data := []byte(`services:
+  api:
+    image: api:1
+    env_file:
+      - defaults.env
+      - path: optional.env
+        required: false
+        format: raw
+    label_file:
+      - labels.env
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	wantEnv := []state.ExternalFile{
+		{Path: "defaults.env", Required: true},
+		{Path: "optional.env", Required: false, Format: "raw"},
+	}
+	if got := services["api"].EnvFiles; !reflect.DeepEqual(got, wantEnv) {
+		t.Errorf("EnvFiles = %+v, want %+v", got, wantEnv)
+	}
+	wantLabels := []state.ExternalFile{{Path: "labels.env", Required: true}}
+	if got := services["api"].LabelFiles; !reflect.DeepEqual(got, wantLabels) {
+		t.Errorf("LabelFiles = %+v, want %+v", got, wantLabels)
+	}
+}
+
+func TestLoadFile_UsesComposeFileDirectory(t *testing.T) {
+	dir := t.TempDir()
+	deployDir := filepath.Join(dir, "deploy")
+	if err := os.MkdirAll(deployDir, 0o755); err != nil {
+		t.Fatalf("mkdir deploy: %v", err)
+	}
+	base := `services:
+  base:
+    image: api:1
+    volumes:
+      - ./data:/data
+`
+	if err := os.WriteFile(filepath.Join(deployDir, "base.yaml"), []byte(base), 0o600); err != nil {
+		t.Fatalf("write base: %v", err)
+	}
+	root := `services:
+  api:
+    extends:
+      file: ./base.yaml
+      service: base
+`
+	composePath := filepath.Join(deployDir, "compose.yaml")
+	if err := os.WriteFile(composePath, []byte(root), 0o600); err != nil {
+		t.Fatalf("write compose: %v", err)
+	}
+	services, err := LoadFile(composePath)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	volumes := services["api"].Volumes
+	if len(volumes) != 1 || volumes[0].Source != "data" {
+		t.Errorf("Volumes = %+v, want project-relative data bind", volumes)
+	}
+}
+
+func TestControlledComposeEnvironment(t *testing.T) {
+	environ := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/operator",
+		"PORT=9999",
+		"COMPOSE_PROJECT_NAME=host-project",
+	}
+	got := controlledComposeEnvironment(environ)
+	if got["PATH"] != "/usr/bin" || got["HOME"] != "/home/operator" {
+		t.Errorf("controlled environment missing operational values: %v", got)
+	}
+	if _, ok := got["PORT"]; ok {
+		t.Errorf("controlled environment leaked application PORT: %v", got)
+	}
+	if _, ok := got["COMPOSE_PROJECT_NAME"]; ok {
+		t.Errorf("controlled environment leaked Compose project override: %v", got)
+	}
+	if got[composeDisableEnvFile] != "1" {
+		t.Errorf("%s = %q, want 1", composeDisableEnvFile, got[composeDisableEnvFile])
+	}
+}
+
 // assertAPIService checks the normalized fields of the `api` service.
 func assertAPIService(t *testing.T, api state.Service) {
 	t.Helper()
