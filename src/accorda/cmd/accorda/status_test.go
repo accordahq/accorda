@@ -156,6 +156,7 @@ func TestWriteStatus_ContainsExpectedColumns(t *testing.T) {
 		Sync:        "SYNCED",
 		Runtime:     "HEALTHY",
 		LastDeploy:  "2026-08-15 18:42:07",
+		Checkout:    "/cache/accorda/checkout",
 		services: []statusService{
 			{name: "api", state: "running", health: "healthy", image: "api:2.4.1"},
 		},
@@ -172,6 +173,7 @@ func TestWriteStatus_ContainsExpectedColumns(t *testing.T) {
 		"Sync          SYNCED",
 		"Runtime       HEALTHY",
 		"Last deploy   2026-08-15 18:42:07",
+		"Checkout      /cache/accorda/checkout",
 		"SERVICE      STATE       HEALTH      IMAGE",
 		"api          running     healthy     api:2.4.1",
 	} {
@@ -247,5 +249,49 @@ func TestCollectStatus_SyncLabelPopulatedWhenRuntimeUnreachable(t *testing.T) {
 	}
 	if info.Runtime != "unknown" {
 		t.Errorf("Runtime = %q, want unknown", info.Runtime)
+	}
+}
+
+// checkoutDirStub is a statusTestSource that also exposes a checkout path,
+// exercising the checkoutDirer capability path in collectStatus.
+type checkoutDirStub struct {
+	statusTestSource
+	checkoutDir string
+}
+
+func (c *checkoutDirStub) CheckoutDir() (string, error) { return c.checkoutDir, nil }
+
+// TestCollectStatus_PopulatesCheckoutFromSource verifies the Checkout field
+// is filled when the source implements checkoutDirer.
+func TestCollectStatus_PopulatesCheckoutFromSource(t *testing.T) {
+	src := &checkoutDirStub{
+		statusTestSource: statusTestSource{
+			commit: sources.Commit{SHA: "abc1234abcd", Branch: "main"},
+		},
+		checkoutDir: "/cache/accorda/managed-checkout",
+	}
+	proj := &config.Project{
+		Environment: "production",
+		Source:      config.Source{URL: "https://git.internal/acme/repo.git", Branch: "main"},
+	}
+	info := collectStatus(context.Background(), proj, src, nil, nil)
+	if info.Checkout != "/cache/accorda/managed-checkout" {
+		t.Errorf("Checkout = %q, want /cache/accorda/managed-checkout", info.Checkout)
+	}
+}
+
+// TestCollectStatus_CheckoutEmptyForStubSource verifies the Checkout field
+// stays empty when the source does not implement checkoutDirer.
+func TestCollectStatus_CheckoutEmptyForStubSource(t *testing.T) {
+	src := &statusTestSource{
+		commit: sources.Commit{SHA: "abc1234abcd", Branch: "main"},
+	}
+	proj := &config.Project{
+		Environment: "production",
+		Source:      config.Source{URL: "https://git.internal/acme/repo.git", Branch: "main"},
+	}
+	info := collectStatus(context.Background(), proj, src, nil, nil)
+	if info.Checkout != "" {
+		t.Errorf("Checkout = %q, want empty for non-checkoutDirer source", info.Checkout)
 	}
 }

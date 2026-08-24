@@ -44,14 +44,26 @@ target:
 	}
 
 	results := diagnose(t.Context(), dir)
-	if len(results) != 3 {
-		t.Fatalf("diagnose() returned %d results, want 3", len(results))
+	wantResults := []struct {
+		status string
+		name   string
+		detail string
+	}{
+		{doctorPass, doctorProject, ""},
+		{doctorPass, doctorSource, ""},
+		{doctorFail, doctorCompose, "not implemented"},
+		{doctorInfo, doctorCheckout, ""},
 	}
-	if results[0].status != doctorPass || results[1].status != doctorPass {
-		t.Fatalf("diagnose() prerequisites = %+v, want both PASS", results[:2])
+	if len(results) != len(wantResults) {
+		t.Fatalf("diagnose() returned %d results, want %d", len(results), len(wantResults))
 	}
-	if results[2].status != doctorFail || !strings.Contains(results[2].detail, "not implemented") {
-		t.Fatalf("diagnose() target result = %+v, want unsupported-target failure", results[2])
+	for i, want := range wantResults {
+		if results[i].status != want.status || results[i].name != want.name {
+			t.Fatalf("diagnose()[%d] = %+v, want status %q name %q", i, results[i], want.status, want.name)
+		}
+		if want.detail != "" && !strings.Contains(results[i].detail, want.detail) {
+			t.Fatalf("diagnose()[%d].detail = %q, want containing %q", i, results[i].detail, want.detail)
+		}
 	}
 }
 

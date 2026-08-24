@@ -336,6 +336,18 @@ func (g *Git) CheckoutExists() (bool, error) {
 	return true, nil
 }
 
+// CheckoutDir returns the absolute path of this source's managed Git worktree
+// root. The directory does not need to exist yet: Fetch creates it before the
+// reconcile loop validates or applies the target. Operators use it to stage
+// gitignored deployment-time inputs (env_file, label_file) that Compose
+// resolves relative to the checkout at apply time.
+func (g *Git) CheckoutDir() (string, error) {
+	if g == nil {
+		return "", errors.New("git source: nil source")
+	}
+	return g.cacheDir()
+}
+
 // CheckoutPath returns an absolute path inside this source's managed Git
 // worktree. The worktree does not need to exist yet: Fetch creates it before
 // the reconcile loop validates or applies the target.
