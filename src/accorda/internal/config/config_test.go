@@ -640,3 +640,103 @@ func TestMarshalProject_OmitsEmptySections(t *testing.T) {
 		t.Errorf("marshaled output should omit empty auth fields; got:\n%s", s)
 	}
 }
+
+func TestParse_ServiceOverrides(t *testing.T) {
+	yaml := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/backend.git
+  branch: main
+target:
+  type: compose
+  file: compose.yaml
+  services:
+    api:
+      env:
+        DEBUG: "true"
+        LOG_LEVEL: warning
+      env_files:
+        - /etc/accorda/api.env
+        - type: file
+          path: /etc/accorda/api-secrets.env
+    worker:
+      env_files:
+        - /etc/accorda/worker.env
+`
+	p, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(p.Target.Services) != 2 {
+		t.Fatalf("Services = %d entries, want 2", len(p.Target.Services))
+	}
+	api := p.Target.Services["api"]
+	if api.Env["DEBUG"] != "true" || api.Env["LOG_LEVEL"] != "warning" {
+		t.Errorf("api.Env = %+v, want DEBUG=true LOG_LEVEL=warning", api.Env)
+	}
+	if len(api.EnvFiles) != 2 {
+		t.Fatalf("api.EnvFiles = %d, want 2", len(api.EnvFiles))
+	}
+	if api.EnvFiles[0].Path != "/etc/accorda/api.env" {
+		t.Errorf("api.EnvFiles[0].Path = %q, want /etc/accorda/api.env", api.EnvFiles[0].Path)
+	}
+	if api.EnvFiles[1].Path != "/etc/accorda/api-secrets.env" {
+		t.Errorf("api.EnvFiles[1].Path = %q, want /etc/accorda/api-secrets.env", api.EnvFiles[1].Path)
+	}
+	worker := p.Target.Services["worker"]
+	if len(worker.EnvFiles) != 1 || worker.EnvFiles[0].Path != "/etc/accorda/worker.env" {
+		t.Errorf("worker.EnvFiles = %+v, want one entry /etc/accorda/worker.env", worker.EnvFiles)
+	}
+}
+
+func TestValidate_ServiceOverrides_EmptyPath(t *testing.T) {
+	yaml := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/backend.git
+  branch: main
+target:
+  type: compose
+  file: compose.yaml
+  services:
+    api:
+      env_files:
+        - ""
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil || !strings.Contains(err.Error(), "env_files[0]: path is empty") {
+		t.Fatalf("Parse error = %v, want empty path validation", err)
+	}
+}
+
+func TestLoad_ResolvesRelativeEnvFilePaths(t *testing.T) {
+	dir := t.TempDir()
+	project := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/backend.git
+  branch: main
+target:
+  type: compose
+  file: compose.yaml
+  services:
+    api:
+      env_files:
+        - secrets/api.env
+`
+	if err := os.WriteFile(filepath.Join(dir, File), []byte(project), 0o600); err != nil {
+		t.Fatalf("write project: %v", err)
+	}
+	p, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := p.Target.Services["api"].EnvFiles[0].Path
+	want := filepath.Join(dir, "secrets/api.env")
+	if got != want {
+		t.Errorf("EnvFiles[0].Path = %q, want %q (resolved relative to project dir)", got, want)
+	}
+}

@@ -75,6 +75,10 @@ type Target struct {
 	// recorded on every plan the target generates. It is the project-level
 	// environment concept, not the Git-declared desired-state repository.
 	environment string
+	// serviceOverrides holds per-service env overrides from accorda.yaml
+	// (docs/DECISIONS.md #45). They are merged into a deploy Compose file
+	// before Apply runs; they never enter desired state or hashing.
+	serviceOverrides map[string]config.ServiceOverride
 }
 
 // Option configures a Compose Target.
@@ -126,6 +130,14 @@ func WithHealthTimeout(d time.Duration) Option {
 // rather than a repository stand-in.
 func WithEnvironment(env string) Option {
 	return func(t *Target) { t.environment = env }
+}
+
+// WithServiceOverrides sets per-service env overrides applied at deploy time
+// (docs/DECISIONS.md #45). The overrides are merged into a deploy Compose
+// file's environment: before `docker compose up -d` runs; they do not enter
+// desired state, hashing, or receipts.
+func WithServiceOverrides(overrides map[string]config.ServiceOverride) Option {
+	return func(t *Target) { t.serviceOverrides = overrides }
 }
 
 // New constructs a Compose Target from an Accorda project's target
@@ -419,6 +431,10 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 	if err := t.validateApply(p); err != nil {
 		return err
 	}
+	deployFile, err := t.renderDeployFile()
+	if err != nil {
+		return err
+	}
 	removedOrphans := false
 	completed := make([]plan.Action, 0, len(p.Actions))
 	for _, a := range p.Actions {
@@ -426,7 +442,7 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 			if removedOrphans {
 				continue
 			}
-			if err := t.applyAction(ctx, a); err != nil {
+			if err := t.applyActionOn(ctx, a, deployFile); err != nil {
 				return &targets.ApplyError{Completed: completed, Failed: a, Err: err}
 			}
 			removedOrphans = true
@@ -436,7 +452,7 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 		if a.Kind == plan.ActionNoop {
 			continue
 		}
-		if err := t.applyAction(ctx, a); err != nil {
+		if err := t.applyActionOn(ctx, a, deployFile); err != nil {
 			return &targets.ApplyError{Completed: completed, Failed: a, Err: err}
 		}
 		completed = append(completed, a)
@@ -476,9 +492,18 @@ func actionsOfKind(actions []plan.Action, kind plan.ActionKind) []plan.Action {
 // returns an error naming the service and action so a partial failure is
 // attributable to the specific service that failed.
 func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
+	return t.applyActionOn(ctx, a, t.file)
+}
+
+// applyActionOn executes a single plan action against the Compose project
+// using the given compose file (the source or a rendered deploy file). It
+// returns an error naming the service and action so a partial failure is
+// attributable to the specific service that failed.
+func (t *Target) applyActionOn(ctx context.Context, a plan.Action, composeFile string) error {
+	runner := t.runnerFor(composeFile)
 	switch a.Kind {
 	case plan.ActionCreate, plan.ActionRecreate, plan.ActionStart:
-		if err := t.runner.Run(ctx, "up", "-d", "--", a.Service); err != nil {
+		if err := runner.Run(ctx, "up", "-d", "--", a.Service); err != nil {
 			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
 		}
 	case plan.ActionRemove:
@@ -486,21 +511,43 @@ func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
 		// every container not defined in the Compose file. The service name
 		// is not passed because the orphan is no longer a defined service,
 		// so `rm <service>` would fail with "no such service".
-		if err := t.runner.Run(ctx, "up", "-d", "--remove-orphans"); err != nil {
+		if err := runner.Run(ctx, "up", "-d", "--remove-orphans"); err != nil {
 			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
 		}
 	case plan.ActionPull:
-		if err := t.runner.Run(ctx, "pull", "--", a.Service); err != nil {
+		if err := runner.Run(ctx, "pull", "--", a.Service); err != nil {
 			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
 		}
 	case plan.ActionStop:
-		if err := t.runner.Run(ctx, "stop", "--", a.Service); err != nil {
+		if err := runner.Run(ctx, "stop", "--", a.Service); err != nil {
 			return fmt.Errorf("compose target: %s %q: %w", a.Kind, a.Service, err)
 		}
 	case plan.ActionNoop:
 		// Already converged; nothing to do.
 	}
 	return nil
+}
+
+// renderDeployFile renders a deploy Compose file with per-service env
+// overrides merged in, or returns the source file unchanged when no
+// overrides are configured (docs/DECISIONS.md #45).
+func (t *Target) renderDeployFile() (string, error) {
+	return renderDeployCompose(t.file, t.serviceOverrides)
+}
+
+// runnerFor returns the compose runner scoped to the given file. When the file
+// is the target's own file, the configured runner is returned as-is; when it
+// differs (a rendered deploy file), a new cliRunner is built so `docker
+// compose` runs against the deploy file. Test-injected runners are always
+// returned regardless so fakes are not bypassed.
+func (t *Target) runnerFor(composeFile string) composeRunner {
+	if composeFile == t.file || composeFile == "" {
+		return t.runner
+	}
+	if _, ok := t.runner.(cliRunner); !ok {
+		return t.runner
+	}
+	return cliRunner{file: composeFile, project: t.project}
 }
 
 // ApplyDesired applies an arbitrary desired state directly, bypassing the

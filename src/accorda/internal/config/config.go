@@ -114,6 +114,66 @@ type Target struct {
 	Type string `yaml:"type"`
 	Path string `yaml:"path,omitempty"`
 	File string `yaml:"file,omitempty"`
+	// Services holds per-service environment overrides applied at deploy time
+	// (docs/DECISIONS.md #45). They do not enter desired state, hashing, or
+	// receipts; they are merged into the deploy Compose file's environment:
+	// before `docker compose up -d` runs.
+	Services map[string]ServiceOverride `yaml:"services,omitempty"`
+}
+
+// ServiceOverride declares per-service environment inputs applied at deploy
+// time (docs/DECISIONS.md #45). Both fields are optional and combinable;
+// inline env values take precedence over env_files entries on key collision.
+type ServiceOverride struct {
+	// Env is inline key/value environment variables merged into the
+	// service's environment: at deploy time, overriding and adding to
+	// values declared in the Compose file.
+	Env map[string]string `yaml:"env,omitempty"`
+	// EnvFiles is a list of local .env files whose entries are read at
+	// deploy time and merged into the service's environment:. Each entry
+	// is a plain string path (short form) or a mapping with type: file and
+	// path: (long form). Paths are operator-local and never committed to
+	// Git; their contents are never stored in desired state or receipts.
+	EnvFiles []EnvFileRef `yaml:"env_files,omitempty"`
+}
+
+// EnvFileRef is one entry in a service's env_files list. It accepts a short
+// form (a plain string path) and a long form (a mapping with type and path),
+// mirroring Compose's own env_file syntax.
+type EnvFileRef struct {
+	Path string
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler so EnvFileRef accepts both the
+// short form (a plain string) and the long form (a mapping with type: file
+// and path:).
+func (e *EnvFileRef) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil {
+		return nil
+	}
+	switch value.Kind {
+	case yaml.ScalarNode:
+		return value.Decode(&e.Path)
+	case yaml.MappingNode:
+		for i := 0; i < len(value.Content); i += 2 {
+			key := value.Content[i]
+			val := value.Content[i+1]
+			switch key.Value {
+			case "path":
+				if err := val.Decode(&e.Path); err != nil {
+					return fmt.Errorf("env_files: path: %w", err)
+				}
+			case "type":
+				// Accepted for future extensibility; currently only "file"
+				// is meaningful and the value is not stored.
+			default:
+				return fmt.Errorf("env_files: unknown field %q", key.Value)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("env_files: expected a string or mapping, got %s", value.Tag)
+	}
 }
 
 // Sync controls the reconciliation cadence (docs/ACCORDA.md §45, §47).
@@ -235,7 +295,23 @@ func Load(dir string) (*Project, error) {
 	if err := validateCredentialFileMode(path, project); err != nil {
 		return nil, err
 	}
+	resolveServiceOverridePaths(project.Target.Services, dir)
 	return project, nil
+}
+
+// resolveServiceOverridePaths resolves env_files paths relative to the
+// project directory so operators can use relative paths in accorda.yaml
+// (docs/DECISIONS.md #45). Absolute paths are left unchanged.
+func resolveServiceOverridePaths(services map[string]ServiceOverride, dir string) {
+	for name, svc := range services {
+		for i, f := range svc.EnvFiles {
+			if filepath.IsAbs(f.Path) {
+				continue
+			}
+			svc.EnvFiles[i].Path = filepath.Join(dir, f.Path)
+		}
+		services[name] = svc
+	}
 }
 
 func validateCredentialFileMode(path string, project *Project) error {
@@ -437,6 +513,23 @@ func validateTarget(p *Project) error {
 		}
 	default:
 		return fmt.Errorf("config: target.type %q is not supported", p.Target.Type)
+	}
+	return validateServiceOverrides(p.Target.Services)
+}
+
+// validateServiceOverrides checks the per-service env override entries
+// (docs/DECISIONS.md #45). Each service name must be non-empty, and each
+// env_files path must be non-empty.
+func validateServiceOverrides(services map[string]ServiceOverride) error {
+	for name, svc := range services {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("config: target.services: service name is empty")
+		}
+		for i, f := range svc.EnvFiles {
+			if strings.TrimSpace(f.Path) == "" {
+				return fmt.Errorf("config: target.services.%s.env_files[%d]: path is empty", name, i)
+			}
+		}
 	}
 	return nil
 }
