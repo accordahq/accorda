@@ -56,6 +56,29 @@ func TestCheckoutPath(t *testing.T) {
 	}
 }
 
+func TestCheckoutDir(t *testing.T) {
+	base := t.TempDir()
+	g := New(config.Source{URL: "https://example.com/acme/repo.git"}, WithBaseDir(base))
+	got, err := g.CheckoutDir()
+	if err != nil {
+		t.Fatalf("CheckoutDir: %v", err)
+	}
+	wantDir, err := g.cacheDir()
+	if err != nil {
+		t.Fatalf("cacheDir: %v", err)
+	}
+	if got != wantDir {
+		t.Errorf("CheckoutDir() = %q, want %q", got, wantDir)
+	}
+}
+
+func TestCheckoutDir_NilReceiver(t *testing.T) {
+	var g *Git
+	if _, err := g.CheckoutDir(); err == nil {
+		t.Fatal("CheckoutDir() on nil receiver expected error")
+	}
+}
+
 func TestRepoDirName(t *testing.T) {
 	cases := []string{
 		"git@github.com:acme/infra.git",

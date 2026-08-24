@@ -16,11 +16,13 @@ import (
 )
 
 const (
-	doctorPass    = "PASS"
-	doctorFail    = "FAIL"
-	doctorProject = "Project configuration"
-	doctorSource  = "Git source configuration"
-	doctorCompose = "Compose target and Docker"
+	doctorPass     = "PASS"
+	doctorFail     = "FAIL"
+	doctorInfo     = "INFO"
+	doctorProject  = "Project configuration"
+	doctorSource   = "Git source configuration"
+	doctorCompose  = "Compose target and Docker"
+	doctorCheckout = "Managed checkout"
 )
 
 var errDoctorFailed = errors.New("one or more checks failed")
@@ -81,7 +83,19 @@ func diagnose(ctx context.Context, dir string) []doctorResult {
 			err = tgt.ValidateEnvironment(ctx)
 		}
 	}
-	return append(results, doctorCheck(doctorCompose, err))
+	results = append(results, doctorCheck(doctorCompose, err))
+
+	// Surface the managed checkout path so operators know where to place
+	// gitignored deployment-time inputs (env_file, label_file) that Compose
+	// resolves relative to the checkout. Only shown when the source is valid.
+	if checkoutDir, dirErr := src.CheckoutDir(); dirErr == nil {
+		results = append(results, doctorResult{
+			name:   doctorCheckout,
+			status: doctorInfo,
+			detail: checkoutDir,
+		})
+	}
+	return results
 }
 
 func managedTargetPending(src *gitSource.Git, target config.Target, err error) bool {

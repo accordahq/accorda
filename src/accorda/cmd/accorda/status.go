@@ -62,6 +62,10 @@ type statusInfo struct {
 	Sync        string
 	Runtime     string
 	LastDeploy  string
+	// Checkout is the managed Git worktree path, shown so operators know
+	// where to place gitignored deployment-time inputs (env_file, label_file)
+	// that Compose resolves relative to the checkout.
+	Checkout string
 	// services is the per-service table, sorted by name for deterministic
 	// output (docs/DECISIONS.md #12).
 	services []statusService
@@ -100,6 +104,14 @@ func runStatus(cmd *cobra.Command, dir string) error {
 	return nil
 }
 
+// checkoutDirer is an optional source capability that exposes the managed
+// checkout path. The git source implements it; stub sources do not. It is
+// checked via a type assertion so collectStatus stays decoupled from the
+// concrete git adapter.
+type checkoutDirer interface {
+	CheckoutDir() (string, error)
+}
+
 // collectStatus gathers every field the status table needs, tolerating
 // failures of the non-critical source/runtime/history reads. The target must
 // be reachable (it is needed for the runtime state); a nil target yields the
@@ -115,24 +127,19 @@ func collectStatus(ctx context.Context, proj *config.Project, src sources.Source
 		Branch:     proj.Source.Branch,
 	}
 
+	// Surface the managed checkout path so operators know where to place
+	// gitignored deployment-time inputs (env_file, label_file). Best-effort:
+	// a source that does not expose the path leaves the field empty.
+	info.Checkout = checkoutPath(src)
+
 	// Fetch the Git HEAD so the report shows the commit Git declares. This
 	// also populates the branch/repository from the source on success.
-	commit, err := src.Fetch(ctx)
-	if err != nil {
-		info.GitHead = "unavailable"
-	} else {
-		info.GitHead = shortSHA(commit.SHA)
-		if commit.Branch != "" {
-			info.Branch = commit.Branch
-		}
-	}
+	commit, fetchErr := src.Fetch(ctx)
+	applyFetchResult(&info, commit, fetchErr)
 
 	// The last healthy deployment from history supplies the deployed commit
 	// and the last-deploy time. When history has none, both stay empty.
-	if rc, err := lastHealthyReceipt(store); err == nil && rc != nil {
-		info.Deployed = shortSHA(rc.Commit)
-		info.LastDeploy = rc.CompletedAt.UTC().Format("2006-01-02 15:04:05")
-	}
+	applyDeployedReceipt(&info, store)
 
 	// The Sync label is derivable purely from the Git HEAD and the deployed
 	// commit, so it is computed before any target read. This keeps the line
@@ -143,39 +150,111 @@ func collectStatus(ctx context.Context, proj *config.Project, src sources.Source
 	// The runtime and its health are read from the target. If the target is
 	// unreachable, report the runtime as unavailable and skip the service
 	// table so the command still prints the configuration-level status.
-	if tgt == nil {
-		info.Runtime = "unknown"
+	runtime, hc, ok := readRuntime(ctx, tgt)
+	if !ok {
+		info.Runtime = runtimeLabel(tgt)
 		return info
 	}
-	runtime, err := tgt.Current(ctx)
-	if err != nil {
-		info.Runtime = "unreachable"
-		return info
-	}
-	// The aggregate runtime label and the per-service health column both come
-	// from the same health mapping the reconcile loop's Health phase uses
-	// (compose.HealthFromRuntime), so `status` and a live sync agree on what
-	// "healthy" means (docs/ACCORDA.md §19).
-	hc := compose.HealthFromRuntime(runtime, time.Now())
 	info.Runtime = healthLabel(hc)
 
 	// The desired state from Git supplies the redacted repository and the
 	// service table's declared images. It is best-effort: on failure the
 	// runtime table is still printed and the repository stays redacted from
 	// the configured URL.
-	desired, desiredErr := src.Desired(ctx, nil)
-	if desiredErr == nil && desired != nil {
-		if desired.Repository != "" {
-			info.Repository = desired.Repository
-		}
-		if desired.Branch != "" {
-			info.Branch = desired.Branch
-		}
-	} else {
-		desired = nil
-	}
+	desired := desiredOrNil(src.Desired(ctx, nil))
+	applyDesiredMeta(&info, desired)
 	info.services = buildRows(desired, runtime, hc)
 	return info
+}
+
+// checkoutPath returns the managed checkout path when the source exposes it,
+// otherwise the empty string. Best-effort: a source that does not implement
+// checkoutDirer or returns an error leaves the field empty.
+func checkoutPath(src sources.Source) string {
+	cd, ok := src.(checkoutDirer)
+	if !ok {
+		return ""
+	}
+	dir, err := cd.CheckoutDir()
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+// applyFetchResult records the fetched commit's SHA and branch, or marks the
+// Git HEAD unavailable when the fetch failed.
+func applyFetchResult(info *statusInfo, commit sources.Commit, err error) {
+	if err != nil {
+		info.GitHead = "unavailable"
+		return
+	}
+	info.GitHead = shortSHA(commit.SHA)
+	if commit.Branch != "" {
+		info.Branch = commit.Branch
+	}
+}
+
+// applyDeployedReceipt records the deployed commit and last-deploy time from
+// the most recent healthy receipt, when one exists.
+func applyDeployedReceipt(info *statusInfo, store history.Store) {
+	rc, err := lastHealthyReceipt(store)
+	if err != nil || rc == nil {
+		return
+	}
+	info.Deployed = shortSHA(rc.Commit)
+	info.LastDeploy = rc.CompletedAt.UTC().Format("2006-01-02 15:04:05")
+}
+
+// readRuntime reads the target runtime state and derives its health mapping.
+// It returns ok=false when the target is nil or unreachable; the caller then
+// reports the runtime label without a service table.
+func readRuntime(ctx context.Context, tgt *compose.Target) (*state.RuntimeState, *health.Health, bool) {
+	if tgt == nil {
+		return nil, nil, false
+	}
+	runtime, err := tgt.Current(ctx)
+	if err != nil {
+		return nil, nil, false
+	}
+	// The aggregate runtime label and the per-service health column both come
+	// from the same health mapping the reconcile loop's Health phase uses
+	// (compose.HealthFromRuntime), so `status` and a live sync agree on what
+	// "healthy" means (docs/ACCORDA.md §19).
+	return runtime, compose.HealthFromRuntime(runtime, time.Now()), true
+}
+
+// runtimeLabel reports the runtime status word when the target is nil or
+// unreachable (docs/ACCORDA.md §11).
+func runtimeLabel(tgt *compose.Target) string {
+	if tgt == nil {
+		return "unknown"
+	}
+	return "unreachable"
+}
+
+// desiredOrNil returns the desired state or nil on error so downstream
+// formatting treats a failed read as absent.
+func desiredOrNil(desired *state.DesiredState, err error) *state.DesiredState {
+	if err != nil || desired == nil {
+		return nil
+	}
+	return desired
+}
+
+// applyDesiredMeta overrides the repository and branch from the desired state
+// when the source supplied them, leaving the redacted configured URL in place
+// otherwise.
+func applyDesiredMeta(info *statusInfo, desired *state.DesiredState) {
+	if desired == nil {
+		return
+	}
+	if desired.Repository != "" {
+		info.Repository = desired.Repository
+	}
+	if desired.Branch != "" {
+		info.Branch = desired.Branch
+	}
 }
 
 // shortSHA abbreviates a full commit SHA to 7 characters, matching the §11
@@ -320,6 +399,9 @@ func writeStatus(w io.Writer, info statusInfo) {
 	fmt.Fprintf(w, "Sync          %s\n", info.Sync)
 	fmt.Fprintf(w, "Runtime       %s\n", info.Runtime)
 	fmt.Fprintf(w, "Last deploy   %s\n", info.LastDeploy)
+	if info.Checkout != "" {
+		fmt.Fprintf(w, "Checkout      %s\n", info.Checkout)
+	}
 	fmt.Fprintf(w, "SERVICE      STATE       HEALTH      IMAGE\n")
 	for _, r := range info.services {
 		fmt.Fprintf(w, "%-12s %-11s %-11s %s\n", r.name, r.state, r.health, r.image)
