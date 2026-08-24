@@ -874,6 +874,48 @@ func TestReconcile_HydratesReceiptBaselineForUnchangedCommit(t *testing.T) {
 	requireReceiptCount(t, store, 1)
 }
 
+// TestReconcile_HydrationFailsClosedWhenPreviousCommitUnavailable verifies
+// the documented fail-closed behavior (docs/DECISIONS.md #42): when the
+// receipt-derived baseline's commit cannot be read from the source (for
+// example the managed cache was cleared or the commit was force-pushed
+// away), reconciliation fails before any target mutation rather than
+// planning from a partial image-only baseline.
+func TestReconcile_HydrationFailsClosedWhenPreviousCommitUnavailable(t *testing.T) {
+	desired := healthyDesired()
+	desired.Commit = "new456"
+	desired.Services["api"] = state.Service{Image: "api:3"}
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "new456", Branch: "main"},
+		desired: desired,
+		// The previous commit is absent from the source, so hydration fails.
+		desiredByCommit: map[string]*state.DesiredState{"prev123": nil},
+	}
+	tgt := &fakeTarget{health: healthyHealth(), runtime: healthyRuntime(), changedPlan: true}
+	store := &fakeStore{appended: []history.Receipt{{
+		DeploymentID: "dep_healthy",
+		Commit:       "prev123",
+		Result:       history.OutcomeHealthy,
+		Services: map[string]history.ServiceReceipt{
+			"api": {Image: "api:1", Digest: "sha256:91a"},
+		},
+	}}}
+
+	res := New(src, tgt, events.NewBus()).WithReceiptStore(store).Reconcile(context.Background())
+
+	if res.Phase != PhaseFailed {
+		t.Fatalf("Phase = %q, want %q", res.Phase, PhaseFailed)
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "previous desired state") {
+		t.Errorf("Err = %v, want previous-desired-state failure", res.Err)
+	}
+	if tgt.planCalls != 0 {
+		t.Errorf("Plan calls = %d, want 0 (must fail before planning)", tgt.planCalls)
+	}
+	if tgt.applyCalls != 0 {
+		t.Errorf("Apply calls = %d, want 0 (must fail before target mutation)", tgt.applyCalls)
+	}
+}
+
 func TestReconcile_ResumesUnfinishedDeploymentAtCachedHead(t *testing.T) {
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123", Branch: "main"},

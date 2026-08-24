@@ -82,23 +82,28 @@ func runDiff(cmd *cobra.Command, dir string) error {
 	}
 	ctx := context.Background()
 
-	// Fetch first so the desired side reflects the current remote tip, not a
-	// stale local cache (the git source's Desired only fetches when the cache
-	// is empty). This matches `accorda plan` and `accorda status`.
-	commit, err := src.Fetch(ctx)
-	if err != nil {
-		return fmt.Errorf("fetch desired state: %w", err)
-	}
-	desired, err := src.Desired(ctx, &commit)
-	if err != nil {
-		return fmt.Errorf("read desired state: %w", err)
-	}
+	// Re-reading the deployed commit from the managed worktree temporarily
+	// checks out a historical revision, so diff takes the same deployment lock
+	// as sync to avoid racing a concurrent deployment (docs/DECISIONS.md #43).
+	return withDeploymentLock(ctx, dir, proj.Target, func() error {
+		// Fetch first so the desired side reflects the current remote tip, not a
+		// stale local cache (the git source's Desired only fetches when the cache
+		// is empty). This matches `accorda plan` and `accorda status`.
+		commit, err := src.Fetch(ctx)
+		if err != nil {
+			return fmt.Errorf("fetch desired state: %w", err)
+		}
+		desired, err := src.Desired(ctx, &commit)
+		if err != nil {
+			return fmt.Errorf("read desired state: %w", err)
+		}
 
-	store := history.NewFileStore(receiptPath(dir))
-	deployed := deployedAtCommit(ctx, src, store, cmd.ErrOrStderr())
+		store := history.NewFileStore(receiptPath(dir))
+		deployed := deployedAtCommit(ctx, src, store, cmd.ErrOrStderr())
 
-	writeDiff(cmd.OutOrStdout(), buildDiff(deployed, desired))
-	return nil
+		writeDiff(cmd.OutOrStdout(), buildDiff(deployed, desired))
+		return nil
+	})
 }
 
 // deployedAtCommit returns the full desired state at the last healthy

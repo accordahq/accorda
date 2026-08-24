@@ -12,6 +12,7 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/events"
 	"accorda/internal/core/history"
+	"accorda/internal/core/locking"
 	"accorda/internal/core/reconcile"
 	gitSource "accorda/internal/sources/git"
 )
@@ -360,6 +361,62 @@ func TestDeploymentLockPathUsesTargetIdentity(t *testing.T) {
 	relativePath := deploymentLockPath(dir, config.Target{Type: config.TargetCompose, Path: config.DefaultComposeFile})
 	if relativeFile != relativePath {
 		t.Errorf("relative target.file and target.path lock paths differ: %q != %q", relativeFile, relativePath)
+	}
+}
+
+func TestWithDeploymentLockSerializesAgainstHeldLock(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := t.TempDir()
+	target := config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile}
+
+	// Hold the lock, then verify withDeploymentLock blocks until it is
+	// released and runs the callback exactly once.
+	unlock, err := locking.NewFileLocker(deploymentLockPath(dir, target)).Lock(context.Background())
+	if err != nil {
+		t.Fatalf("acquire lock: %v", err)
+	}
+	ran := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		err := withDeploymentLock(context.Background(), dir, target, func() error {
+			ran <- struct{}{}
+			return nil
+		})
+		if err != nil {
+			t.Errorf("withDeploymentLock: %v", err)
+		}
+	}()
+	select {
+	case <-ran:
+		t.Fatal("callback ran while the lock was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := unlock(); err != nil {
+		t.Fatalf("release lock: %v", err)
+	}
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("callback did not run after the lock was released")
+	}
+	<-done
+}
+
+func TestWithDeploymentLockRunsCallback(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := t.TempDir()
+	target := config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile}
+	called := false
+	err := withDeploymentLock(context.Background(), dir, target, func() error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withDeploymentLock: %v", err)
+	}
+	if !called {
+		t.Fatal("callback was not invoked")
 	}
 }
 

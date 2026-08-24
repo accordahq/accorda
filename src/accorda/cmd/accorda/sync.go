@@ -290,6 +290,21 @@ func receiptPath(dir string) string {
 	return projectStatePath("receipts", dir, ".jsonl")
 }
 
+// withDeploymentLock acquires the target-scoped deployment lock for the
+// duration of fn and releases it on return. Read-only commands that re-read
+// historical desired state from the managed Git worktree (plan, diff) take
+// the same lock as sync so their temporary worktree checkout cannot race a
+// concurrent deployment that reads the on-disk Compose file
+// (docs/DECISIONS.md #43).
+func withDeploymentLock(ctx context.Context, dir string, target config.Target, fn func() error) error {
+	unlock, err := locking.NewFileLocker(deploymentLockPath(dir, target)).Lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+	return fn()
+}
+
 // deploymentLockPath returns the target-scoped lock file used to serialize
 // reconciliation across CLI processes. Hashing the effective Compose project
 // identity means different Compose files that mutate the same project share a

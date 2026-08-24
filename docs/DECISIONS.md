@@ -1265,3 +1265,25 @@ snapshot, and file-backed or interpolated changes cannot bypass plan identity.
 Rollback restores the Compose document and tracked referenced files from the
 same commit, while local untracked secret values remain outside desired state
 and history.
+
+### 44. Read-only commands serialize historical worktree reads with the deployment lock
+
+**Context.** Reading desired state at a historical commit (used by `accorda
+plan` and `accorda diff` to reconstruct the deployed baseline) temporarily
+checks out that revision into the shared managed worktree so Compose's
+`extends`/`includes` and relative resources resolve against the reviewed
+snapshot. A concurrent `sync` that reads the on-disk Compose file during that
+window could apply the wrong revision. `plan` and `diff` are otherwise
+read-only and previously took no lock.
+
+**Decision.** `accorda plan` and `accorda diff` acquire the same target-scoped
+deployment lock that `sync` holds for the duration of their source reads and
+plan computation. The lock is released before the command returns, so the
+read-only commands serialize only their worktree-mutating section against a
+concurrent deployment, not the whole process.
+
+**Consequence.** A `plan` or `diff` running while `sync` deploys waits for the
+deployment to finish (or the lock to be released) before reading historical
+desired state, eliminating the wrong-revision window. The lock is advisory and
+per-target, so independent projects remain unaffected.
+
