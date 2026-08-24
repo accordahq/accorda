@@ -693,6 +693,67 @@ func TestReconcile_DriftRepair_ApplyFails_NoReconciled(t *testing.T) {
 	}
 }
 
+// TestReconcile_CheckDrift_RepairSuppressesStaleUnhealthyHealth verifies the
+// regression fix in checkDrift: when drift is detected on an unchanged HEAD
+// and the repair policy successfully restores the runtime, the pre-repair
+// unhealthy health snapshot must NOT fail the cycle. The repair is
+// asynchronous (`docker compose up -d` returns before containers are
+// healthy), so convergence is confirmed on the next cycle rather than
+// failing on the stale reading.
+func TestReconcile_CheckDrift_RepairSuppressesStaleUnhealthyHealth(t *testing.T) {
+	// Pre-repair health is unhealthy (a service is down), which is the exact
+	// condition that previously produced a false PhaseFailed after repair.
+	unhealthy := health.New(time.Unix(0, 0))
+	unhealthy.SetService("api", health.StatusUnhealthy, "exit 1")
+	unhealthy.Summarize()
+
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+	}
+	tgt := &fakeTarget{
+		health: &unhealthy,
+		runtime: &state.RuntimeState{
+			Services: map[string]state.RuntimeService{
+				"api": {Status: "exited", Image: "api:2"},
+			},
+		},
+	}
+	bus := events.NewBus()
+	var detected, reconciled int
+	bus.Subscribe(func(_ context.Context, e events.Event) {
+		switch e.Type {
+		case events.EventDriftDetected:
+			detected++
+		case events.EventDriftReconciled:
+			reconciled++
+		}
+	})
+
+	r := New(src, tgt, bus).WithDriftPolicy(DriftRepair)
+	// Seed the cached desired state with the same commit so the unchanged-HEAD
+	// polling path (checkDrift) is taken rather than a full deploy cycle.
+	r.lastDesired = healthyDesired()
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseHealthy {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseHealthy, res.Err)
+	}
+	if res.Err != nil {
+		t.Fatalf("Err = %v, want nil (repair must not fail on stale unhealthy health)", res.Err)
+	}
+	if res.Comparison.Result != state.ResultDrifted {
+		t.Fatalf("Comparison.Result = %q, want %q", res.Comparison.Result, state.ResultDrifted)
+	}
+	if detected != 1 || reconciled != 1 {
+		t.Errorf("drift events = detected %d / reconciled %d, want 1/1", detected, reconciled)
+	}
+	// The repair path applies the plan; nothing else in checkDrift does.
+	if tgt.applyCalls != 1 {
+		t.Errorf("apply calls = %d, want 1 (repair only)", tgt.applyCalls)
+	}
+}
+
 func TestReconcile_NoopPlan_NoDeploymentEvents(t *testing.T) {
 	// A no-op plan (only noop actions) must not emit deployment.started or
 	// deployment.succeeded, since nothing was deployed.

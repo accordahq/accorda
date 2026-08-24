@@ -107,24 +107,38 @@ func runReconciler(cmd *cobra.Command, watch bool, interval time.Duration, r syn
 // syncProgressWriter returns an event handler that prints lifecycle progress
 // while reconciliation is running. Terminal phases are left to
 // writeSyncResult so each cycle has one unambiguous final outcome line.
+// Drift detection and repair are surfaced so an operator can see that a
+// drifted runtime was found and, under the repair policy, restored
+// (docs/ACCORDA.md §5.3, §21).
 func syncProgressWriter(w io.Writer) events.Handler {
 	return func(_ context.Context, event events.Event) {
-		if event.Type != events.EventStateTransition {
-			return
+		switch event.Type {
+		case events.EventDriftDetected:
+			fmt.Fprintln(w, "sync: drift detected")
+		case events.EventDriftReconciled:
+			fmt.Fprintln(w, "sync: drift repaired")
+		case events.EventStateTransition:
+			writeTransition(w, event.Payload)
 		}
-		transition, ok := event.Payload.(reconcile.StateTransition)
-		if !ok || transition.To == reconcile.PhaseSynced || transition.To == reconcile.PhaseFailed {
-			return
-		}
-		fmt.Fprintf(w, "sync: %s", transition.To)
-		if transition.Commit != "" {
-			fmt.Fprintf(w, " commit=%s", shortSHA(transition.Commit))
-		}
-		if transition.DeploymentID != "" {
-			fmt.Fprintf(w, " deployment=%s", transition.DeploymentID)
-		}
-		fmt.Fprintln(w)
 	}
+}
+
+// writeTransition prints a non-terminal state transition line. Terminal
+// phases (SYNCED, FAILED) are suppressed so the final outcome comes from
+// writeSyncResult.
+func writeTransition(w io.Writer, payload any) {
+	transition, ok := payload.(reconcile.StateTransition)
+	if !ok || transition.To == reconcile.PhaseSynced || transition.To == reconcile.PhaseFailed {
+		return
+	}
+	fmt.Fprintf(w, "sync: %s", transition.To)
+	if transition.Commit != "" {
+		fmt.Fprintf(w, " commit=%s", shortSHA(transition.Commit))
+	}
+	if transition.DeploymentID != "" {
+		fmt.Fprintf(w, " deployment=%s", transition.DeploymentID)
+	}
+	fmt.Fprintln(w)
 }
 
 // writeSyncResult prints one reconciliation cycle. A failed cycle is returned
