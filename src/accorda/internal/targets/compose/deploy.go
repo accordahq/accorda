@@ -115,6 +115,18 @@ func resolveOverrides(overrides map[string]config.ServiceOverride) (map[string]m
 // of KEY=VALUE strings (short form); both are normalized to a map. Override
 // values take precedence over existing values on key collision.
 func mergeServiceEnv(existing any, overrides map[string]string) map[string]string {
+	merged := normalizeExistingEnv(existing)
+	for k, v := range overrides {
+		merged[k] = v
+	}
+	return merged
+}
+
+// normalizeExistingEnv converts a Compose environment: field into a
+// map[string]string regardless of its YAML representation: a map (long form)
+// or a list of KEY=VALUE strings (short form). Nil and unrecognized types
+// yield an empty map.
+func normalizeExistingEnv(existing any) map[string]string {
 	merged := make(map[string]string)
 	switch env := existing.(type) {
 	case map[string]any:
@@ -127,8 +139,7 @@ func mergeServiceEnv(existing any, overrides map[string]string) map[string]strin
 		}
 	case []any:
 		for _, entry := range env {
-			s := fmt.Sprint(entry)
-			k, v, ok := splitEnvEntry(s)
+			k, v, ok := splitEnvEntry(fmt.Sprint(entry))
 			if !ok {
 				continue
 			}
@@ -142,11 +153,6 @@ func mergeServiceEnv(existing any, overrides map[string]string) map[string]strin
 			}
 			merged[k] = v
 		}
-	case nil:
-		// No existing environment; start from overrides only.
-	}
-	for k, v := range overrides {
-		merged[k] = v
 	}
 	return merged
 }
