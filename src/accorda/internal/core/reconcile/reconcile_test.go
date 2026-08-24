@@ -1229,6 +1229,16 @@ type applyDesiredTarget struct {
 	applyDesired []*state.DesiredState
 }
 
+type materializingFakeSource struct {
+	*fakeSource
+	materialized []string
+}
+
+func (f *materializingFakeSource) Materialize(_ context.Context, ref *sources.Commit) error {
+	f.materialized = append(f.materialized, ref.SHA)
+	return nil
+}
+
 func (f *applyDesiredTarget) ApplyDesired(_ context.Context, desired *state.DesiredState) (*plan.Plan, error) {
 	f.applyDesired = append(f.applyDesired, desired)
 	p := plan.New("", desired.Repository, desired.Commit, time.Unix(0, 0))
@@ -1288,5 +1298,32 @@ func TestReconcile_ApplyFailure_RollsBackViaApplyDesired(t *testing.T) {
 	// The fake's Plan path must not have been used for the rollback.
 	if len(tgt.fakeTarget.applied) != 0 {
 		t.Errorf("Plan-based rollback applied %d plans, want 0 (ApplyDesired used)", len(tgt.fakeTarget.applied))
+	}
+}
+
+func TestReconcile_RollbackMaterializesPreviousSourceRevision(t *testing.T) {
+	src := &materializingFakeSource{fakeSource: &fakeSource{
+		commit:  sources.Commit{SHA: "abc123"},
+		desired: healthyDesired(),
+		desiredByCommit: map[string]*state.DesiredState{
+			"prev123": previousDesired(),
+		},
+	}}
+	tgt := &applyDesiredTarget{}
+	tgt.applyErr = errors.New("apply boom")
+	tgt.changedPlan = true
+	previous := &state.DeployedState{
+		DeploymentID: "dep_0",
+		Commit:       "prev123",
+		Services:     map[string]state.Service{"api": {Image: "api:1"}},
+	}
+
+	res := New(src, tgt, events.NewBus()).WithPrevious(previous).Reconcile(context.Background())
+
+	if !res.RolledBack {
+		t.Fatalf("RolledBack = false, want true (err=%v)", res.Err)
+	}
+	if !reflect.DeepEqual(src.materialized, []string{"prev123"}) {
+		t.Errorf("materialized revisions = %v, want [prev123]", src.materialized)
 	}
 }

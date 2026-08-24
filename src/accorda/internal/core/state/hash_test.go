@@ -75,10 +75,14 @@ func TestService_Hash_FieldChangeChangesHash(t *testing.T) {
 		Image:    "api:1",
 		Command:  []string{"./api"},
 		Env:      map[string]string{"A": "1"},
+		EnvFiles: []ExternalFile{{Path: "defaults.env", Required: true, Digest: "sha256:a"}},
 		Ports:    []Port{{Host: "8080", Container: "8080", Protocol: "tcp"}},
 		Volumes:  []Volume{{Type: "bind", Source: "/a", Target: "/a"}},
 		Networks: []string{"frontend"},
 		Labels:   map[string]string{"x": "1"},
+		LabelFiles: []ExternalFile{{
+			Path: "labels.env", Required: true, Digest: "sha256:b",
+		}},
 		Healthcheck: Healthcheck{
 			Test:     []string{"CMD", "curl"},
 			Interval: 5 * time.Second,
@@ -95,10 +99,13 @@ func TestService_Hash_FieldChangeChangesHash(t *testing.T) {
 		{"command", func(s Service) Service { s.Command = []string{"./api", "--verbose"}; return s }},
 		{"env value", func(s Service) Service { s.Env["A"] = "2"; return s }},
 		{"env key", func(s Service) Service { s.Env["B"] = "1"; return s }},
+		{"env_file path", func(s Service) Service { s.EnvFiles[0].Path = "other.env"; return s }},
+		{"env_file digest", func(s Service) Service { s.EnvFiles[0].Digest = "sha256:c"; return s }},
 		{"port", func(s Service) Service { s.Ports[0].Host = "9090"; return s }},
 		{"volume", func(s Service) Service { s.Volumes[0].Target = "/b"; return s }},
 		{"network", func(s Service) Service { s.Networks = []string{"backend"}; return s }},
 		{"label", func(s Service) Service { s.Labels["x"] = "2"; return s }},
+		{"label_file", func(s Service) Service { s.LabelFiles[0].Path = "other.labels"; return s }},
 		{"healthcheck test", func(s Service) Service { s.Healthcheck.Test = []string{"CMD", "wget"}; return s }},
 		{"healthcheck retries", func(s Service) Service { s.Healthcheck.Retries = 5; return s }},
 		{"depends_on", func(s Service) Service { s.DependsOn = []string{"redis"}; return s }},
@@ -107,7 +114,7 @@ func TestService_Hash_FieldChangeChangesHash(t *testing.T) {
 	baseHash := base.Hash()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.mutate(base).Hash(); got == baseHash {
+			if got := tc.mutate(base.Clone()).Hash(); got == baseHash {
 				t.Fatalf("mutating %s did not change the hash", tc.name)
 			}
 		})

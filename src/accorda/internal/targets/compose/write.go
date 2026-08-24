@@ -19,8 +19,9 @@ import (
 // one.
 //
 // Only the reconciliation-relevant subset of the service model is written
-// back (image, command, environment, ports, volumes, networks, labels,
-// healthcheck, depends_on), mirroring the subset the loader normalizes.
+// back (image, command, environment, env_file, ports, volumes, networks,
+// labels, label_file, healthcheck, depends_on), mirroring the subset the
+// loader normalizes.
 func writeComposeServices(path string, services map[string]state.Service) error {
 	doc := map[string]any{
 		"services": composeServices(services),
@@ -66,6 +67,9 @@ func composeService(s state.Service) map[string]any {
 	if len(s.Env) > 0 {
 		m["environment"] = s.Env
 	}
+	if len(s.EnvFiles) > 0 {
+		m["env_file"] = composeEnvFiles(s.EnvFiles)
+	}
 	if len(s.Ports) > 0 {
 		m["ports"] = StringPorts(s.Ports)
 	}
@@ -78,6 +82,9 @@ func composeService(s state.Service) map[string]any {
 	if len(s.Labels) > 0 {
 		m["labels"] = s.Labels
 	}
+	if len(s.LabelFiles) > 0 {
+		m["label_file"] = externalFilePaths(s.LabelFiles)
+	}
 	if hc := composeHealthcheck(s.Healthcheck); hc != nil {
 		m["healthcheck"] = hc
 	}
@@ -87,6 +94,30 @@ func composeService(s state.Service) map[string]any {
 		m["depends_on"] = s.DependsOn
 	}
 	return m
+}
+
+func composeEnvFiles(files []state.ExternalFile) []any {
+	out := make([]any, 0, len(files))
+	for _, file := range files {
+		if file.Required && file.Format == "" {
+			out = append(out, file.Path)
+			continue
+		}
+		entry := map[string]any{"path": file.Path, "required": file.Required}
+		if file.Format != "" {
+			entry["format"] = file.Format
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func externalFilePaths(files []state.ExternalFile) []string {
+	out := make([]string, 0, len(files))
+	for _, file := range files {
+		out = append(out, file.Path)
+	}
+	return out
 }
 
 // StringPorts converts a service's normalized ports to Compose short-form

@@ -3,6 +3,7 @@ package compose
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -40,6 +41,7 @@ func (r cliRunner) Run(ctx context.Context, args ...string) error {
 	full = append(full, "compose", "-f", r.file, "-p", r.project)
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, "docker", full...)
+	cmd.Env = composeCommandEnvironment(os.Environ())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker compose %s: %w: %s",

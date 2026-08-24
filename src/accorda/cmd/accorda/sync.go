@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -65,7 +66,7 @@ func runSync(cmd *cobra.Command, dir string, watch bool) error {
 		return err
 	}
 
-	src, err := buildSource(proj)
+	src, err := buildSource(proj, dir)
 	if err != nil {
 		return err
 	}
@@ -83,9 +84,18 @@ func runSync(cmd *cobra.Command, dir string, watch bool) error {
 		WithEnvironment(proj.Environment).
 		WithReceiptStore(store).
 		WithLocker(locking.NewFileLocker(deploymentLockPath(dir, proj.Target)))
+	return runReconciler(cmd, watch, proj.Sync.Interval, r)
+}
+
+type syncReconciler interface {
+	Reconcile(context.Context) *reconcile.Result
+	Run(context.Context, time.Duration, reconcile.ResultHandler) error
+}
+
+func runReconciler(cmd *cobra.Command, watch bool, interval time.Duration, r syncReconciler) error {
 	ctx := cmd.Context()
 	if watch {
-		return r.Run(ctx, proj.Sync.Interval, func(res *reconcile.Result) {
+		return r.Run(ctx, interval, func(res *reconcile.Result) {
 			if resultErr := writeSyncResult(cmd, res); resultErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "sync: %v\n", resultErr)
 			}
@@ -199,7 +209,7 @@ func lastHealthyReceipt(store history.Store) (*history.Receipt, error) {
 // buildSource resolves the repository-relative Compose artifact shared by the
 // Git source and Compose target. A source path naming a directory is combined
 // with the target filename; an explicit source YAML path wins.
-func buildSource(p *config.Project) (*git.Git, error) {
+func buildSource(p *config.Project, dir string) (*git.Git, error) {
 	source := p.Source
 	targetPath := configuredTargetPath(p.Target)
 	if filepath.IsAbs(targetPath) {
@@ -210,7 +220,11 @@ func buildSource(p *config.Project) (*git.Git, error) {
 		return nil, err
 	}
 	source.Path = composePath
-	return git.New(source), nil
+	projectDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project directory: %w", err)
+	}
+	return git.New(source, git.WithCacheNamespace(filepath.Clean(projectDir))), nil
 }
 
 // buildTarget constructs the deployment target against the Git source's

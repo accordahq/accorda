@@ -70,6 +70,16 @@ The Git repository is a desired-state source. It may be a dedicated GitOps
 repository or an application repository that also contains the Compose file
 and related resources. Relative Compose paths, `env_file` entries, configs,
 build contexts, and other referenced files resolve from the managed checkout.
+Each operator project receives an isolated checkout, so production and staging
+may safely track different branches of the same repository.
+
+Compose interpolation uses Git-authored values and defaults plus only the host
+settings needed to reach Docker. Arbitrary application variables and an
+implicit project `.env` file do not override the reviewed plan. Declare
+deployment inputs explicitly with `environment` or `env_file`; `env_file` and
+`label_file` declarations are tracked by the plan, and changes to referenced
+files committed in Git recreate the affected service without storing their
+contents in Accorda history.
 
 Every Compose service must declare an `image`. A service may also declare
 `build`; Docker Compose can then use the checked-out build context. For images

@@ -35,11 +35,11 @@ type DesiredState struct {
 //
 // The fields beyond Image and Env hold the normalized service definition
 // loaded from a Docker Compose file (docs/ACCORDA.md §8): command, ports,
-// volumes, networks, labels, healthcheck, and service dependencies. Core
-// reasons about these to plan recreation and health verification; the git
-// source adapter currently populates only Image and Env, while the Compose
-// target driver populates the full set. The fields are value types or slices
-// of value types so a Service copies without aliasing mutable state.
+// volumes, networks, labels, file-backed environment/labels, healthcheck, and
+// service dependencies. Core reasons about these to plan recreation and
+// health verification; source and target adapters normalize into the same
+// model. The fields are value types or slices of value types so a Service
+// copies without aliasing mutable state.
 type Service struct {
 	// Image is the container image reference declared in Git, e.g.
 	// "ghcr.io/acme/api:2.4.1" or "ghcr.io/acme/api@sha256:91a...".
@@ -51,6 +51,10 @@ type Service struct {
 	// Env is the environment variables declared for the service, keyed by
 	// variable name. Secret values are referenced, never inlined.
 	Env map[string]string
+	// EnvFiles records env_file declarations in Compose precedence order.
+	// Digest is populated only for files present in the Git snapshot; local
+	// secret files remain references and are never copied into desired state.
+	EnvFiles []ExternalFile
 	// Ports is the set of ports the service exposes, normalized from
 	// Compose's short and long forms.
 	Ports []Port
@@ -63,12 +67,24 @@ type Service struct {
 	// Labels is the set of labels applied to the service, keyed by label
 	// name.
 	Labels map[string]string
+	// LabelFiles records label_file declarations in Compose precedence order.
+	LabelFiles []ExternalFile
 	// Healthcheck is the service health check, if declared. A zero value
 	// means no healthcheck was declared.
 	Healthcheck Healthcheck
 	// DependsOn is the set of service names this service depends on,
 	// sorted for deterministic comparison and hashing (docs/DECISIONS.md #12).
 	DependsOn []string
+}
+
+// ExternalFile identifies a file-backed Compose input without retaining its
+// contents. Digest is the SHA-256 of a file present in the Git snapshot, so a
+// Git change participates in service identity without exposing file values.
+type ExternalFile struct {
+	Path     string
+	Required bool
+	Format   string
+	Digest   string
 }
 
 // Port is a normalized container port mapping. Host and Container are kept as
@@ -233,13 +249,22 @@ func (s Service) Clone() Service {
 		Image:       s.Image,
 		Command:     append([]string(nil), s.Command...),
 		Env:         cloneStringMap(s.Env),
+		EnvFiles:    cloneExternalFiles(s.EnvFiles),
 		Ports:       clonePorts(s.Ports),
 		Volumes:     cloneVolumes(s.Volumes),
 		Networks:    append([]string(nil), s.Networks...),
 		Labels:      cloneStringMap(s.Labels),
+		LabelFiles:  cloneExternalFiles(s.LabelFiles),
 		Healthcheck: s.Healthcheck.Clone(),
 		DependsOn:   append([]string(nil), s.DependsOn...),
 	}
+}
+
+func cloneExternalFiles(files []ExternalFile) []ExternalFile {
+	if files == nil {
+		return nil
+	}
+	return append([]ExternalFile(nil), files...)
 }
 
 // Clone returns a deep copy of the runtime service.

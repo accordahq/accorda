@@ -1236,3 +1236,32 @@ only receipt-derived baselines require hydration.
 a no-op, while changed commits still receive an accurate full-model comparison.
 Receipts remain compact and image/digest-focused, and Core gains no Compose- or
 provider-specific dependency.
+
+### 43. Managed Compose inputs are isolated and planned with deployment semantics
+
+**Context.** A repository-URL-only cache allowed independent Accorda projects
+to mutate the same checkout, so different branches could race between desired
+state parsing and Compose apply. Compose parsing also lacked the file's project
+directory, discarded `env_file` and `label_file` declarations, and used
+different interpolation inputs than the Compose CLI. Those gaps could apply a
+different revision or configuration than the plan. `doctor` additionally
+treated any missing managed file as an unfetched checkout.
+
+**Decision.** CLI-created Git sources namespace the credential-free repository
+cache identity by the absolute operator project directory. Compose loads with
+the managed file's filename and project directory, retains ordered external
+file declarations, and includes SHA-256 digests for referenced files present
+in the Git revision without retaining their contents. Planning and Compose
+execution share a controlled Docker-operational environment; arbitrary host
+application variables are excluded and implicit `.env` interpolation is
+disabled. Before Compose rollback, sources that implement the optional
+`RevisionMaterializer` capability activate the previous Git revision so its
+file-backed inputs are restored. `doctor` defers missing-file validation only
+when the managed Git checkout itself does not exist.
+
+**Consequence.** Separate project files can safely deploy different branches
+of one repository, file-relative Compose features resolve against the reviewed
+snapshot, and file-backed or interpolated changes cannot bypass plan identity.
+Rollback restores the Compose document and tracked referenced files from the
+same commit, while local untracked secret values remain outside desired state
+and history.

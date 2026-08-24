@@ -30,6 +30,7 @@ import (
 // Compile-time interface check: Git satisfies sources.Source here so a
 // missing method is caught at build time, not at runtime.
 var _ sources.Source = (*Git)(nil)
+var _ sources.RevisionMaterializer = (*Git)(nil)
 
 // Git is the generic Git source adapter (docs/ACCORDA.md §13).
 //
@@ -60,6 +61,10 @@ type Git struct {
 	// cacheRoot discovers the platform-specific private cache base. Keeping
 	// this dependency explicit makes fail-closed discovery testable.
 	cacheRoot func() (string, error)
+	// cacheNamespace isolates the mutable checkout for one accorda.yaml
+	// project. Different projects may deploy different branches of the same
+	// repository concurrently and must never share a worktree.
+	cacheNamespace string
 }
 
 // transportAuth carries the go-git auth method and a flag distinguishing SSH
@@ -114,6 +119,13 @@ func WithCacheDir(dir string) Option {
 // set explicitly.
 func WithBaseDir(dir string) Option {
 	return func(g *Git) { g.BaseDir = dir }
+}
+
+// WithCacheNamespace scopes the derived cache directory to one Accorda
+// project. An empty namespace preserves the URL-only adapter default used by
+// direct library callers and tests.
+func WithCacheNamespace(namespace string) Option {
+	return func(g *Git) { g.cacheNamespace = namespace }
 }
 
 // WithSSHCommand is kept for API compatibility. With go-git the SSH key is
@@ -253,6 +265,27 @@ func (g *Git) Desired(ctx context.Context, ref *sources.Commit) (*state.DesiredS
 	}, nil
 }
 
+// Materialize checks out an already-fetched revision into this source's
+// isolated managed worktree. Rollback uses it after reading historical
+// desired state so Compose sees the referenced files from the same commit.
+func (g *Git) Materialize(ctx context.Context, ref *sources.Commit) error {
+	if err := g.ensureReady(ctx); err != nil {
+		return err
+	}
+	commit, err := g.resolveCommit(ctx, ref)
+	if err != nil {
+		return err
+	}
+	dir, err := g.cacheDir()
+	if err != nil {
+		return err
+	}
+	if err := g.checkoutCommit(ctx, dir, commit.SHA); err != nil {
+		return fmt.Errorf("git source: materialize %s: %w", commit.SHA, err)
+	}
+	return nil
+}
+
 // ensureReady runs Validate and is shared by Fetch and Desired.
 func (g *Git) ensureReady(ctx context.Context) error {
 	return g.Validate(ctx)
@@ -276,7 +309,31 @@ func (g *Git) cacheDir() (string, error) {
 			return "", err
 		}
 	}
-	return filepath.Join(base, repoDirName(g.Source.URL)), nil
+	return filepath.Join(base, namespacedRepoDirName(g.Source.URL, g.cacheNamespace)), nil
+}
+
+// CheckoutExists reports whether this source's isolated managed-checkout path
+// already exists. It does not clone, fetch, validate, or mutate it; callers
+// use the distinction between an absent checkout and an invalid existing one.
+func (g *Git) CheckoutExists() (bool, error) {
+	if g == nil {
+		return false, errors.New("git source: nil source")
+	}
+	dir, err := g.cacheDir()
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false, errors.New("git source: managed checkout path must be a directory")
+	}
+	return true, nil
 }
 
 // CheckoutPath returns an absolute path inside this source's managed Git
@@ -453,6 +510,32 @@ func (g *Git) checkout(_ context.Context, dir, branch string) error {
 	return nil
 }
 
+func (g *Git) checkoutCommit(ctx context.Context, dir, sha string) error {
+	r, err := git.PlainOpen(dir)
+	if err != nil {
+		return fmt.Errorf("git source: open cache: %w", err)
+	}
+	defer func() { _ = r.Close() }()
+	return checkoutRepositoryCommit(ctx, r, sha)
+}
+
+func checkoutRepositoryCommit(ctx context.Context, r *git.Repository, sha string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	wt, err := r.Worktree()
+	if err != nil {
+		return fmt.Errorf("git source: worktree: %w", err)
+	}
+	if err := wt.Checkout(&git.CheckoutOptions{
+		Hash:  plumbing.NewHash(sha),
+		Force: true,
+	}); err != nil {
+		return fmt.Errorf("git source: checkout commit %s: %w", sha, err)
+	}
+	return nil
+}
+
 // headCommit reads the SHA, branch, and authored time of HEAD using go-git.
 func (g *Git) headCommit(_ context.Context, dir, branch string) (sources.Commit, error) {
 	r, err := git.PlainOpen(dir)
@@ -497,16 +580,11 @@ func (g *Git) resolveCommit(ctx context.Context, ref *sources.Commit) (sources.C
 	return g.headCommit(ctx, dir, g.Source.Branch)
 }
 
-// parseServices reads the services file under the configured source path.
-// When sha is non-empty, the content is read from that commit's tree so the
-// returned services match the reported commit. When sha is empty, the file
-// is read from the checked-out working tree, which is appropriate for the
-// nil-ref (HEAD) case.
-//
-// The file is parsed using the compose-go loader, which handles the full
-// Compose schema. The loader requires a working directory for path
-// resolution; for a file read at a specific commit, the content is extracted
-// from the commit tree and loaded from an in-memory file set.
+// parseServices reads the services file under the configured source path with
+// the complete managed-worktree context required by extends, includes, and
+// relative resources. A historical SHA is checked out only for the duration
+// of parsing and the active revision is restored before return. Git-tracked
+// env_file and label_file contents contribute digests without being retained.
 func (g *Git) parseServices(ctx context.Context, sha string) (map[string]state.Service, error) {
 	path, err := ComposePath(g.Source.Path, "")
 	if err != nil {
@@ -516,20 +594,102 @@ func (g *Git) parseServices(ctx context.Context, sha string) (map[string]state.S
 	if err != nil {
 		return nil, err
 	}
+	if sha == "" {
+		services, loadErr := compose.LoadFileWithContext(ctx, filepath.Join(dir, filepath.FromSlash(path)))
+		if errors.Is(loadErr, os.ErrNotExist) {
+			return map[string]state.Service{}, nil
+		}
+		if loadErr != nil {
+			return nil, fmt.Errorf("git source: parse %q: %w", path, loadErr)
+		}
+		return services, nil
+	}
 
-	data, err := g.readServicesFile(ctx, dir, sha, path)
+	return g.parseServicesFromWorktree(ctx, dir, sha, path)
+}
+
+func (g *Git) parseServicesFromWorktree(ctx context.Context, dir, sha, composePath string) (services map[string]state.Service, err error) {
+	r, err := git.PlainOpen(dir)
 	if err != nil {
+		return nil, fmt.Errorf("git source: open cache: %w", err)
+	}
+	defer func() { _ = r.Close() }()
+	head, err := r.Head()
+	if err != nil {
+		return nil, fmt.Errorf("git source: read HEAD: %w", err)
+	}
+	restoreSHA := head.Hash().String()
+	if sha != "" && sha != restoreSHA {
+		if err := checkoutRepositoryCommit(ctx, r, sha); err != nil {
+			return nil, err
+		}
+		defer func() {
+			restoreErr := checkoutRepositoryCommit(context.Background(), r, restoreSHA)
+			if restoreErr == nil {
+				return
+			}
+			restoreErr = fmt.Errorf("git source: restore managed checkout %s: %w", restoreSHA, restoreErr)
+			err = errors.Join(err, restoreErr)
+			services = nil
+		}()
+	}
+	fullPath := filepath.Join(dir, filepath.FromSlash(composePath))
+	services, err = compose.LoadFileWithContext(ctx, fullPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]state.Service{}, nil
+		}
+		return nil, fmt.Errorf("git source: parse %q: %w", composePath, err)
+	}
+	if err := g.attachExternalFileDigests(ctx, r, sha, composePath, services); err != nil {
 		return nil, err
 	}
-	if data == nil {
-		// No services file found; return an empty set.
-		return map[string]state.Service{}, nil
-	}
-	services, err := compose.Parse(data)
-	if err != nil {
-		return nil, fmt.Errorf("git source: parse %q: %w", path, err)
-	}
 	return services, nil
+}
+
+func (g *Git) attachExternalFileDigests(ctx context.Context, r *git.Repository, sha, composePath string, services map[string]state.Service) error {
+	commit, err := r.CommitObject(plumbing.NewHash(sha))
+	if err != nil {
+		return fmt.Errorf("git source: read commit %s: %w", sha, err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return fmt.Errorf("git source: read tree: %w", err)
+	}
+	base := path.Dir(composePath)
+	for name, service := range services {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		service.EnvFiles = digestExternalFiles(tree, base, service.EnvFiles)
+		service.LabelFiles = digestExternalFiles(tree, base, service.LabelFiles)
+		services[name] = service
+	}
+	return nil
+}
+
+func digestExternalFiles(tree *object.Tree, base string, files []state.ExternalFile) []state.ExternalFile {
+	out := append([]state.ExternalFile(nil), files...)
+	for i := range out {
+		if filepath.IsAbs(out[i].Path) {
+			continue
+		}
+		repositoryPath := path.Clean(path.Join(base, filepath.ToSlash(out[i].Path)))
+		if repositoryPath == ".." || strings.HasPrefix(repositoryPath, "../") {
+			continue
+		}
+		file, err := tree.File(repositoryPath)
+		if err != nil {
+			continue
+		}
+		contents, err := file.Contents()
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256([]byte(contents))
+		out[i].Digest = hex.EncodeToString(sum[:])
+	}
+	return out
 }
 
 // readServicesFile returns the raw content of the services file. When sha is
@@ -735,7 +895,15 @@ func cleanRepositoryPath(repositoryPath string) (string, error) {
 // repoDirName hashes a canonical, credential-free repository identity so
 // distinct URLs cannot collide through lossy filename replacement.
 func repoDirName(rawURL string) string {
-	sum := sha256.Sum256([]byte(canonicalRepositoryURL(rawURL)))
+	return namespacedRepoDirName(rawURL, "")
+}
+
+func namespacedRepoDirName(rawURL, namespace string) string {
+	identity := canonicalRepositoryURL(rawURL)
+	if namespace != "" {
+		identity += "\x00" + namespace
+	}
+	sum := sha256.Sum256([]byte(identity))
 	return "accorda-" + hex.EncodeToString(sum[:])
 }
 

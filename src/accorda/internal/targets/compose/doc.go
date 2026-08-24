@@ -19,9 +19,9 @@
 // applying it, and prepends pull actions according to the image pull policy
 // (docs/ACCORDA.md §9: changed, missing, always, never). DriftActions
 // compares the deployed service hash against the desired hash so a service
-// whose command, ports, volumes, networks, labels, healthcheck, or depends_on
-// changed is recreated even when its image is unchanged (docs/ACCORDA.md
-// §10). The Apply phase
+// whose command, environment/file references, ports, volumes, networks,
+// labels/file references, healthcheck, or depends_on changed is recreated even
+// when its image is unchanged (docs/ACCORDA.md §10). The Apply phase
 // executes a plan by running the equivalent of `docker compose up -d` scoped
 // to the changed services (docs/ACCORDA.md §9), delegating to a composeRunner
 // seam so the `docker compose` CLI stays confined to this adapter. The Docker

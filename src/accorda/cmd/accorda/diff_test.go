@@ -130,6 +130,20 @@ func TestBuildDiff_EnvAdditionShowsPresenceWithoutValue(t *testing.T) {
 	}
 }
 
+func TestBuildDiff_ExternalFileDigestChange(t *testing.T) {
+	deployed := &state.DesiredState{Services: map[string]state.Service{
+		"api": {Image: "api:1", EnvFiles: []state.ExternalFile{{Path: "service.env", Required: true, Digest: "aaaaaaaaaaaaaaaa"}}},
+	}}
+	desired := &state.DesiredState{Services: map[string]state.Service{
+		"api": {Image: "api:1", EnvFiles: []state.ExternalFile{{Path: "service.env", Required: true, Digest: "bbbbbbbbbbbbbbbb"}}},
+	}}
+	roots := buildDiff(deployed, desired)
+	envFile := findDiffNode(roots[0], "env_file")
+	if envFile == nil || envFile.deployed != "service.env sha256=aaaaaaaaaaaa" || envFile.desired != "service.env sha256=bbbbbbbbbbbb" {
+		t.Errorf("env_file diff = %+v, want digest change", envFile)
+	}
+}
+
 func TestDiffSensitiveKV_UnchangedAndRemoval(t *testing.T) {
 	if got := diffSensitiveKV("environment",
 		map[string]string{"TOKEN": "same"}, map[string]string{"TOKEN": "same"}); got != nil {

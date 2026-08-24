@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	composeloader "github.com/compose-spec/compose-go/v2/loader"
@@ -27,11 +28,30 @@ var composeServiceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$
 // into Accorda's service model, and rejects files that declare a service
 // without the required fields before any deployment work begins.
 func LoadFile(path string) (map[string]state.Service, error) {
-	data, err := os.ReadFile(path)
+	return LoadFileWithContext(context.Background(), path)
+}
+
+// LoadFileWithContext loads a Compose document with its real filename and
+// project directory, allowing compose-go to resolve extends/includes and
+// relative resources against the managed checkout rather than Accorda's
+// process directory.
+func LoadFileWithContext(ctx context.Context, path string) (map[string]state.Service, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("compose: resolve %q: %w", path, err)
+	}
+	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("compose: read %q: %w", path, err)
 	}
-	services, err := Parse(data)
+	services, err := parseConfig(ctx, types.ConfigDetails{
+		WorkingDir: filepath.Dir(absPath),
+		ConfigFiles: []types.ConfigFile{{
+			Filename: absPath,
+			Content:  data,
+		}},
+		Environment: controlledComposeEnvironment(os.Environ()),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("compose: %s: %w", filepath.Base(path), err)
 	}
@@ -43,34 +63,41 @@ func LoadFile(path string) (map[string]state.Service, error) {
 // (github.com/compose-spec/compose-go/v2), which handles the full Compose
 // schema including extends, profiles, and short and long forms for all
 // fields. Accorda's model is a subset of the Compose schema: image, command,
-// environment, ports, volumes, networks, labels, healthcheck, and depends_on.
-// Validation enforces that every service has an image.
+// environment, env_file, ports, volumes, networks, labels, label_file,
+// healthcheck, and depends_on. Validation enforces that every service has an
+// image.
 //
 // Parse is the pure entry point for in-memory bytes; LoadFile wraps it for
 // file-path-based loading. The compose-go loader handles YAML parsing,
 // extends, and normalization so Accorda does not maintain its own parser.
 //
-// Compose interpolation is evaluated against an empty controlled environment
-// (see ParseWithContext). This applies declaration defaults such as
-// ${PORT:-8080} without importing host environment values into desired state
-// (docs/ACCORDA.md §18/§56).
+// Compose interpolation is evaluated against the controlled operational
+// environment shared with the Compose CLI (see ParseWithContext). This applies
+// declaration defaults such as ${PORT:-8080} without importing arbitrary host
+// application values into desired state (docs/ACCORDA.md §18/§56).
 func Parse(data []byte) (map[string]state.Service, error) {
 	return ParseWithContext(context.Background(), data)
 }
 
 // ParseWithContext is like Parse but accepts a context for cancellation.
 //
-// Interpolation uses only the explicit empty ConfigDetails.Environment. This
-// resolves Compose defaults while preventing ambient host values from entering
-// desired state or its hashes (docs/ACCORDA.md §18/§56).
+// Interpolation uses only the Docker operational allowlist returned by
+// controlledComposeEnvironment. This resolves Compose defaults while
+// preventing arbitrary ambient values from entering desired state or its
+// hashes (docs/ACCORDA.md §18/§56).
 // Compose's own validation is skipped because Accorda applies its own,
 // image-centric validation in validateService.
 func ParseWithContext(ctx context.Context, data []byte) (map[string]state.Service, error) {
-	project, err := composeloader.LoadWithContext(ctx, types.ConfigDetails{
+	return parseConfig(ctx, types.ConfigDetails{
 		ConfigFiles: []types.ConfigFile{{Content: data}},
-		Environment: types.Mapping{},
-	}, func(o *composeloader.Options) {
+		Environment: controlledComposeEnvironment(os.Environ()),
+	})
+}
+
+func parseConfig(ctx context.Context, details types.ConfigDetails) (map[string]state.Service, error) {
+	project, err := composeloader.LoadWithContext(ctx, details, func(o *composeloader.Options) {
 		o.SkipValidation = true
+		o.ResolvePaths = details.WorkingDir != ""
 		// env_file and label_file contents are deployment-time inputs. Desired
 		// state models their declarations without reading host-local files or
 		// secret values while parsing Git content.
@@ -82,7 +109,7 @@ func ParseWithContext(ctx context.Context, data []byte) (map[string]state.Servic
 	}
 	services := make(map[string]state.Service, len(project.Services))
 	for name, sc := range project.Services {
-		svc, err := normalizeService(name, sc)
+		svc, err := normalizeService(name, sc, details.WorkingDir)
 		if err != nil {
 			return nil, err
 		}
@@ -95,15 +122,17 @@ func ParseWithContext(ctx context.Context, data []byte) (map[string]state.Servic
 // state.Service, validating required fields. Fields Accorda does not model
 // (build, deploy, cpus, etc.) are ignored; the spec calls for Accorda to
 // reason about the reconciliation-relevant subset only.
-func normalizeService(name string, sc types.ServiceConfig) (state.Service, error) {
+func normalizeService(name string, sc types.ServiceConfig, workingDir string) (state.Service, error) {
 	svc := state.Service{
 		Image:       sc.Image,
 		Command:     normalizeCommand(sc.Command),
 		Env:         normalizeEnv(sc.Environment),
+		EnvFiles:    normalizeEnvFiles(sc.EnvFiles, workingDir),
 		Ports:       normalizePorts(sc.Ports),
-		Volumes:     normalizeVolumes(sc.Volumes),
+		Volumes:     normalizeVolumes(sc.Volumes, workingDir),
 		Networks:    normalizeNetworks(sc.Networks),
 		Labels:      normalizeLabels(sc.Labels),
+		LabelFiles:  normalizeLabelFiles(sc.LabelFiles, workingDir),
 		Healthcheck: normalizeHealthcheck(sc.HealthCheck),
 		DependsOn:   normalizeDependsOn(sc.DependsOn),
 	}
@@ -192,20 +221,66 @@ func normalizePorts(ports []types.ServicePortConfig) []state.Port {
 
 // normalizeVolumes converts compose-go ServiceVolumeConfig slices to Accorda's
 // Volume.
-func normalizeVolumes(vols []types.ServiceVolumeConfig) []state.Volume {
+func normalizeVolumes(vols []types.ServiceVolumeConfig, workingDir string) []state.Volume {
 	if len(vols) == 0 {
 		return nil
 	}
 	out := make([]state.Volume, 0, len(vols))
 	for _, v := range vols {
+		source := v.Source
+		if v.Type == "bind" {
+			source = portableProjectPath(source, workingDir)
+		}
 		out = append(out, state.Volume{
 			Type:     defaultIfEmpty(v.Type, "volume"),
-			Source:   v.Source,
+			Source:   source,
 			Target:   v.Target,
 			ReadOnly: v.ReadOnly,
 		})
 	}
 	return out
+}
+
+func normalizeEnvFiles(files []types.EnvFile, workingDir string) []state.ExternalFile {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]state.ExternalFile, 0, len(files))
+	for _, file := range files {
+		out = append(out, state.ExternalFile{
+			Path:     portableProjectPath(file.Path, workingDir),
+			Required: bool(file.Required),
+			Format:   file.Format,
+		})
+	}
+	return out
+}
+
+func normalizeLabelFiles(files []string, workingDir string) []state.ExternalFile {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]state.ExternalFile, 0, len(files))
+	for _, file := range files {
+		out = append(out, state.ExternalFile{
+			Path:     portableProjectPath(file, workingDir),
+			Required: true,
+		})
+	}
+	return out
+}
+
+// portableProjectPath removes the machine-specific managed-checkout prefix
+// that compose-go adds while retaining the path's project-relative meaning.
+func portableProjectPath(value, workingDir string) string {
+	if value == "" || workingDir == "" || !filepath.IsAbs(value) {
+		return filepath.ToSlash(value)
+	}
+	rel, err := filepath.Rel(workingDir, value)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(value)
+	}
+	return filepath.ToSlash(rel)
 }
 
 // normalizeNetworks converts the compose-go networks map to a slice of

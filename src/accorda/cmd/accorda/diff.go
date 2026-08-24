@@ -76,7 +76,7 @@ func runDiff(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	src, err := buildSource(proj)
+	src, err := buildSource(proj, dir)
 	if err != nil {
 		return err
 	}
@@ -213,13 +213,33 @@ func diffService(d, s state.Service) []diffNode {
 	fields = append(fields, diffScalar("image", d.Image, s.Image)...)
 	fields = append(fields, diffJoined("command", d.Command, s.Command)...)
 	fields = append(fields, diffSensitiveKV("environment", d.Env, s.Env)...)
+	fields = append(fields, diffJoined("env_file", externalFileIdentities(d.EnvFiles), externalFileIdentities(s.EnvFiles))...)
 	fields = append(fields, diffJoined("ports", compose.StringPorts(d.Ports), compose.StringPorts(s.Ports))...)
 	fields = append(fields, diffJoined("volumes", compose.StringVolumes(d.Volumes), compose.StringVolumes(s.Volumes))...)
 	fields = append(fields, diffJoined("networks", d.Networks, s.Networks)...)
 	fields = append(fields, diffKV("labels", d.Labels, s.Labels)...)
+	fields = append(fields, diffJoined("label_file", externalFileIdentities(d.LabelFiles), externalFileIdentities(s.LabelFiles))...)
 	fields = append(fields, diffHealthcheck(d.Healthcheck, s.Healthcheck)...)
 	fields = append(fields, diffJoined("depends_on", d.DependsOn, s.DependsOn)...)
 	return fields
+}
+
+func externalFileIdentities(files []state.ExternalFile) []string {
+	out := make([]string, 0, len(files))
+	for _, file := range files {
+		identity := file.Path
+		if !file.Required {
+			identity += " (optional)"
+		}
+		if file.Format != "" {
+			identity += " format=" + file.Format
+		}
+		if file.Digest != "" {
+			identity += " sha256=" + file.Digest[:min(12, len(file.Digest))]
+		}
+		out = append(out, identity)
+	}
+	return out
 }
 
 // diffScalar returns a single-value field node when deployed and desired

@@ -85,7 +85,7 @@ func runStatus(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	src, err := buildSource(proj)
+	src, err := buildSource(proj, dir)
 	if err != nil {
 		return err
 	}

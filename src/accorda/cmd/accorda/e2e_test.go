@@ -10,6 +10,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 
 	"accorda/internal/config"
 	"accorda/internal/core/history"
+	"accorda/internal/targets/compose"
 	"accorda/internal/testutil"
 )
 
@@ -52,14 +55,10 @@ func writeE2EProject(t *testing.T) string {
 	runGit(t, origin, "add", testutil.ComposeFile)
 	runGit(t, origin, "commit", "-m", "initial")
 
-	// Project directory: accorda.yaml only. The
-	// directory basename is fixed to "accorda" so the Compose project name
-	// is deterministic and the
-	// teardown can target it.
-	dir := filepath.Join(t.TempDir(), "accorda")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir project dir: %v", err)
-	}
+	// Project directory: accorda.yaml only. Its test-specific basename keeps
+	// Compose cleanup isolated from operator projects on the same Docker
+	// daemon while remaining deterministic for this test.
+	dir := e2eProjectDir(t)
 	// The relative target filename resolves inside the managed Git checkout,
 	// not beside accorda.yaml.
 	project := `version: 1
@@ -78,6 +77,17 @@ health:
 `
 	if err := os.WriteFile(filepath.Join(dir, config.File), []byte(project), 0o644); err != nil {
 		t.Fatalf("write accorda.yaml: %v", err)
+	}
+	return dir
+}
+
+func e2eProjectDir(t *testing.T) string {
+	t.Helper()
+	base := t.TempDir()
+	sum := sha256.Sum256([]byte(base + "\x00" + t.Name()))
+	dir := filepath.Join(base, fmt.Sprintf("accorda-e2e-%x", sum[:8]))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir project dir: %v", err)
 	}
 	return dir
 }
@@ -103,13 +113,14 @@ func execCommand(t *testing.T, dir, name string, args ...string) string {
 	return string(out)
 }
 
-// cleanupComposeProject registers a best-effort teardown for the fixed E2E
-// Compose project. Keeping the command here ensures every test uses the shared
-// Compose filename and the same cleanup behavior.
+// cleanupComposeProject registers a best-effort teardown for this test's
+// isolated Compose project. Keeping the command here ensures every test uses
+// the shared Compose filename and the same cleanup behavior.
 func cleanupComposeProject(t *testing.T, dir string) {
 	t.Helper()
 	t.Cleanup(func() {
-		cmd := exec.Command("docker", "compose", "-f", managedComposeFile(t, dir), "-p", "accorda", "down", "--remove-orphans")
+		project := compose.ProjectName(config.Target{File: filepath.Join(dir, config.DefaultComposeFile)})
+		cmd := exec.Command("docker", "compose", "-f", managedComposeFile(t, dir), "-p", project, "down", "--remove-orphans")
 		_ = cmd.Run()
 	})
 }
@@ -120,7 +131,7 @@ func managedComposeFile(t *testing.T, dir string) string {
 	if err != nil {
 		t.Fatalf("load project: %v", err)
 	}
-	src, err := buildSource(proj)
+	src, err := buildSource(proj, dir)
 	if err != nil {
 		t.Fatalf("build source: %v", err)
 	}

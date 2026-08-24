@@ -16,6 +16,20 @@ import (
 	gitSource "accorda/internal/sources/git"
 )
 
+type fakeSyncReconciler struct {
+	result *reconcile.Result
+	runErr error
+}
+
+func (f *fakeSyncReconciler) Reconcile(context.Context) *reconcile.Result {
+	return f.result
+}
+
+func (f *fakeSyncReconciler) Run(_ context.Context, _ time.Duration, handle reconcile.ResultHandler) error {
+	handle(f.result)
+	return f.runErr
+}
+
 func TestRun_Sync_MissingProjectFile(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
@@ -100,6 +114,59 @@ func TestWriteSyncResult_PrintsTerminalOutcome(t *testing.T) {
 	}
 }
 
+func TestRunReconciler(t *testing.T) {
+	runErr := errors.New("watch stopped")
+	cases := []struct {
+		name       string
+		watch      bool
+		runner     *fakeSyncReconciler
+		wantOut    string
+		wantErrOut string
+		wantErr    error
+	}{
+		{
+			name:    "one shot",
+			runner:  &fakeSyncReconciler{result: &reconcile.Result{Phase: reconcile.PhaseSynced}},
+			wantOut: "sync: SYNCED\nsync= reasons=0 services=0\n",
+		},
+		{
+			name:    "watch successful cycle",
+			watch:   true,
+			runner:  &fakeSyncReconciler{result: &reconcile.Result{Phase: reconcile.PhaseSynced}, runErr: runErr},
+			wantOut: "sync: SYNCED\nsync= reasons=0 services=0\n",
+			wantErr: runErr,
+		},
+		{
+			name:       "watch failed cycle",
+			watch:      true,
+			runner:     &fakeSyncReconciler{result: &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("fetch failed")}, runErr: runErr},
+			wantOut:    "sync: FAILED\n",
+			wantErrOut: "sync: reconciliation failed: fetch failed\n",
+			wantErr:    runErr,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			cmd := newSyncCmd()
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+
+			err := runReconciler(cmd, tc.watch, time.Second, tc.runner)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("runReconciler() error = %v, want %v", err, tc.wantErr)
+			}
+			if out.String() != tc.wantOut {
+				t.Errorf("stdout = %q, want %q", out.String(), tc.wantOut)
+			}
+			if errOut.String() != tc.wantErrOut {
+				t.Errorf("stderr = %q, want %q", errOut.String(), tc.wantErrOut)
+			}
+		})
+	}
+}
+
 func TestBuildTarget_Compose(t *testing.T) {
 	p := &config.Project{
 		Source: config.Source{URL: "https://example.com/acme/repo.git"},
@@ -107,7 +174,7 @@ func TestBuildTarget_Compose(t *testing.T) {
 		Images: config.Images{Pull: config.PullAlways},
 		Health: config.Health{Timeout: 0},
 	}
-	src, err := buildSource(p)
+	src, err := buildSource(p, ".")
 	if err != nil {
 		t.Fatalf("buildSource error = %v", err)
 	}
@@ -124,7 +191,7 @@ func TestBuildTarget_Unsupported(t *testing.T) {
 	p := &config.Project{
 		Target: config.Target{Type: config.TargetKubernetes, Path: "manifests"},
 	}
-	src, err := buildSource(p)
+	src, err := buildSource(p, ".")
 	if err != nil {
 		t.Fatalf("buildSource error = %v", err)
 	}
@@ -205,7 +272,7 @@ func TestBuildSourceResolvesComposeFileInManagedCheckout(t *testing.T) {
 				Source: config.Source{URL: "https://example.com/acme/repo.git", Path: tc.sourcePath},
 				Target: config.Target{Type: config.TargetCompose, File: tc.targetFile},
 			}
-			src, err := buildSource(p)
+			src, err := buildSource(p, ".")
 			if err != nil {
 				t.Fatalf("buildSource: %v", err)
 			}
@@ -213,6 +280,46 @@ func TestBuildSourceResolvesComposeFileInManagedCheckout(t *testing.T) {
 				t.Errorf("source path = %q, want %q", src.Source.Path, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildSourceIgnoresAbsoluteTargetPath(t *testing.T) {
+	p := &config.Project{
+		Source: config.Source{URL: "https://example.com/acme/repo.git"},
+		Target: config.Target{Type: config.TargetCompose, File: filepath.Join(t.TempDir(), config.DefaultComposeFile)},
+	}
+	src, err := buildSource(p, ".")
+	if err != nil {
+		t.Fatalf("buildSource: %v", err)
+	}
+	if src.Source.Path != config.DefaultComposeFile {
+		t.Errorf("source path = %q, want %q", src.Source.Path, config.DefaultComposeFile)
+	}
+}
+
+func TestBuildSourceIsolatesManagedCheckoutByProject(t *testing.T) {
+	p := &config.Project{
+		Source: config.Source{URL: "https://example.com/acme/repo.git", Branch: "main"},
+		Target: config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile},
+	}
+	first, err := buildSource(p, filepath.Join(t.TempDir(), "production"))
+	if err != nil {
+		t.Fatalf("build first source: %v", err)
+	}
+	second, err := buildSource(p, filepath.Join(t.TempDir(), "staging"))
+	if err != nil {
+		t.Fatalf("build second source: %v", err)
+	}
+	firstPath, err := first.CheckoutPath(config.DefaultComposeFile)
+	if err != nil {
+		t.Fatalf("first checkout path: %v", err)
+	}
+	secondPath, err := second.CheckoutPath(config.DefaultComposeFile)
+	if err != nil {
+		t.Fatalf("second checkout path: %v", err)
+	}
+	if firstPath == secondPath {
+		t.Fatalf("project checkouts share path %q", firstPath)
 	}
 }
 
@@ -246,6 +353,31 @@ func TestDeploymentLockPathUsesTargetIdentity(t *testing.T) {
 	}
 	if filepath.Ext(first) != ".lock" {
 		t.Errorf("lock path = %q, want .lock extension", first)
+	}
+
+	dir := t.TempDir()
+	relativeFile := deploymentLockPath(dir, config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile})
+	relativePath := deploymentLockPath(dir, config.Target{Type: config.TargetCompose, Path: config.DefaultComposeFile})
+	if relativeFile != relativePath {
+		t.Errorf("relative target.file and target.path lock paths differ: %q != %q", relativeFile, relativePath)
+	}
+}
+
+func TestProjectStatePathUsesDefaultKeyForCurrentDirectory(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", base)
+	want := filepath.Join(base, "accorda", "receipts", "default.jsonl")
+	if got := projectStatePath("receipts", ".", ".jsonl"); got != want {
+		t.Errorf("projectStatePath() = %q, want %q", got, want)
+	}
+}
+
+func TestStateBaseFallsBackWhenHomeIsUnavailable(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "")
+	want := filepath.Join(".local", "state")
+	if got := stateBase(); got != want {
+		t.Errorf("stateBase() = %q, want %q", got, want)
 	}
 }
 
