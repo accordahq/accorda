@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -109,7 +110,9 @@ func TestDeliver_PostsJSONEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	con.Handle(context.Background(), events.Event{Type: events.EventDeploymentSucceeded})
+	if err := con.deliver(context.Background(), events.Event{Type: events.EventDeploymentSucceeded}); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
 	if got := srv.count(); got != 1 {
 		t.Fatalf("requests = %d, want 1", got)
 	}
@@ -146,7 +149,9 @@ func TestDeliver_RetriesOn5xxThenSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	con.Handle(context.Background(), events.Event{Type: events.EventDeploymentFailed})
+	if err := con.deliver(context.Background(), events.Event{Type: events.EventDeploymentFailed}); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
 	if got := srv.count(); got != 3 {
 		t.Fatalf("requests = %d, want 3 (initial + 2 retries)", got)
 	}
@@ -164,7 +169,9 @@ func TestDeliver_RetriesExhausted_ReportsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	con.Handle(context.Background(), events.Event{Type: events.EventDeploymentFailed})
+	// deliverAsync is the goroutine entry point Handle uses; calling it
+	// directly tests the sink wiring deterministically.
+	con.deliverAsync(context.Background(), events.Event{Type: events.EventDeploymentFailed})
 	// 1 initial + 2 retries = 3 attempts.
 	if got := srv.count(); got != 3 {
 		t.Fatalf("requests = %d, want 3", got)
@@ -184,7 +191,7 @@ func TestDeliver_NetworkError_Retries(t *testing.T) {
 	}
 	var reported atomic.Int32
 	con.onError = func(err error) { reported.Add(1) }
-	con.Handle(context.Background(), events.Event{Type: events.EventDeploymentDetected})
+	con.deliverAsync(context.Background(), events.Event{Type: events.EventDeploymentDetected})
 	if reported.Load() != 1 {
 		t.Errorf("error sink calls = %d, want 1", reported.Load())
 	}
@@ -198,7 +205,9 @@ func TestDeliver_4xxNotRetried(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	con.Handle(context.Background(), events.Event{Type: events.EventDeploymentDetected})
+	if err := con.deliver(context.Background(), events.Event{Type: events.EventDeploymentDetected}); err == nil {
+		t.Fatal("expected error for 4xx, got nil")
+	}
 	if got := srv.count(); got != 1 {
 		t.Fatalf("requests = %d, want 1 (4xx not retried)", got)
 	}
@@ -213,7 +222,9 @@ func TestDeliver_HMACSignatureHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	con.Handle(context.Background(), events.Event{Type: events.EventDeploymentSucceeded})
+	if err := con.deliver(context.Background(), events.Event{Type: events.EventDeploymentSucceeded}); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
 	sig := srv.lastHeaders().Get(signatureHeader)
 	if sig == "" {
 		t.Fatal("signature header missing")
@@ -231,7 +242,9 @@ func TestDeliver_NoSignatureWhenSecretEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	con.Handle(context.Background(), events.Event{Type: events.EventDeploymentSucceeded})
+	if err := con.deliver(context.Background(), events.Event{Type: events.EventDeploymentSucceeded}); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
 	if sig := srv.lastHeaders().Get(signatureHeader); sig != "" {
 		t.Errorf("signature = %q, want empty", sig)
 	}
@@ -249,7 +262,9 @@ func TestDeliver_CancelledContext_Stops(t *testing.T) {
 	srv.status = http.StatusInternalServerError
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before delivery so the first retry sleep aborts
-	con.Handle(ctx, events.Event{Type: events.EventDeploymentFailed})
+	if err := con.deliver(ctx, events.Event{Type: events.EventDeploymentFailed}); err == nil {
+		t.Fatal("expected cancellation error, got nil")
+	}
 	if got := srv.count(); got > 1 {
 		t.Errorf("requests = %d, want <=1 after cancellation", got)
 	}
@@ -264,6 +279,60 @@ func TestSubscribe_NilBus_NoOp(t *testing.T) {
 	unsub() // must not panic
 }
 
+func TestHandle_DoesNotBlockPublishPath(t *testing.T) {
+	// Handle must return immediately even when the endpoint is unreachable and
+	// retries would otherwise take seconds: delivery is dispatched to a
+	// goroutine so it never blocks the synchronous event bus
+	// (docs/DECISIONS.md #46).
+	srv := newMockServer(t)
+	addr := startMock(t, srv)
+	con, err := New(config.WebhookConfig{URL: addr, MaxRetries: 5, Timeout: time.Hour},
+		WithSleeper(func(context.Context, time.Duration) error { return nil }))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv.status = http.StatusInternalServerError
+
+	done := make(chan struct{})
+	go func() {
+		con.Handle(context.Background(), events.Event{Type: events.EventDeploymentStarted})
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Handle returned immediately; delivery continues in the background.
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Handle blocked the publish path")
+	}
+}
+
+func TestPost_RejectsRedirect(t *testing.T) {
+	// The webhook client must not follow a 3xx from the receiver, which could
+	// otherwise pivot the payload to an internal address (SSRF).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	redirect := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	})}
+	go func() { _ = redirect.Serve(ln) }()
+	t.Cleanup(func() { _ = redirect.Close() })
+
+	addr := "http://" + ln.Addr().String()
+	con, err := New(config.WebhookConfig{URL: addr, MaxRetries: 0, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	err = con.deliver(context.Background(), events.Event{Type: events.EventDeploymentStarted})
+	if err == nil {
+		t.Fatal("expected redirect to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "redirects are not followed") {
+		t.Errorf("error = %v, want redirect-rejection", err)
+	}
+}
+
 func TestSubscribe_DeliversViaBus(t *testing.T) {
 	srv := newMockServer(t)
 	addr := startMock(t, srv)
@@ -274,15 +343,35 @@ func TestSubscribe_DeliversViaBus(t *testing.T) {
 	bus := events.NewBus()
 	unsub := con.Subscribe(bus)
 	defer unsub()
+	// Handle dispatches asynchronously (docs/DECISIONS.md #46), so wait for
+	// the goroutine to deliver.
 	bus.Publish(context.Background(), events.Event{Type: events.EventDeploymentStarted})
-	if got := srv.count(); got != 1 {
-		t.Fatalf("requests = %d, want 1", got)
+	if !waitFor(t, func() bool { return srv.count() == 1 }) {
+		t.Fatal("webhook not delivered within timeout")
 	}
 	unsub()
 	bus.Publish(context.Background(), events.Event{Type: events.EventDeploymentStarted})
+	// Allow any in-flight delivery to land, then require exactly one.
+	if !waitFor(t, func() bool { return srv.count() >= 1 }) {
+		t.Fatal("no deliveries observed")
+	}
+	time.Sleep(20 * time.Millisecond)
 	if got := srv.count(); got != 1 {
 		t.Errorf("requests after unsubscribe = %d, want 1", got)
 	}
+}
+
+// waitFor polls cond until it reports true or a short timeout elapses.
+func waitFor(t *testing.T, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return cond()
 }
 
 func TestRedactPayload_HealthHasNoSecrets(t *testing.T) {
@@ -386,6 +475,9 @@ func TestMarshal_IncludesRedactedEnv(t *testing.T) {
 		},
 	}
 	con.Handle(context.Background(), events.Event{Type: "custom.event", Payload: desired})
+	if !waitFor(t, func() bool { return srv.count() == 1 }) {
+		t.Fatal("webhook not delivered after timeout")
+	}
 	var env map[string]any
 	if err := json.Unmarshal(srv.lastBody(), &env); err != nil {
 		t.Fatalf("unmarshal: %v", err)

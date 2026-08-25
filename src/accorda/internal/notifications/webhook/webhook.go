@@ -45,8 +45,12 @@ type errorSink func(err error)
 // up to MaxRetries times with exponential backoff. Secret values in the
 // payload are redacted before serialization.
 //
-// Consumer is safe for concurrent use: the bus may invoke its handler from
-// multiple goroutines, and each delivery is independent.
+// Delivery is best-effort and asynchronous: Handle dispatches each event to
+// its own goroutine so retries and backoff never run on the bus publish path
+// and cannot block the reconcile loop (docs/DECISIONS.md #46). The event bus
+// may invoke Handle from multiple goroutines; the Consumer is safe for
+// concurrent use and each delivery is independent, so ordering is not
+// guaranteed.
 type Consumer struct {
 	cfg     config.WebhookConfig
 	client  *http.Client
@@ -92,7 +96,7 @@ func New(cfg config.WebhookConfig, opts ...Option) (*Consumer, error) {
 	}
 	c := &Consumer{
 		cfg:     cfg,
-		client:  http.DefaultClient,
+		client:  withoutRedirects(cfg.Timeout),
 		now:     time.Now,
 		sleeper: sleepCtx,
 	}
@@ -102,10 +106,27 @@ func New(cfg config.WebhookConfig, opts ...Option) (*Consumer, error) {
 	return c, nil
 }
 
-// Subscribe registers the Consumer on bus and returns an unsubscribe
-// function. Calling it removes the Consumer from the bus; it is safe to call
-// more than once. A nil bus is a no-op that returns a no-op unsubscribe so
-// callers can defer it uniformly regardless of whether a bus is configured.
+// withoutRedirects returns an HTTP client that refuses to follow redirects.
+// The configured webhook URL is operator-controlled, so the initial request
+// is trusted, but a compromised or malicious receiver could otherwise return
+// a 3xx that pivots the (redacted) payload to an internal address. Rejecting
+// redirects closes that path (docs/ACCORDA.md §21).
+func withoutRedirects(timeout time.Duration) *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 16
+	t.MaxIdleConnsPerHost = 8
+	if timeout <= 0 {
+		timeout = config.DefaultWebhookTimeout
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: t,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return errors.New("webhook: redirects are not followed")
+		},
+	}
+}
+
 // Subscribe registers the Consumer on bus and returns an unsubscribe
 // function. Calling it removes the Consumer from the bus; it is safe to call
 // more than once. A nil bus is a no-op that returns a no-op unsubscribe so
@@ -122,10 +143,18 @@ func (c *Consumer) Subscribe(bus events.Bus) func() {
 }
 
 // Handle is the event bus handler that delivers one event as a webhook. It
-// never panics across the bus boundary: a delivery error is reported to the
-// error sink and does not propagate, so a misconfigured webhook cannot block
-// reconciliation.
+// never blocks the bus publish path: each event is dispatched to its own
+// goroutine so retries and backoff run off the reconcile loop (the event bus
+// is synchronous; docs/DECISIONS.md #46). It never panics across the bus
+// boundary: a delivery error is reported to the error sink and does not
+// propagate.
 func (c *Consumer) Handle(ctx context.Context, e events.Event) {
+	go c.deliverAsync(ctx, e)
+}
+
+// deliverAsync delivers e and reports any failure to the error sink. It is
+// the goroutine entry point for Handle.
+func (c *Consumer) deliverAsync(ctx context.Context, e events.Event) {
 	if err := c.deliver(ctx, e); err != nil {
 		if c.onError != nil {
 			c.onError(fmt.Errorf("webhook %s: %w", e.Type, err))
@@ -162,17 +191,13 @@ func (c *Consumer) deliver(ctx context.Context, e events.Event) error {
 	return lastErr
 }
 
-// post sends one HTTP request with the payload body and configured timeout,
-// returning nil on a 2xx response. A non-2xx response is a retryable error
-// carrying the status code.
+// post sends one HTTP request with the payload body, returning nil on a 2xx
+// response. A non-2xx response is a retryable error carrying the status code.
+// The per-request timeout is enforced by the Consumer's HTTP client, and
+// redirects are rejected (see withoutRedirects) so a 3xx cannot pivot the
+// payload to another host.
 func (c *Consumer) post(ctx context.Context, body []byte) error {
-	timeout := c.cfg.Timeout
-	if timeout <= 0 {
-		timeout = config.DefaultWebhookTimeout
-	}
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.cfg.URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.URL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}

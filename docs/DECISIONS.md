@@ -1379,12 +1379,18 @@ it.
 
 **Decision.** Add `internal/notifications/webhook` implementing a `Consumer`
 that subscribes to the event bus and POSTs each event as a JSON envelope
-(`{type, timestamp, payload}`) to a configurable URL. Delivery is best-effort:
-a failed or misconfigured webhook is reported to a caller-supplied error sink
-and never blocks or fails reconciliation. Retry uses bounded exponential
-backoff (500ms base, doubling to a 10s cap) up to `max_retries` (default 3,
-`config.DefaultWebhookMaxRetries`); only transport errors and HTTP 5xx/429 are
-retried, while 4xx responses are not. An optional shared `secret` produces an
+(`{type, timestamp, payload}`) to a configurable URL. Delivery is best-effort
+and **asynchronous**: `Consumer.Handle` dispatches each event to its own
+goroutine, so retries and backoff run off the bus publish path and never block
+the reconcile loop even though the underlying `events.Bus` is synchronous and
+inline (docs/DECISIONS.md #20). A failed or misconfigured webhook is reported
+to a caller-supplied error sink and never blocks or fails reconciliation.
+Retry uses bounded exponential backoff (500ms base, doubling to a 10s cap) up
+to `max_retries` (default 3, `config.DefaultWebhookMaxRetries`); only transport
+errors and HTTP 5xx/429 are retried, while 4xx responses are not. The consumer
+uses a dedicated `http.Client` that rejects redirects (so a 3xx from a
+compromised receiver cannot pivot the payload to an internal address) and
+enforces the per-request `timeout`. An optional shared `secret` produces an
 `X-Accorda-Signature` HMAC-SHA256 header over the payload body so a receiver
 can verify authenticity. Secret values in payloads are redacted before
 serialization: `state.DesiredState`/`DeployedState` `Env` maps are replaced
@@ -1400,10 +1406,11 @@ bus when enabled.
 **Consequence.** Operators can forward lifecycle events to any HTTP endpoint
 with zero SaaS dependency, and the receiver can verify authenticity via the
 HMAC signature. Secret env values never leave the process in a webhook
-payload. The consumer depends only on `events`, `state`, `health`, `reconcile`,
-and `secrets`, so core stays provider-agnostic (docs/DECISIONS.md #3). Because
-the bus is synchronous and in-memory and the consumer is best-effort, a slow or
-unreachable endpoint only affects delivery, never the reconcile loop; retry
-backoff delays are bounded, so a persistent failure reports an error after the
-retry budget and moves on. Other notification channels (Slack, Discord, ntfy,
+payload. Because `Handle` dispatches asynchronously, a slow or unreachable
+endpoint affects only delivery, never the reconcile loop: the synchronous bus
+returns immediately after each event, and retry backoff happens in the
+background. Events may be delivered out of order (one goroutine per event); the
+consumer does not guarantee ordering. The consumer depends only on `events`,
+`state`, `health`, `reconcile`, and `secrets`, so core stays provider-agnostic
+(docs/DECISIONS.md #3). Other notification channels (Slack, Discord, ntfy,
 Accorda Cloud) remain future work and are not wired.
