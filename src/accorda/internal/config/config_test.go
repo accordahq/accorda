@@ -740,3 +740,144 @@ target:
 		t.Errorf("EnvFiles[0].Path = %q, want %q (resolved relative to project dir)", got, want)
 	}
 }
+
+func TestParse_WebhookNotifications(t *testing.T) {
+	yaml := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+target:
+  type: ` + TargetCompose + `
+  file: ` + DefaultComposeFile + `
+notifications:
+  webhook: true
+  webhooks:
+    url: https://hooks.example.com/accorda
+    max_retries: 5
+    timeout: 2s
+    secret: s3cr3t
+`
+	p, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !p.Notifications.Webhook {
+		t.Error("Notifications.Webhook = false, want true")
+	}
+	if p.Notifications.WebhookConfig.URL != "https://hooks.example.com/accorda" {
+		t.Errorf("URL = %q, want https://hooks.example.com/accorda", p.Notifications.WebhookConfig.URL)
+	}
+	if p.Notifications.WebhookConfig.MaxRetries != 5 {
+		t.Errorf("MaxRetries = %d, want 5", p.Notifications.WebhookConfig.MaxRetries)
+	}
+	if p.Notifications.WebhookConfig.Timeout != 2*time.Second {
+		t.Errorf("Timeout = %v, want 2s", p.Notifications.WebhookConfig.Timeout)
+	}
+	if p.Notifications.WebhookConfig.Secret != "s3cr3t" {
+		t.Errorf("Secret = %q, want s3cr3t", p.Notifications.WebhookConfig.Secret)
+	}
+}
+
+func TestParse_WebhookDefaults(t *testing.T) {
+	yaml := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+target:
+  type: ` + TargetCompose + `
+  file: ` + DefaultComposeFile + `
+notifications:
+  webhook: true
+  webhooks:
+    url: https://hooks.example.com/accorda
+`
+	p, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p.Notifications.WebhookConfig.MaxRetries != DefaultWebhookMaxRetries {
+		t.Errorf("MaxRetries default = %d, want %d", p.Notifications.WebhookConfig.MaxRetries, DefaultWebhookMaxRetries)
+	}
+	if p.Notifications.WebhookConfig.Timeout != DefaultWebhookTimeout {
+		t.Errorf("Timeout default = %v, want %v", p.Notifications.WebhookConfig.Timeout, DefaultWebhookTimeout)
+	}
+}
+
+func TestValidate_WebhookEnabledWithoutURL(t *testing.T) {
+	yaml := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+target:
+  type: ` + TargetCompose + `
+  file: ` + DefaultComposeFile + `
+notifications:
+  webhook: true
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil || !strings.Contains(err.Error(), "webhooks.url is empty") {
+		t.Fatalf("Parse error = %v, want webhooks.url empty validation", err)
+	}
+}
+
+func TestValidate_WebhookBlockWithoutEnabled(t *testing.T) {
+	p := &Project{
+		Version:     1,
+		Environment: "production",
+		Source:      Source{Type: "git", URL: "git@github.com:acme/infra.git", Branch: "main"},
+		Target:      Target{Type: TargetCompose, File: DefaultComposeFile},
+		Images:      Images{Pull: PullChanged},
+		Reconcile:   Reconcile{Drift: DriftReport},
+		Notifications: Notifications{
+			Webhook:       false,
+			WebhookConfig: &WebhookConfig{URL: "https://hooks.example.com/x"},
+		},
+	}
+	if err := Validate(p); err == nil || !strings.Contains(err.Error(), "notifications.webhook is not enabled") {
+		t.Fatalf("Validate error = %v, want webhook-not-enabled validation", err)
+	}
+}
+
+func TestValidate_WebhookBadScheme(t *testing.T) {
+	p := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+target:
+  type: ` + TargetCompose + `
+  file: ` + DefaultComposeFile + `
+notifications:
+  webhook: true
+  webhooks:
+    url: ftp://hooks.example.com/x
+`
+	_, err := Parse([]byte(p))
+	if err == nil || !strings.Contains(err.Error(), "scheme") {
+		t.Fatalf("Parse error = %v, want scheme validation", err)
+	}
+}
+
+func TestValidate_WebhookNegativeRetries(t *testing.T) {
+	p := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+target:
+  type: ` + TargetCompose + `
+  file: ` + DefaultComposeFile + `
+notifications:
+  webhook: true
+  webhooks:
+    url: https://hooks.example.com/x
+    max_retries: -1
+`
+	_, err := Parse([]byte(p))
+	if err == nil || !strings.Contains(err.Error(), "max_retries must be non-negative") {
+		t.Fatalf("Parse error = %v, want non-negative retries validation", err)
+	}
+}
