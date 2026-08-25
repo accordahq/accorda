@@ -1366,3 +1366,44 @@ operator-specific environment on top at deploy time. Secret values in
 The override is deployment-scoped, so it does not pollute Git-authored desired
 state, receipts, or drift comparisons.
 
+
+### 46. Generic webhook notifications are a best-effort event bus consumer
+
+**Context.** Issue #21 (docs/ACCORDA.md §21) requires a generic outbound
+webhook consumer for events: a configurable URL, retry on transient failures,
+redaction of secrets in payloads, and tests with a mock server. Core already
+publishes events on an in-memory `events.Bus` (docs/DECISIONS.md #20), and
+`internal/notifications` is the declared home for delivery adapters. The
+`sync` command wires a `events.NewBus()` and subscribes a progress writer to
+it.
+
+**Decision.** Add `internal/notifications/webhook` implementing a `Consumer`
+that subscribes to the event bus and POSTs each event as a JSON envelope
+(`{type, timestamp, payload}`) to a configurable URL. Delivery is best-effort:
+a failed or misconfigured webhook is reported to a caller-supplied error sink
+and never blocks or fails reconciliation. Retry uses bounded exponential
+backoff (500ms base, doubling to a 10s cap) up to `max_retries` (default 3,
+`config.DefaultWebhookMaxRetries`); only transport errors and HTTP 5xx/429 are
+retried, while 4xx responses are not. An optional shared `secret` produces an
+`X-Accorda-Signature` HMAC-SHA256 header over the payload body so a receiver
+can verify authenticity. Secret values in payloads are redacted before
+serialization: `state.DesiredState`/`DeployedState` `Env` maps are replaced
+with `secrets.RedactedValue` (`<redacted>`), while `health.Health`,
+`state.Comparison`, and `reconcile.StateTransition` carry no secret values and
+are passed through. The webhook is configured under
+`notifications.webhooks` (`url`, `max_retries`, `timeout`, `secret`) and is
+gated by `notifications.webhook: true`; a webhook block without the enable
+flag, or the flag without a URL, is a configuration error so a stale block
+cannot silently enable delivery. `accorda sync` subscribes the consumer to its
+bus when enabled.
+
+**Consequence.** Operators can forward lifecycle events to any HTTP endpoint
+with zero SaaS dependency, and the receiver can verify authenticity via the
+HMAC signature. Secret env values never leave the process in a webhook
+payload. The consumer depends only on `events`, `state`, `health`, `reconcile`,
+and `secrets`, so core stays provider-agnostic (docs/DECISIONS.md #3). Because
+the bus is synchronous and in-memory and the consumer is best-effort, a slow or
+unreachable endpoint only affects delivery, never the reconcile loop; retry
+backoff delays are bounded, so a persistent failure reports an error after the
+retry budget and moves on. Other notification channels (Slack, Discord, ntfy,
+Accorda Cloud) remain future work and are not wired.

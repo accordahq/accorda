@@ -54,6 +54,36 @@ func TestSyncCommand_WatchFlag(t *testing.T) {
 	}
 }
 
+func TestBuildWebhook_Disabled_NoOp(t *testing.T) {
+	unsub, err := buildWebhook(config.Notifications{}, events.NewBus())
+	if err != nil {
+		t.Fatalf("buildWebhook: %v", err)
+	}
+	if unsub != nil {
+		t.Error("unsubscribe non-nil for disabled webhook, want nil")
+	}
+}
+
+func TestBuildWebhook_EnabledMissingConfig_Error(t *testing.T) {
+	if _, err := buildWebhook(config.Notifications{Webhook: true}, events.NewBus()); err == nil {
+		t.Fatal("expected error for enabled webhook without config, got nil")
+	}
+}
+
+func TestBuildWebhook_EnabledReturnsUnsubscribe(t *testing.T) {
+	unsub, err := buildWebhook(config.Notifications{
+		Webhook:       true,
+		WebhookConfig: &config.WebhookConfig{URL: "http://127.0.0.1:1", MaxRetries: 0, Timeout: time.Millisecond},
+	}, events.NewBus())
+	if err != nil {
+		t.Fatalf("buildWebhook: %v", err)
+	}
+	if unsub == nil {
+		t.Fatal("unsubscribe nil, want non-nil")
+	}
+	unsub() // must not panic
+}
+
 func TestSyncProgressWriter_PrintsNonTerminalTransitions(t *testing.T) {
 	var out bytes.Buffer
 	write := syncProgressWriter(&out)

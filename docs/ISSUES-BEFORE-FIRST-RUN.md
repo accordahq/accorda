@@ -9,3 +9,4 @@
 - [x] https://github.com/accordahq/accorda/issues/29
 - [x] https://github.com/accordahq/accorda/issues/52
 - [x] https://github.com/accordahq/accorda/issues/68
+- [x] https://github.com/accordahq/accorda/issues/21

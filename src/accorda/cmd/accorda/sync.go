@@ -19,6 +19,7 @@ import (
 	"accorda/internal/core/locking"
 	"accorda/internal/core/reconcile"
 	"accorda/internal/core/state"
+	"accorda/internal/notifications/webhook"
 	"accorda/internal/sources/git"
 	"accorda/internal/targets/compose"
 )
@@ -79,6 +80,11 @@ func runSync(cmd *cobra.Command, dir string, watch bool) error {
 	bus := events.NewBus()
 	unsubscribe := bus.Subscribe(syncProgressWriter(cmd.OutOrStdout()))
 	defer unsubscribe()
+	if wh, err := buildWebhook(proj.Notifications, bus); err != nil {
+		return err
+	} else if wh != nil {
+		defer wh()
+	}
 	r := reconcile.New(src, tgt, bus).
 		WithDriftPolicy(driftPolicy(proj.Reconcile.Drift)).
 		WithEnvironment(proj.Environment).
@@ -218,6 +224,27 @@ func lastHealthyReceipt(store history.Store) (*history.Receipt, error) {
 		}
 	}
 	return nil, nil
+}
+
+// buildWebhook constructs and subscribes the generic outbound webhook
+// notification target when the project enables it (docs/ACCORDA.md §21). It
+// returns the unsubscribe function and a nil error when the channel is
+// disabled. Delivery errors are reported to the command's stderr so a
+// misconfigured webhook is observable without blocking reconciliation.
+func buildWebhook(n config.Notifications, bus events.Bus) (func(), error) {
+	if !n.Webhook {
+		return nil, nil
+	}
+	if n.WebhookConfig == nil {
+		return nil, errors.New("sync: notifications.webhook is enabled but webhooks is not configured")
+	}
+	con, err := webhook.New(*n.WebhookConfig, webhook.WithErrorSink(func(err error) {
+		fmt.Fprintf(os.Stderr, "sync: webhook: %v\n", err)
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("sync: %w", err)
+	}
+	return con.Subscribe(bus), nil
 }
 
 // buildSource resolves the repository-relative Compose artifact shared by the

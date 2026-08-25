@@ -272,13 +272,54 @@ func (s Secrets) MarshalYAML() (any, error) {
 }
 
 // Notifications enables notification channels (docs/ACCORDA.md §21, §39).
+// The generic webhook channel (§21) is configured through WebhookConfig; the
+// remaining channels are booleans that gate future adapters.
 type Notifications struct {
 	GitHub  bool `yaml:"github,omitempty"`
 	Webhook bool `yaml:"webhook,omitempty"`
 	Slack   bool `yaml:"slack,omitempty"`
 	Discord bool `yaml:"discord,omitempty"`
 	Ntfy    bool `yaml:"ntfy,omitempty"`
+	// WebhookConfig configures the generic outbound webhook consumer
+	// (docs/ACCORDA.md §21). It is honored only when Webhook is true; a
+	// non-empty WebhookConfig without Webhook: true is a configuration error
+	// surfaced by Validate so a stale block does not silently enable delivery.
+	// It is a pointer so the marshaled document omits the block entirely when
+	// unset.
+	WebhookConfig *WebhookConfig `yaml:"webhooks,omitempty"`
 }
+
+// WebhookConfig configures the generic outbound webhook notification target
+// (docs/ACCORDA.md §21). The consumer subscribes to the event bus and POSTs
+// each event as a JSON payload to URL, retrying transient failures up to
+// MaxRetries times with exponential backoff. Secret values in the payload are
+// redacted before serialization so credentials never leave the process.
+type WebhookConfig struct {
+	// URL is the outbound webhook endpoint. It must be an absolute https (or
+	// http for local testing) URL. Required when the webhook channel is
+	// enabled.
+	URL string `yaml:"url"`
+	// MaxRetries is the maximum number of retry attempts after the initial
+	// request fails. It defaults to DefaultWebhookMaxRetries when zero. A
+	// negative value is rejected by Validate.
+	MaxRetries int `yaml:"max_retries,omitempty"`
+	// Timeout is the per-request timeout for each webhook delivery. It
+	// defaults to DefaultWebhookTimeout when zero.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+	// Secret is an optional shared secret sent as the X-Accorda-Signature
+	// header (HMAC-SHA256 of the payload body) so the receiver can verify
+	// authenticity. It is treated as a secret and never logged or included in
+	// the payload.
+	Secret string `yaml:"secret,omitempty"`
+}
+
+// DefaultWebhookMaxRetries is the default retry count for the webhook
+// consumer when WebhookConfig.MaxRetries is unset (docs/ACCORDA.md §21).
+const DefaultWebhookMaxRetries = 3
+
+// DefaultWebhookTimeout is the default per-request timeout for the webhook
+// consumer when WebhookConfig.Timeout is unset (docs/ACCORDA.md §21).
+const DefaultWebhookTimeout = 10 * time.Second
 
 // Load reads the Accorda project file from dir and returns the validated
 // configuration. The project file must be named File (accorda.yaml).
@@ -401,6 +442,21 @@ func applyDefaults(p *Project) {
 	if p.Sync.Interval == 0 {
 		p.Sync.Interval = 30 * time.Second
 	}
+	if p.Notifications.WebhookConfig != nil {
+		applyWebhookDefaults(p.Notifications.WebhookConfig)
+	}
+}
+
+// applyWebhookDefaults fills in the webhook consumer's optional fields with
+// their defined defaults (docs/ACCORDA.md §21). Defaults are only applied
+// when the field is at its zero value.
+func applyWebhookDefaults(w *WebhookConfig) {
+	if w.MaxRetries == 0 {
+		w.MaxRetries = DefaultWebhookMaxRetries
+	}
+	if w.Timeout == 0 {
+		w.Timeout = DefaultWebhookTimeout
+	}
 }
 
 // ApplyDefaults fills in optional fields with their defined default values.
@@ -436,6 +492,9 @@ func Validate(p *Project) error {
 		return err
 	}
 	if err := validateHealthSync(p); err != nil {
+		return err
+	}
+	if err := validateNotifications(p); err != nil {
 		return err
 	}
 	return validateSecrets(p)
@@ -576,6 +635,48 @@ func validateSecrets(p *Project) error {
 		if strings.TrimSpace(f) == "" {
 			return fmt.Errorf("config: secrets.files[%d] is empty", i)
 		}
+	}
+	return nil
+}
+
+// validateNotifications checks the notification channel configuration
+// (docs/ACCORDA.md §21). The generic webhook channel requires a URL and is
+// rejected when enabled without one, or when a webhook block is present
+// without enabling the channel so a stale block does not silently enable
+// delivery.
+func validateNotifications(p *Project) error {
+	w := p.Notifications.WebhookConfig
+	if w == nil {
+		if !p.Notifications.Webhook {
+			return nil
+		}
+		return errors.New("config: notifications.webhook is enabled but webhooks.url is empty")
+	}
+	hasBlock := w.URL != "" || w.MaxRetries != 0 || w.Timeout != 0 || w.Secret != ""
+	if !p.Notifications.Webhook {
+		if hasBlock {
+			return errors.New("config: notifications.webhooks is set but notifications.webhook is not enabled")
+		}
+		return nil
+	}
+	if strings.TrimSpace(w.URL) == "" {
+		return errors.New("config: notifications.webhook is enabled but webhooks.url is empty")
+	}
+	u, err := url.Parse(w.URL)
+	if err != nil {
+		return fmt.Errorf("config: notifications.webhooks.url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("config: notifications.webhooks.url scheme %q is not supported (want http or https)", u.Scheme)
+	}
+	if u.Host == "" {
+		return errors.New("config: notifications.webhooks.url is missing a host")
+	}
+	if w.MaxRetries < 0 {
+		return errors.New("config: notifications.webhooks.max_retries must be non-negative")
+	}
+	if w.Timeout < 0 {
+		return errors.New("config: notifications.webhooks.timeout must be non-negative")
 	}
 	return nil
 }
