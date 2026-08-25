@@ -1380,11 +1380,15 @@ it.
 **Decision.** Add `internal/notifications/webhook` implementing a `Consumer`
 that subscribes to the event bus and POSTs each event as a JSON envelope
 (`{type, timestamp, payload}`) to a configurable URL. Delivery is best-effort
-and **asynchronous**: `Consumer.Handle` dispatches each event to its own
-goroutine, so retries and backoff run off the bus publish path and never block
-the reconcile loop even though the underlying `events.Bus` is synchronous and
-inline (docs/DECISIONS.md #20). A failed or misconfigured webhook is reported
-to a caller-supplied error sink and never blocks or fails reconciliation.
+and **asynchronous**: `Consumer.Handle` dispatches each event to a goroutine,
+so retries and backoff run off the bus publish path and never block the
+reconcile loop even though the underlying `events.Bus` is synchronous and
+inline (docs/DECISIONS.md #20). In-flight deliveries are bounded to
+`maxConcurrentDeliveries` (16): when the budget is exhausted `Handle` drops
+the event and reports it to the error sink rather than blocking or growing
+goroutines unboundedly, which matters in `--watch` mode against a slow
+endpoint. A failed or misconfigured webhook is reported to a caller-supplied
+error sink and never blocks or fails reconciliation.
 Retry uses bounded exponential backoff (500ms base, doubling to a 10s cap) up
 to `max_retries` (default 3, `config.DefaultWebhookMaxRetries`); only transport
 errors and HTTP 5xx/429 are retried, while 4xx responses are not. The consumer
@@ -1392,25 +1396,33 @@ uses a dedicated `http.Client` that rejects redirects (so a 3xx from a
 compromised receiver cannot pivot the payload to an internal address) and
 enforces the per-request `timeout`. An optional shared `secret` produces an
 `X-Accorda-Signature` HMAC-SHA256 header over the payload body so a receiver
-can verify authenticity. Secret values in payloads are redacted before
-serialization: `state.DesiredState`/`DeployedState` `Env` maps are replaced
-with `secrets.RedactedValue` (`<redacted>`), while `health.Health`,
-`state.Comparison`, and `reconcile.StateTransition` carry no secret values and
-are passed through. The webhook is configured under
-`notifications.webhooks` (`url`, `max_retries`, `timeout`, `secret`) and is
-gated by `notifications.webhook: true`; a webhook block without the enable
-flag, or the flag without a URL, is a configuration error so a stale block
-cannot silently enable delivery. `accorda sync` subscribes the consumer to its
-bus when enabled.
+can verify authenticity; the receiver should compare it with
+`crypto/hmac.Equal` (constant time), not a plain `==`. Secret values in
+payloads are redacted before serialization: `state.DesiredState`/`DeployedState`
+`Env` maps are replaced with `secrets.RedactedValue` (`<redacted>`), and error
+strings rendered into a `state.transition` payload are passed through a URL
+redactor that strips any inline `user:password@` credentials that a wrapped
+library error may have echoed, so credentials cannot leak via the error field
+even when a Git source URL contains them. `health.Health`, `state.Comparison`,
+and `reconcile.StateTransition` otherwise carry no secret values. The webhook
+is configured under `notifications.webhooks` (`url`, `max_retries`, `timeout`,
+`secret`) and is gated by `notifications.webhook: true`; a webhook block
+without the enable flag, or the flag without a URL, is a configuration error
+so a stale block cannot silently enable delivery. `accorda sync` subscribes
+the consumer to its bus when enabled.
 
 **Consequence.** Operators can forward lifecycle events to any HTTP endpoint
 with zero SaaS dependency, and the receiver can verify authenticity via the
 HMAC signature. Secret env values never leave the process in a webhook
-payload. Because `Handle` dispatches asynchronously, a slow or unreachable
-endpoint affects only delivery, never the reconcile loop: the synchronous bus
-returns immediately after each event, and retry backoff happens in the
-background. Events may be delivered out of order (one goroutine per event); the
-consumer does not guarantee ordering. The consumer depends only on `events`,
-`state`, `health`, `reconcile`, and `secrets`, so core stays provider-agnostic
+payload, and URL-embedded credentials cannot leak via error strings. Because
+`Handle` dispatches asynchronously, a slow or unreachable endpoint affects
+only delivery, never the reconcile loop: the synchronous bus returns
+immediately after each event, and retry backoff happens in the background.
+Concurrency is bounded, so in `--watch` mode a degraded receiver cannot grow
+goroutine or memory use without limit; when the budget is exceeded, excess
+events are dropped and reported rather than queued indefinitely. Events may be
+delivered out of order (one goroutine per event); the consumer does not
+guarantee ordering. The consumer depends only on `events`, `state`, `health`,
+`reconcile`, and `secrets`, so core stays provider-agnostic
 (docs/DECISIONS.md #3). Other notification channels (Slack, Discord, ntfy,
 Accorda Cloud) remain future work and are not wired.

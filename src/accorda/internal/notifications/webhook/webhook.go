@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"accorda/internal/config"
@@ -39,24 +40,36 @@ const (
 // the event bus. A nil sink drops error reports silently.
 type errorSink func(err error)
 
+// maxConcurrentDeliveries bounds the number of in-flight delivery goroutines.
+// A single reconcile cycle emits many events, and in --watch mode cycles run
+// continuously; against a slow endpoint the per-event delivery can live for
+// the whole retry budget, so unbounded goroutines would leak and exhaust the
+// process. Bounding concurrency caps in-flight deliveries; when the limit is
+// reached, Handle drops the event and reports it to the error sink rather
+// than blocking the bus publish path (docs/DECISIONS.md #46).
+const maxConcurrentDeliveries = 16
+
 // Consumer is a generic outbound webhook notification target
 // (docs/ACCORDA.md §21). It subscribes to the core event bus and POSTs each
 // event as a JSON payload to the configured URL, retrying transient failures
 // up to MaxRetries times with exponential backoff. Secret values in the
 // payload are redacted before serialization.
 //
-// Delivery is best-effort and asynchronous: Handle dispatches each event to
-// its own goroutine so retries and backoff never run on the bus publish path
-// and cannot block the reconcile loop (docs/DECISIONS.md #46). The event bus
-// may invoke Handle from multiple goroutines; the Consumer is safe for
-// concurrent use and each delivery is independent, so ordering is not
-// guaranteed.
+// Delivery is best-effort and asynchronous: Handle dispatches each event to a
+// goroutine so retries and backoff never run on the bus publish path and
+// cannot block the reconcile loop. Concurrency is bounded to
+// maxConcurrentDeliveries; when the limit is reached Handle drops the event
+// and reports a delivery-limit error rather than blocking or growing
+// unboundedly. The event bus may invoke Handle from multiple goroutines; the
+// Consumer is safe for concurrent use and each delivery is independent, so
+// ordering is not guaranteed.
 type Consumer struct {
 	cfg     config.WebhookConfig
 	client  *http.Client
 	now     func() time.Time
 	sleeper func(context.Context, time.Duration) error
 	onError errorSink
+	sem     chan struct{}
 }
 
 // Option configures a Consumer.
@@ -99,6 +112,7 @@ func New(cfg config.WebhookConfig, opts ...Option) (*Consumer, error) {
 		client:  withoutRedirects(cfg.Timeout),
 		now:     time.Now,
 		sleeper: sleepCtx,
+		sem:     make(chan struct{}, maxConcurrentDeliveries),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -143,18 +157,30 @@ func (c *Consumer) Subscribe(bus events.Bus) func() {
 }
 
 // Handle is the event bus handler that delivers one event as a webhook. It
-// never blocks the bus publish path: each event is dispatched to its own
-// goroutine so retries and backoff run off the reconcile loop (the event bus
-// is synchronous; docs/DECISIONS.md #46). It never panics across the bus
+// never blocks the bus publish path: each event is dispatched to a goroutine
+// so retries and backoff run off the reconcile loop (the event bus is
+// synchronous; docs/DECISIONS.md #46). It never panics across the bus
 // boundary: a delivery error is reported to the error sink and does not
 // propagate.
 func (c *Consumer) Handle(ctx context.Context, e events.Event) {
-	go c.deliverAsync(ctx, e)
+	select {
+	case c.sem <- struct{}{}:
+		go c.deliverAsync(ctx, e)
+	default:
+		// Concurrency budget is exhausted. Drop the event rather than block
+		// the reconcile loop or grow goroutines unboundedly; report the drop
+		// so an operator can see delivery is being throttled.
+		if c.onError != nil {
+			c.onError(fmt.Errorf("webhook %s: dropped: delivery concurrency limit (%d) reached", e.Type, maxConcurrentDeliveries))
+		}
+	}
 }
 
 // deliverAsync delivers e and reports any failure to the error sink. It is
-// the goroutine entry point for Handle.
+// the goroutine entry point for Handle and releases one concurrency slot on
+// return.
 func (c *Consumer) deliverAsync(ctx context.Context, e events.Event) {
+	defer func() { <-c.sem }()
 	if err := c.deliver(ctx, e); err != nil {
 		if c.onError != nil {
 			c.onError(fmt.Errorf("webhook %s: %w", e.Type, err))
@@ -257,9 +283,11 @@ func redactPayload(payload any) any {
 }
 
 // redactTransition copies a StateTransition with the error string rendered,
-// since errors are not JSON-marshaled by default. No secret values are
-// present in a transition, but rendering the error keeps the payload
-// self-contained.
+// since errors are not JSON-marshaled by default. The error string is passed
+// through redactErrorText so any URL-embedded credentials in wrapped errors
+// (for example a go-git clone failure that echoes the configured repository
+// URL) are stripped before the payload is sent, since the Env redaction does
+// not cover error strings (docs/ACCORDA.md §18, §56).
 func redactTransition(t reconcile.StateTransition) map[string]any {
 	out := map[string]any{
 		"from":          string(t.From),
@@ -268,9 +296,45 @@ func redactTransition(t reconcile.StateTransition) map[string]any {
 		"deployment_id": t.DeploymentID,
 	}
 	if t.Err != nil {
-		out["error"] = t.Err.Error()
+		out["error"] = redactErrorText(t.Err.Error())
 	}
 	return out
+}
+
+// redactErrorText strips userinfo credentials from every URL embedded in an
+// error message. It is defense-in-depth for error strings that reach a
+// webhook payload, where a wrapped library error may echo a repository URL
+// containing inline credentials even though Accorda's own error prefixes
+// already use git.RedactURL. It handles both `scheme://user:pass@host/path`
+// and `scheme://user@host/path` forms.
+func redactErrorText(s string) string {
+	var b strings.Builder
+	rest := s
+	for {
+		i := strings.Index(rest, "://")
+		if i < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:i+3]) // emit up to and including "://"
+		tail := rest[i+3:]
+		at := strings.Index(tail, "@")
+		if at < 0 {
+			// No userinfo on this URL; emit the rest unchanged.
+			b.WriteString(tail)
+			break
+		}
+		// A '/' before the '@' means the '@' is not part of the authority, so
+		// there is no userinfo to strip.
+		if slash := strings.Index(tail, "/"); slash >= 0 && slash < at {
+			b.WriteString(tail)
+			break
+		}
+		// Skip past the userinfo and the '@', then continue scanning the tail
+		// for another URL.
+		rest = tail[at+1:]
+	}
+	return b.String()
 }
 
 // redactHealth returns a JSON-safe copy of a health assessment. encoding/json

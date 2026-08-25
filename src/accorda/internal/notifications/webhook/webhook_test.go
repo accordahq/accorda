@@ -33,6 +33,7 @@ type mockServer struct {
 	requests []recordedRequest
 	status   int
 	bodyFn   func([]byte) // optional hook for per-request assertions
+	hang     func()       // optional hook that blocks a request if set
 }
 
 type recordedRequest struct {
@@ -54,7 +55,11 @@ func (m *mockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.bodyFn(body)
 	}
 	status := m.status
+	hang := m.hang
 	m.mu.Unlock()
+	if hang != nil {
+		hang() // block the request so the delivery goroutine stays in flight
+	}
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte("ok"))
@@ -169,14 +174,13 @@ func TestDeliver_RetriesExhausted_ReportsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// deliverAsync is the goroutine entry point Handle uses; calling it
-	// directly tests the sink wiring deterministically.
-	con.deliverAsync(context.Background(), events.Event{Type: events.EventDeploymentFailed})
+	// Handle dispatches asynchronously; wait for the delivery to complete.
+	con.Handle(context.Background(), events.Event{Type: events.EventDeploymentFailed})
 	// 1 initial + 2 retries = 3 attempts.
-	if got := srv.count(); got != 3 {
-		t.Fatalf("requests = %d, want 3", got)
+	if !waitFor(t, func() bool { return srv.count() == 3 }) {
+		t.Fatalf("requests = %d, want 3", srv.count())
 	}
-	if reported.Load() != 1 {
+	if !waitFor(t, func() bool { return reported.Load() == 1 }) {
 		t.Errorf("error sink calls = %d, want 1", reported.Load())
 	}
 }
@@ -191,8 +195,8 @@ func TestDeliver_NetworkError_Retries(t *testing.T) {
 	}
 	var reported atomic.Int32
 	con.onError = func(err error) { reported.Add(1) }
-	con.deliverAsync(context.Background(), events.Event{Type: events.EventDeploymentDetected})
-	if reported.Load() != 1 {
+	con.Handle(context.Background(), events.Event{Type: events.EventDeploymentDetected})
+	if !waitFor(t, func() bool { return reported.Load() == 1 }) {
 		t.Errorf("error sink calls = %d, want 1", reported.Load())
 	}
 }
@@ -372,6 +376,91 @@ func waitFor(t *testing.T, cond func() bool) bool {
 		time.Sleep(5 * time.Millisecond)
 	}
 	return cond()
+}
+
+func TestHandle_ConcurrencyLimit_DropsEvents(t *testing.T) {
+	// Handle must bound in-flight deliveries and drop (with an error-sink
+	// report) rather than block or grow goroutines unboundedly.
+	srv := newMockServer(t)
+	addr := startMock(t, srv)
+	block := make(chan struct{})
+	// Each request hangs until block is closed, so every accepted delivery
+	// holds a concurrency slot.
+	srv.hang = func() { <-block }
+	var dropped atomic.Int32
+	con, err := New(baseCfg(addr),
+		WithSleeper(func(context.Context, time.Duration) error { return nil }),
+		WithErrorSink(func(err error) {
+			if strings.Contains(err.Error(), "dropped") {
+				dropped.Add(1)
+			}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Fill the budget plus one overflow event.
+	for i := 0; i < maxConcurrentDeliveries+1; i++ {
+		con.Handle(context.Background(), events.Event{Type: events.EventDeploymentStarted})
+	}
+	if !waitFor(t, func() bool { return srv.count() == maxConcurrentDeliveries }) {
+		t.Fatalf("in-flight deliveries = %d, want %d", srv.count(), maxConcurrentDeliveries)
+	}
+	if !waitFor(t, func() bool { return dropped.Load() == 1 }) {
+		t.Errorf("dropped events = %d, want 1", dropped.Load())
+	}
+	close(block)
+}
+
+func TestRedactErrorText_StripsURLCredentials(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{
+			in:   `git source: clone "https://user:ghp_token@github.com/acme/infra.git": authentication required`,
+			want: `git source: clone "https://github.com/acme/infra.git": authentication required`,
+		},
+		{
+			in:   `dial tcp: lookup https://user:pass@host.example: no such host`,
+			want: `dial tcp: lookup https://host.example: no such host`,
+		},
+		{
+			in:   "no url here",
+			want: "no url here",
+		},
+		{
+			in:   `ssh://git@github.com/acme/infra.git: permission denied`,
+			want: `ssh://github.com/acme/infra.git: permission denied`,
+		},
+		{
+			in:   "at sign but no scheme @example.com",
+			want: "at sign but no scheme @example.com",
+		},
+	}
+	for _, c := range cases {
+		if got := redactErrorText(c.in); got != c.want {
+			t.Errorf("redactErrorText(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRedactTransition_RedactsErrorURL(t *testing.T) {
+	tr := reconcile.StateTransition{
+		From:         reconcile.PhaseFetching,
+		To:           reconcile.PhaseFailed,
+		Commit:       "abc123",
+		DeploymentID: "dep_1",
+		Err:          errors.New(`git source: clone "https://user:token@github.com/acme/infra.git": boom`),
+	}
+	got := redactPayload(tr)
+	m, _ := got.(map[string]any)
+	if m["error"] != `git source: clone "https://github.com/acme/infra.git": boom` {
+		t.Errorf("error = %q, want redacted URL", m["error"])
+	}
+	if strings.Contains(m["error"].(string), "token") {
+		t.Error("error leaks the credential")
+	}
 }
 
 func TestRedactPayload_HealthHasNoSecrets(t *testing.T) {
