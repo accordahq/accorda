@@ -97,10 +97,12 @@ func runProjectsSync(cmd *cobra.Command, dir string, watch bool, projects []conf
 	if len(projects) == 0 {
 		return errors.New("sync: no projects configured")
 	}
-	members, err := buildEnsembleMembers(cmd, dir, projects)
+	members, cleanup, err := buildEnsembleMembers(cmd, dir, projects)
 	if err != nil {
+		cleanup() // unwind any members already built before the failure
 		return err
 	}
+	defer cleanup()
 	if len(members) == 1 {
 		// A single-project document runs through the same single-reconciler
 		// path as before, preserving its output and state layout.
@@ -136,31 +138,41 @@ func runProjectsSync(cmd *cobra.Command, dir string, watch bool, projects []conf
 }
 
 // buildEnsembleMembers constructs the reconciler members for each project,
-// wiring per-member source, target, receipt store, lock, and event bus. The
-// per-member webhook and bus subscriptions are scoped to this function call;
-// their cleanup runs when the returned members are discarded.
-func buildEnsembleMembers(cmd *cobra.Command, dir string, projects []config.Project) ([]reconcile.EnsembleMember, error) {
+// wiring per-member source, target, receipt store, lock, and event bus. It
+// returns the members and a cleanup function that unsubscribes every member's
+// bus progress writer and webhook consumer; the caller must defer cleanup() so
+// the subscriptions do not outlive the reconciliation. On error, cleanup
+// unwinds any members already built so a partial build leaks nothing.
+func buildEnsembleMembers(cmd *cobra.Command, dir string, projects []config.Project) ([]reconcile.EnsembleMember, func(), error) {
 	members := make([]reconcile.EnsembleMember, 0, len(projects))
+	var unsubscribers []func()
+	cleanup := func() {
+		for _, unsub := range unsubscribers {
+			if unsub != nil {
+				unsub()
+			}
+		}
+	}
 	for i := range projects {
 		p := &projects[i]
 		src, err := buildSource(p, dir, p.Name)
 		if err != nil {
-			return nil, fmt.Errorf("sync %s: %w", p.Name, err)
+			cleanup()
+			return nil, nil, fmt.Errorf("sync %s: %w", p.Name, err)
 		}
 		tgt, err := buildTarget(p, dir, src, p.Name)
 		if err != nil {
-			return nil, fmt.Errorf("sync %s: %w", p.Name, err)
+			cleanup()
+			return nil, nil, fmt.Errorf("sync %s: %w", p.Name, err)
 		}
 		store := history.NewFileStore(receiptPath(dir, p.Name))
 		bus := events.NewBus()
-		bus.Subscribe(projectSyncProgressWriter(cmd.OutOrStdout(), p.Name))
+		unsubscribers = append(unsubscribers, bus.Subscribe(projectSyncProgressWriter(cmd.OutOrStdout(), p.Name)))
 		if wh, err := buildWebhook(p.Notifications, bus); err != nil {
-			return nil, err
+			cleanup()
+			return nil, nil, err
 		} else if wh != nil {
-			// The webhook consumer's lifetime is the process's lifetime; its
-			// unsubscribe is not deferred per-member because the consumer runs
-			// asynchronously and must outlive this builder scope.
-			_ = wh
+			unsubscribers = append(unsubscribers, wh)
 		}
 		r := reconcile.New(src, tgt, bus).
 			WithDriftPolicy(driftPolicy(p.Reconcile.Drift)).
@@ -169,7 +181,7 @@ func buildEnsembleMembers(cmd *cobra.Command, dir string, projects []config.Proj
 			WithLocker(locking.NewFileLocker(deploymentLockPath(dir, p.Target)))
 		members = append(members, reconcile.EnsembleMember{Name: p.Name, Reconciler: r})
 	}
-	return members, nil
+	return members, cleanup, nil
 }
 
 // writeMemberResult prints one ensemble member's cycle outcome, prefixed with
