@@ -93,11 +93,82 @@ type Project struct {
 // target-scoped lock, so a failure or deployment in one workload cannot
 // block or mutate another.
 //
+// The document root carries the settings that are shared by all members
+// (docs/DECISIONS.md #48): the schema Version, the global Sync cadence, and
+// the global Images, Reconcile, and Health defaults. Version and Sync are
+// global and not overridable — one agent runs on one schema and one polling
+// cadence. Images, Reconcile, and Health act as defaults that each member may
+// override; per-member overrides are resolved into the member's concrete
+// Project at parse time.
+//
 // A document is an Ensemble exactly when it has a top-level projects: list;
 // otherwise it is a single Project. ParseDocument and LoadDocument dispatch
 // between the two shapes.
 type Ensemble struct {
-	Projects []Project `yaml:"projects"`
+	Version   int       `yaml:"version"`
+	Sync      Sync      `yaml:"sync,omitempty"`
+	Images    Images    `yaml:"images,omitempty"`
+	Reconcile Reconcile `yaml:"reconcile,omitempty"`
+	Health    Health    `yaml:"health,omitempty"`
+	Projects  []Project `yaml:"projects"`
+}
+
+// ensembleMember is the per-workload YAML shape inside a projects: list. It is
+// deliberately narrower than Project: it rejects the global fields (version,
+// sync) that live at the Ensemble root so an operator cannot silently declare
+// a per-member schema version or polling cadence that would be ignored or
+// diverge from the single agent loop (docs/DECISIONS.md #48). Images,
+// Reconcile, and Health are optional pointers so "unset" is distinguishable
+// from "set to zero value" when merging the global default.
+type ensembleMember struct {
+	Name          string        `yaml:"name,omitempty"`
+	Environment   string        `yaml:"environment"`
+	Source        Source        `yaml:"source"`
+	Target        Target        `yaml:"target"`
+	Images        *Images       `yaml:"images,omitempty"`
+	Reconcile     *Reconcile    `yaml:"reconcile,omitempty"`
+	Health        *Health       `yaml:"health,omitempty"`
+	Secrets       Secrets       `yaml:"secrets,omitempty"`
+	Notifications Notifications `yaml:"notifications,omitempty"`
+}
+
+// resolveMembers turns raw ensemble members into concrete Projects by merging
+// the Ensemble root's global defaults into each member (docs/DECISIONS.md
+// #48). The schema version and the sync interval are global and not
+// overridable, so every member inherits them verbatim; Images, Reconcile, and
+// Health fall back to the root value only when the member does not override
+// them.
+func (e *Ensemble) resolveMembers(members []ensembleMember) {
+	e.Projects = make([]Project, len(members))
+	for i, m := range members {
+		p := Project{
+			Name:          m.Name,
+			Version:       e.Version,
+			Environment:   m.Environment,
+			Source:        m.Source,
+			Target:        m.Target,
+			Secrets:       m.Secrets,
+			Notifications: m.Notifications,
+		}
+		// The polling cadence is global and non-overridable.
+		p.Sync.Interval = e.Sync.Interval
+		if m.Images != nil {
+			p.Images = *m.Images
+		} else {
+			p.Images = e.Images
+		}
+		if m.Reconcile != nil {
+			p.Reconcile = *m.Reconcile
+		} else {
+			p.Reconcile = e.Reconcile
+		}
+		if m.Health != nil {
+			p.Health = *m.Health
+		} else {
+			p.Health = e.Health
+		}
+		e.Projects[i] = p
+	}
 }
 
 // Source describes the Git source to reconcile from (docs/ACCORDA.md §13).
@@ -453,13 +524,16 @@ func hasInlineCredential(source Source) bool {
 }
 
 // Document is either a single Project or a multi-project Ensemble decoded
-// from an accorda.yaml file (docs/ACCORDA.md §25, §49).
+// from an accorda.yaml file (docs/ACCORDA.md §25, §49). In the Ensemble shape,
+// the schema version, sync cadence, and policy defaults are resolved into
+// each member's concrete Project at parse time (docs/DECISIONS.md #48).
 type Document struct {
 	// Project is the single-project document when the file has no top-level
 	// projects: list; otherwise it is nil.
 	Project *Project
 	// Ensemble is the multi-project document when the file has a top-level
-	// projects: list; otherwise it is nil.
+	// projects: list; otherwise it is nil. Its members are already resolved
+	// with the document-root globals applied and per-member overrides merged.
 	Ensemble *Ensemble
 }
 
@@ -508,43 +582,86 @@ func hasEnsembleProjects(root *yaml.Node) bool {
 }
 
 // parseEnsemble decodes and validates a multi-project document
-// (docs/ACCORDA.md §49).
+// (docs/ACCORDA.md §49). It decodes the Ensemble root (whose globals —
+// version, sync, images, reconcile, health — live beside the projects: list)
+// alongside strict per-member entries, then merges the globals into each
+// member so every Project carries the concrete effective values the CLI and
+// targets consume (docs/DECISIONS.md #48). The members are decoded through
+// ensembleMember, which rejects the per-member version and sync blocks, so
+// those globals cannot be silently duplicated or diverge per workload.
 func parseEnsemble(data []byte) (*Document, error) {
-	var e Ensemble
+	var doc struct {
+		Version   int              `yaml:"version"`
+		Sync      Sync             `yaml:"sync,omitempty"`
+		Images    Images           `yaml:"images,omitempty"`
+		Reconcile Reconcile        `yaml:"reconcile,omitempty"`
+		Health    Health           `yaml:"health,omitempty"`
+		Projects  []ensembleMember `yaml:"projects"`
+	}
 	dec := yaml.NewDecoder(strings.NewReader(string(data)))
 	dec.KnownFields(true)
-	if err := dec.Decode(&e); err != nil {
+	if err := dec.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("config: parse %q: %w", File, err)
 	}
+	e := &Ensemble{
+		Version:   doc.Version,
+		Sync:      doc.Sync,
+		Images:    doc.Images,
+		Reconcile: doc.Reconcile,
+		Health:    doc.Health,
+	}
+	e.applyEnsembleDefaults()
+	e.resolveMembers(doc.Projects)
 	for i := range e.Projects {
 		applyDefaults(&e.Projects[i])
 	}
-	if err := ValidateEnsemble(&e); err != nil {
+	if err := ValidateEnsemble(e); err != nil {
 		return nil, err
 	}
-	return &Document{Ensemble: &e}, nil
+	return &Document{Ensemble: e}, nil
+}
+
+// applyEnsembleDefaults fills in the document-root globals that the spec
+// considers optional but which have a defined default behavior, mirroring
+// applyDefaults for the single-project shape (docs/ACCORDA.md §9, §19, §45).
+// They are applied to the root before resolveMembers so every member inherits
+// the same effective default.
+func (e *Ensemble) applyEnsembleDefaults() {
+	if e.Sync.Interval == 0 {
+		e.Sync.Interval = 30 * time.Second
+	}
+	if e.Images.Pull == "" {
+		e.Images.Pull = PullChanged
+	}
+	if e.Reconcile.Drift == "" {
+		e.Reconcile.Drift = DriftReport
+	}
+	if e.Health.Timeout == 0 {
+		e.Health.Timeout = 120 * time.Second
+	}
 }
 
 // ValidateEnsemble validates a multi-project document (docs/ACCORDA.md §49).
-// Every project must be a valid Project, and project names must be unique,
+// The document must declare a schema version and at least one project. Every
+// project must be a valid Project, and project names must be unique,
 // non-empty, and confined to the Compose project-name charset so they are
 // safe as a Compose project name and a filesystem path segment. Uniqueness
 // is compared case-insensitively (Compose project names normalize to
 // lowercase), so `API` and `api` are rejected as colliding — two ensemble
 // members with the same effective Compose project name would otherwise make
-// `--remove-orphans` destructive across projects. All members must share one
-// sync.interval: the ensemble runs on a single cadence, so divergent
-// per-member intervals would be silently ignored; a divergence is a config
-// error rather than a silent surprise. It returns the first error encountered.
+// `--remove-orphans` destructive across projects. It returns the first error
+// encountered.
 func ValidateEnsemble(e *Ensemble) error {
 	if e == nil {
 		return errors.New("config: ensemble is nil")
+	}
+	if err := validateSchemaVersion(e.Version); err != nil {
+		return err
 	}
 	if len(e.Projects) == 0 {
 		return errors.New("config: projects: at least one project is required")
 	}
 	seen := make(map[string]struct{}, len(e.Projects))
-	var interval time.Duration
 	for i := range e.Projects {
 		p := &e.Projects[i]
 		name := strings.TrimSpace(p.Name)
@@ -561,12 +678,6 @@ func ValidateEnsemble(e *Ensemble) error {
 		seen[key] = struct{}{}
 		if err := Validate(p); err != nil {
 			return err
-		}
-		if i == 0 {
-			interval = p.Sync.Interval
-		} else if p.Sync.Interval != interval && (p.Sync.Interval != 0 || interval != 0) {
-			return fmt.Errorf("config: projects[%d].sync.interval %s differs from %s; all members must share one interval",
-				i, p.Sync.Interval, interval)
 		}
 	}
 	return nil
@@ -713,14 +824,23 @@ func Validate(p *Project) error {
 
 // validateVersion checks the schema version and environment fields.
 func validateVersion(p *Project) error {
-	if p.Version == 0 {
-		return errors.New("config: version is required")
-	}
-	if p.Version != SchemaVersion {
-		return fmt.Errorf("config: version %d is not supported (want %d)", p.Version, SchemaVersion)
+	if err := validateSchemaVersion(p.Version); err != nil {
+		return err
 	}
 	if strings.TrimSpace(p.Environment) == "" {
 		return errors.New("config: environment is required")
+	}
+	return nil
+}
+
+// validateSchemaVersion checks a document schema version (single-project
+// Project or ensemble root) is present and supported.
+func validateSchemaVersion(version int) error {
+	if version == 0 {
+		return errors.New("config: version is required")
+	}
+	if version != SchemaVersion {
+		return fmt.Errorf("config: version %d is not supported (want %d)", version, SchemaVersion)
 	}
 	return nil
 }

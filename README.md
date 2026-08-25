@@ -75,12 +75,23 @@ For Compose, relative `target.file` and `target.path` values are repository-rela
 
 A single agent can manage several workloads concurrently by listing named
 projects under a top-level `projects:` key
-(docs/ACCORDA.md §49, Phase 5 — Multi-Project / Multi-Target Compose):
+(docs/ACCORDA.md §49, Phase 5 — Multi-Project / Multi-Target Compose). The
+schema version, sync cadence, and policy defaults live at the document root
+and are shared by every member; members may override the image pull, drift,
+and health defaults (docs/DECISIONS.md #48):
 
 ```yaml
+version: 1
+sync:
+  interval: 30s
+images:
+  pull: changed
+reconcile:
+  drift: repair
+health:
+  timeout: 120s
 projects:
   - name: api
-    version: 1
     environment: production
     source:
       type: git
@@ -90,7 +101,6 @@ projects:
       type: compose
       file: compose.yaml
   - name: worker
-    version: 1
     environment: production
     source:
       type: git
@@ -113,6 +123,10 @@ project-name normalization) so `--remove-orphans` cannot remove a sibling
 project's containers; each member's Compose project name is set to its
 `name`, and its git checkout is namespaced by name so two members sharing a
 repository URL get isolated worktrees.
+
+The `version` and `sync` settings are global and not overridable per project —
+one agent runs on one schema and one polling cadence — while `images`,
+`reconcile`, and `health` act as defaults that any member may override.
 
 ## Core interfaces
 
