@@ -14,6 +14,7 @@ import (
 	"accorda/internal/core/history"
 	"accorda/internal/core/locking"
 	"accorda/internal/core/reconcile"
+	"accorda/internal/core/state"
 	gitSource "accorda/internal/sources/git"
 )
 
@@ -86,7 +87,7 @@ func TestBuildWebhook_EnabledReturnsUnsubscribe(t *testing.T) {
 
 func TestSyncProgressWriter_PrintsNonTerminalTransitions(t *testing.T) {
 	var out bytes.Buffer
-	write := syncProgressWriter(&out)
+	write := projectSyncProgressWriter(&out, "")
 	write(context.Background(), events.Event{Type: events.EventDeploymentDetected})
 	write(context.Background(), events.Event{Type: events.EventStateTransition, Payload: "invalid"})
 	for _, transition := range []reconcile.StateTransition{
@@ -109,7 +110,7 @@ func TestSyncProgressWriter_PrintsNonTerminalTransitions(t *testing.T) {
 
 func TestSyncProgressWriter_PrintsDriftEvents(t *testing.T) {
 	var out bytes.Buffer
-	write := syncProgressWriter(&out)
+	write := projectSyncProgressWriter(&out, "")
 	write(context.Background(), events.Event{Type: events.EventDriftDetected})
 	write(context.Background(), events.Event{Type: events.EventDriftReconciled})
 
@@ -218,11 +219,11 @@ func TestBuildTarget_Compose(t *testing.T) {
 		Images: config.Images{Pull: config.PullAlways},
 		Health: config.Health{Timeout: 0},
 	}
-	src, err := buildSource(p, ".")
+	src, err := buildSource(p, ".", "")
 	if err != nil {
 		t.Fatalf("buildSource error = %v", err)
 	}
-	tgt, err := buildTarget(p, ".", src)
+	tgt, err := buildTarget(p, ".", src, "")
 	if err != nil {
 		t.Fatalf("buildTarget(compose) error = %v", err)
 	}
@@ -235,11 +236,11 @@ func TestBuildTarget_Unsupported(t *testing.T) {
 	p := &config.Project{
 		Target: config.Target{Type: config.TargetKubernetes, Path: "manifests"},
 	}
-	src, err := buildSource(p, ".")
+	src, err := buildSource(p, ".", "")
 	if err != nil {
 		t.Fatalf("buildSource error = %v", err)
 	}
-	_, err = buildTarget(p, ".", src)
+	_, err = buildTarget(p, ".", src, "")
 	if err == nil {
 		t.Fatal("expected error for unsupported target, got nil")
 	}
@@ -316,7 +317,7 @@ func TestBuildSourceResolvesComposeFileInManagedCheckout(t *testing.T) {
 				Source: config.Source{URL: "https://example.com/acme/repo.git", Path: tc.sourcePath},
 				Target: config.Target{Type: config.TargetCompose, File: tc.targetFile},
 			}
-			src, err := buildSource(p, ".")
+			src, err := buildSource(p, ".", "")
 			if err != nil {
 				t.Fatalf("buildSource: %v", err)
 			}
@@ -332,7 +333,7 @@ func TestBuildSourceIgnoresAbsoluteTargetPath(t *testing.T) {
 		Source: config.Source{URL: "https://example.com/acme/repo.git"},
 		Target: config.Target{Type: config.TargetCompose, File: filepath.Join(t.TempDir(), config.DefaultComposeFile)},
 	}
-	src, err := buildSource(p, ".")
+	src, err := buildSource(p, ".", "")
 	if err != nil {
 		t.Fatalf("buildSource: %v", err)
 	}
@@ -346,11 +347,11 @@ func TestBuildSourceIsolatesManagedCheckoutByProject(t *testing.T) {
 		Source: config.Source{URL: "https://example.com/acme/repo.git", Branch: "main"},
 		Target: config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile},
 	}
-	first, err := buildSource(p, filepath.Join(t.TempDir(), "production"))
+	first, err := buildSource(p, filepath.Join(t.TempDir(), "production"), "")
 	if err != nil {
 		t.Fatalf("build first source: %v", err)
 	}
-	second, err := buildSource(p, filepath.Join(t.TempDir(), "staging"))
+	second, err := buildSource(p, filepath.Join(t.TempDir(), "staging"), "")
 	if err != nil {
 		t.Fatalf("build second source: %v", err)
 	}
@@ -364,6 +365,36 @@ func TestBuildSourceIsolatesManagedCheckoutByProject(t *testing.T) {
 	}
 	if firstPath == secondPath {
 		t.Fatalf("project checkouts share path %q", firstPath)
+	}
+}
+
+func TestBuildSourceIsolatesEnsembleMembersByName(t *testing.T) {
+	p := &config.Project{
+		Source: config.Source{URL: "https://example.com/acme/repo.git", Branch: "main"},
+		Target: config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile},
+	}
+	// Two ensemble members in the same project directory with different names
+	// must get isolated managed checkouts even though they share a repo URL,
+	// otherwise two branches of one repository would race on the same worktree
+	// (docs/ACCORDA.md §49, docs/DECISIONS.md #43).
+	api, err := buildSource(p, "shared-dir", "api")
+	if err != nil {
+		t.Fatalf("build api source: %v", err)
+	}
+	worker, err := buildSource(p, "shared-dir", "worker")
+	if err != nil {
+		t.Fatalf("build worker source: %v", err)
+	}
+	apiPath, err := api.CheckoutPath(config.DefaultComposeFile)
+	if err != nil {
+		t.Fatalf("api checkout path: %v", err)
+	}
+	workerPath, err := worker.CheckoutPath(config.DefaultComposeFile)
+	if err != nil {
+		t.Fatalf("worker checkout path: %v", err)
+	}
+	if apiPath == workerPath {
+		t.Fatalf("ensemble member checkouts share path %q", apiPath)
 	}
 }
 
@@ -467,7 +498,16 @@ func TestProjectStatePathUsesDefaultKeyForCurrentDirectory(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", base)
 	want := filepath.Join(base, "accorda", "receipts", "default.jsonl")
-	if got := projectStatePath("receipts", ".", ".jsonl"); got != want {
+	if got := projectStatePath("receipts", ".", "", ".jsonl"); got != want {
+		t.Errorf("projectStatePath() = %q, want %q", got, want)
+	}
+}
+
+func TestProjectStatePathScopesByProjectName(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", base)
+	want := filepath.Join(base, "accorda", "receipts", filepath.Join("projects", "production", "api.jsonl"))
+	if got := projectStatePath("receipts", filepath.Join("projects", "production"), "api", ".jsonl"); got != want {
 		t.Errorf("projectStatePath() = %q, want %q", got, want)
 	}
 }
@@ -496,6 +536,145 @@ func TestDriftPolicy(t *testing.T) {
 		if got := driftPolicy(c.in); got != c.want {
 			t.Errorf("driftPolicy(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestWriteSyncResultWithPrefix verifies the shared cycle-outcome renderer
+// handles the failed, rolled-back, and healthy paths with and without a
+// project-name prefix, so the single-project and ensemble output cannot drift.
+func TestWriteSyncResultWithPrefix(t *testing.T) {
+	cases := []struct {
+		name    string
+		prefix  string
+		result  *reconcile.Result
+		wantOut string
+		wantErr bool
+	}{
+		{
+			name:    "synced no prefix",
+			prefix:  "",
+			result:  &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}},
+			wantOut: "sync: SYNCED\nsync=SYNCED reasons=0 services=0\n",
+		},
+		{
+			name:    "synced with prefix",
+			prefix:  "api: ",
+			result:  &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}},
+			wantOut: "api: sync: SYNCED\napi: sync=SYNCED reasons=0 services=0\n",
+		},
+		{
+			name:    "failed no prefix",
+			prefix:  "",
+			result:  &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("boom")},
+			wantOut: "sync: FAILED\n",
+			wantErr: true,
+		},
+		{
+			name:    "failed with prefix",
+			prefix:  "api: ",
+			result:  &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("boom")},
+			wantOut: "api: sync: FAILED\n",
+			wantErr: true,
+		},
+		{
+			name:    "rollback with prefix",
+			prefix:  "api: ",
+			result:  &reconcile.Result{Phase: reconcile.PhaseFailed, RolledBack: true, RolledBackTo: "abc123", Err: errors.New("boom")},
+			wantOut: "api: sync: FAILED\napi: rollback: restored to commit abc123\n",
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := writeSyncResultWithPrefix(&out, tc.prefix, tc.result)
+			if out.String() != tc.wantOut {
+				t.Errorf("output = %q, want %q", out.String(), tc.wantOut)
+			}
+			if tc.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestWriteEnsembleResults_PropagatesFirstFailure verifies a one-shot
+// ensemble sync aggregates the first failed member's error into the returned
+// error, so the exit code is non-zero like the single-project path. It drives
+// the actual writeEnsembleResults aggregation end-to-end with mixed
+// successful and failed members.
+func TestWriteEnsembleResults_PropagatesFirstFailure(t *testing.T) {
+	cases := []struct {
+		name    string
+		results []reconcile.MemberResult
+		wantErr string
+		wantOut []string
+	}{
+		{
+			name: "all synced",
+			results: []reconcile.MemberResult{
+				{Name: "api", Result: &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}}},
+				{Name: "worker", Result: &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}}},
+			},
+			wantErr: "",
+			wantOut: []string{"api: sync: SYNCED", "worker: sync: SYNCED"},
+		},
+		{
+			name: "first member fails",
+			results: []reconcile.MemberResult{
+				{Name: "api", Result: &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("fetch boom")}},
+				{Name: "worker", Result: &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}}},
+			},
+			wantErr: "sync api: reconciliation failed: fetch boom",
+			wantOut: []string{"api: sync: FAILED", "worker: sync: SYNCED"},
+		},
+		{
+			name: "second member fails",
+			results: []reconcile.MemberResult{
+				{Name: "api", Result: &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}}},
+				{Name: "worker", Result: &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("apply boom")}},
+			},
+			wantErr: "sync worker: reconciliation failed: apply boom",
+			wantOut: []string{"api: sync: SYNCED", "worker: sync: FAILED"},
+		},
+		{
+			name: "both fail returns first error",
+			results: []reconcile.MemberResult{
+				{Name: "api", Result: &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("first")}},
+				{Name: "worker", Result: &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("second")}},
+			},
+			wantErr: "sync api: reconciliation failed: first",
+			wantOut: []string{"api: sync: FAILED", "worker: sync: FAILED"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cmd := newSyncCmd()
+			cmd.SetOut(&out)
+			err := writeEnsembleResults(cmd, tc.results)
+			s := out.String()
+			for _, want := range tc.wantOut {
+				if !strings.Contains(s, want) {
+					t.Errorf("output missing %q; got:\n%s", want, s)
+				}
+			}
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
+				}
+			}
+		})
 	}
 }
 

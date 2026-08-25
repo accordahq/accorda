@@ -881,3 +881,323 @@ notifications:
 		t.Fatalf("Parse error = %v, want non-negative retries validation", err)
 	}
 }
+
+// ensembleExample is a multi-project accorda.yaml document
+// (docs/ACCORDA.md §49): several named projects each carrying a full unified
+// project configuration, so one agent reconciles multiple workloads.
+const ensembleExample = `projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+      branch: main
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+  - name: worker
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+      branch: main
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+`
+
+func TestParseDocument_Ensemble(t *testing.T) {
+	doc, err := ParseDocument([]byte(ensembleExample))
+	if err != nil {
+		t.Fatalf("ParseDocument: unexpected error: %v", err)
+	}
+	if doc.Ensemble == nil || doc.Project != nil {
+		t.Fatalf("ParseDocument shape = project=%v ensemble=%v, want ensemble only", doc.Project != nil, doc.Ensemble != nil)
+	}
+	if len(doc.Ensemble.Projects) != 2 {
+		t.Fatalf("ensemble project count = %d, want 2", len(doc.Ensemble.Projects))
+	}
+	if doc.Ensemble.Projects[0].Name != "api" {
+		t.Errorf("project[0].Name = %q, want %q", doc.Ensemble.Projects[0].Name, "api")
+	}
+	if doc.Ensemble.Projects[1].Name != "worker" {
+		t.Errorf("project[1].Name = %q, want %q", doc.Ensemble.Projects[1].Name, "worker")
+	}
+	// Defaults are applied to each member (git type, main branch).
+	if doc.Ensemble.Projects[0].Source.Type != "git" {
+		t.Errorf("project[0].Source.Type = %q, want %q", doc.Ensemble.Projects[0].Source.Type, "git")
+	}
+	if doc.Ensemble.Projects[0].Source.Branch != "main" {
+		t.Errorf("project[0].Source.Branch = %q, want %q", doc.Ensemble.Projects[0].Source.Branch, "main")
+	}
+}
+
+func TestParseDocument_SingleProjectIsNotEnsemble(t *testing.T) {
+	doc, err := ParseDocument([]byte(composeExample))
+	if err != nil {
+		t.Fatalf("ParseDocument: unexpected error: %v", err)
+	}
+	if doc.Project == nil || doc.Ensemble != nil {
+		t.Fatalf("ParseDocument shape = project=%v ensemble=%v, want single project only", doc.Project != nil, doc.Ensemble != nil)
+	}
+	if doc.Project.Environment != "production" {
+		t.Errorf("project Environment = %q, want %q", doc.Project.Environment, "production")
+	}
+}
+
+func TestValidateEnsemble_Empty(t *testing.T) {
+	err := ValidateEnsemble(&Ensemble{})
+	if err == nil || !strings.Contains(err.Error(), "at least one project is required") {
+		t.Fatalf("ValidateEnsemble error = %v, want empty-ensemble validation", err)
+	}
+}
+
+func TestValidateEnsemble_RequiresName(t *testing.T) {
+	doc, err := ParseDocument([]byte(`projects:
+  - version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: ` + DefaultComposeFile + `
+`))
+	if err == nil {
+		t.Fatal("ParseDocument succeeded, want missing-name validation error")
+	}
+	_ = doc
+	if !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("ParseDocument error = %v, want missing-name validation", err)
+	}
+}
+
+func TestValidateEnsemble_DuplicateName(t *testing.T) {
+	dup := strings.Replace(ensembleExample, "name: worker", "name: api", 1)
+	_, err := ParseDocument([]byte(dup))
+	if err == nil {
+		t.Fatal("ParseDocument succeeded, want duplicate-name error")
+	}
+	if !strings.Contains(err.Error(), "collides with another project") {
+		t.Fatalf("ParseDocument error = %v, want collision validation", err)
+	}
+}
+
+func TestValidateEnsemble_RejectsInvalidMember(t *testing.T) {
+	// The second project has no source.url, which must fail validation.
+	invalid := `projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+  - name: worker
+    version: 1
+    environment: production
+    source:
+      type: git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+`
+	_, err := ParseDocument([]byte(invalid))
+	if err == nil {
+		t.Fatal("ParseDocument succeeded, want member source.url validation error")
+	}
+	if !strings.Contains(err.Error(), "source.url is required") {
+		t.Fatalf("ParseDocument error = %v, want member source.url validation", err)
+	}
+}
+
+func TestParseDocument_EnsembleUnknownFieldRejected(t *testing.T) {
+	invalid := strings.Replace(ensembleExample, "environment: production", "environment: production\n    bogus: true", 1)
+	_, err := ParseDocument([]byte(invalid))
+	if err == nil {
+		t.Fatal("ParseDocument succeeded, want unknown-field rejection")
+	}
+}
+
+// TestParseDocument_RejectsMixedShape verifies that a document mixing the
+// single-project top-level fields (version, environment, source, target)
+// with a multi-project projects: list is rejected. The two shapes are
+// mutually exclusive (docs/ACCORDA.md §25, §49): a single agent drives either
+// one project or a list of named projects, never both. Letting the two shapes
+// coexist would let an operator accidentally configure a top-level source/
+// target that is silently ignored because the projects: list takes
+// precedence (docs/ACCORDA.md §49).
+func TestParseDocument_RejectsMixedShape(t *testing.T) {
+	mixed := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+  branch: main
+target:
+  type: ` + TargetCompose + `
+  file: ` + DefaultComposeFile + `
+projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: ` + DefaultComposeFile + `
+`
+	doc, err := ParseDocument([]byte(mixed))
+	if err == nil {
+		// If the loader does not reject the mix outright, it must never
+		// return a document that carries both shapes.
+		if doc != nil && doc.Project != nil && doc.Ensemble != nil {
+			t.Fatal("ParseDocument returned both Project and Ensemble, want a mixed-shape error")
+		}
+		t.Fatal("ParseDocument succeeded on a mixed single+ensemble document, want rejection")
+	}
+	// The strict ensemble loader rejects the top-level single-project fields
+	// (version, environment, source, target) as unknown because the Ensemble
+	// type only has projects:. Any "not found in type config.Ensemble" error
+	// proves the mix was rejected rather than silently accepted.
+	if !strings.Contains(err.Error(), "not found in type config.Ensemble") {
+		t.Fatalf("ParseDocument error = %v, want a mixed-shape rejection naming config.Ensemble", err)
+	}
+}
+
+func TestValidateEnsemble_RejectsInvalidNameCharset(t *testing.T) {
+	cases := []struct {
+		name string
+		proj string
+		want string
+	}{
+		{"path traversal", "../escape", "must start with an alphanumeric"},
+		{"slash", "a/b", "invalid character"},
+		{"dot", "a.b", "invalid character"},
+		{"colon", "a:b", "invalid character"},
+		{"space", "a b", "invalid character"},
+		{"leading underscore", "_api", "must start with an alphanumeric"},
+		{"leading hyphen", "-api", "must start with an alphanumeric"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := ensembleExample
+			doc = strings.Replace(doc, "name: api", "name: "+tc.proj, 1)
+			_, err := ParseDocument([]byte(doc))
+			if err == nil {
+				t.Fatalf("ParseDocument succeeded for name %q, want error", tc.proj)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("ParseDocument error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateEnsemble_AcceptsValidNames(t *testing.T) {
+	doc := `projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+  - name: worker-2
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+  - name: internal_tools
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/tools.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+`
+	parsed, err := ParseDocument([]byte(doc))
+	if err != nil {
+		t.Fatalf("ParseDocument: unexpected error for valid names: %v", err)
+	}
+	if len(parsed.Ensemble.Projects) != 3 {
+		t.Errorf("project count = %d, want 3", len(parsed.Ensemble.Projects))
+	}
+}
+
+func TestValidateEnsemble_RejectsDivergentIntervals(t *testing.T) {
+	doc := `projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    sync:
+      interval: 30s
+  - name: worker
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    sync:
+      interval: 60s
+`
+	_, err := ParseDocument([]byte(doc))
+	if err == nil {
+		t.Fatal("ParseDocument succeeded for divergent intervals, want error")
+	}
+	if !strings.Contains(err.Error(), "differs from") {
+		t.Fatalf("ParseDocument error = %v, want interval-divergence error", err)
+	}
+}
+
+func TestValidateEnsemble_AcceptsUniformIntervals(t *testing.T) {
+	doc := `projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    sync:
+      interval: 30s
+  - name: worker
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    sync:
+      interval: 30s
+`
+	if _, err := ParseDocument([]byte(doc)); err != nil {
+		t.Fatalf("ParseDocument: unexpected error for uniform intervals: %v", err)
+	}
+}

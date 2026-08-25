@@ -1426,3 +1426,48 @@ guarantee ordering. The consumer depends only on `events`, `state`, `health`,
 `reconcile`, and `secrets`, so core stays provider-agnostic
 (docs/DECISIONS.md #3). Other notification channels (Slack, Discord, ntfy,
 Accorda Cloud) remain future work and are not wired.
+
+### 47. One agent reconciles multiple projects concurrently through a normalized ensemble
+
+**Context.** Issue #57 and `docs/ACCORDA.md` §49 require one agent to drive
+several Compose projects, repositories, and environments concurrently (api,
+worker, monitoring, internal-tools). The single-project model assumed a 1:1
+source→target mapping and a single managed checkout; two ensemble members
+that share a repository URL would race on the same worktree, and two members
+whose Compose files live in same-named directories would derive the same
+Compose project name — making `--remove-orphans` destructive across projects.
+
+**Decision.** `accorda.yaml` accepts a top-level `projects:` list of named
+`Project` entries; the absence of that key selects the existing single-project
+shape. `config.ParseDocument`/`LoadDocument` dispatch between the two; the
+single-project shape is never wrapped in an `Ensemble`, so its output and
+state paths are byte-identical to before. `config.ValidateEnsemble` rejects
+empty, unnamed, and case-insensitively colliding names so the two shapes
+cannot be accidentally mixed and every member is unambiguously attributable.
+Every CLI command loads through `loadProjects`, which normalizes either shape
+into a `[]config.Project`, then loops over members with `p.Name`; the `""`
+sentinel appears only for a genuine single-project document whose YAML has no
+`name:` field.
+
+`reconcile.Ensemble` fans cycles out to member `Reconciler`s concurrently
+(one goroutine per member) and aggregates their `MemberResult`s; a slow or
+failing member does not block the others, matching the single-target polling
+semantics (#39). Each member keeps its own source, target, event bus, receipt
+store, and target-scoped lock, so independent workloads reconcile without
+sharing state. `buildSource` appends the member name to the git cache
+namespace so two members sharing a repository URL get isolated checkouts
+(#43); `buildTarget` sets the Compose project name to the member name so
+two members whose Compose files live in same-named directories derive distinct
+project labels and `--remove-orphans` cannot remove a sibling's containers.
+`receiptPath` scopes the receipt journal by member name so each workload has
+its own history.
+
+**Consequence.** One `accorda sync` (or `sync --watch`) reconciles all
+workloads concurrently; `status`, `plan`, `diff`, `history`, `inspect`,
+`logs`, and `doctor` iterate over every member and prefix output with its
+name. The destructive `remove_orphans` collision the issue requires solved is
+guarded at config load (name uniqueness) and at target construction (per-member
+project name). Single-project behavior is unchanged: no name prefix, no name
+subdirectory in state paths, and the same single-reconciler code path. Core
+stays target-agnostic; the Ensemble only orchestrates `Reconciler` instances
+and adds no provider dependency.

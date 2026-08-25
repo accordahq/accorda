@@ -40,15 +40,26 @@ func newLogsCmd() *cobra.Command {
 }
 
 func runLogs(cmd *cobra.Command, dir, service string, opts targets.LogOptions) error {
-	proj, err := config.Load(dir)
+	projects, err := loadProjects(dir)
 	if err != nil {
 		return err
 	}
-	src, err := buildSource(proj, dir)
+	for i := range projects {
+		p := &projects[i]
+		if err := runLogsOne(cmd, dir, service, opts, p); err != nil {
+			return fmt.Errorf("logs %s: %w", p.Name, err)
+		}
+	}
+	return nil
+}
+
+// runLogsOne fetches logs for a single project's service.
+func runLogsOne(cmd *cobra.Command, dir, service string, opts targets.LogOptions, p *config.Project) error {
+	src, err := buildSource(p, dir, p.Name)
 	if err != nil {
 		return err
 	}
-	tgt, err := buildTarget(proj, dir, src)
+	tgt, err := buildTarget(p, dir, src, p.Name)
 	if err != nil {
 		return err
 	}

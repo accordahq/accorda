@@ -71,6 +71,49 @@ health:
 
 For Compose, relative `target.file` and `target.path` values are repository-relative and resolve inside Accorda's managed Git checkout. When `source.path` names a directory, the target filename is appended (for example `services/api` plus `compose.yaml`); when `source.path` names a YAML file, that exact file is used. An absolute target path remains an explicit local-file override for compatibility.
 
+### Multi-project (ensemble)
+
+A single agent can manage several workloads concurrently by listing named
+projects under a top-level `projects:` key
+(docs/ACCORDA.md §49, Phase 5 — Multi-Project / Multi-Target Compose):
+
+```yaml
+projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+      branch: main
+    target:
+      type: compose
+      file: compose.yaml
+  - name: worker
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+      branch: main
+    target:
+      type: compose
+      file: compose.yaml
+```
+
+The presence of `projects:` selects the multi-project shape; its absence
+selects the single-project shape shown above — the two cannot be mixed. Each
+project is reconciled independently with its own source, target, receipt
+journal, and target-scoped lock, so `accorda sync` reconciles all members
+concurrently and a failure in one workload does not block the others. Every
+command (`status`, `plan`, `diff`, `history`, `inspect`, `logs`, `doctor`)
+iterates over all members and prefixes its output with the project name.
+Project names must be unique (compared case-insensitively, matching Compose
+project-name normalization) so `--remove-orphans` cannot remove a sibling
+project's containers; each member's Compose project name is set to its
+`name`, and its git checkout is namespaced by name so two members sharing a
+repository URL get isolated worktrees.
+
 ## Core interfaces
 
 The core abstractions defined in `docs/ACCORDA.md` §12 are implemented so that Accorda core never depends on a specific Git host or deployment target:

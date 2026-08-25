@@ -14,4 +14,12 @@
 // assume a specific target type; target-specific requirements (for example
 // that a Compose target names a compose file) are checked generically from the
 // declared target type.
+//
+// A document is either a single Project or a multi-project Ensemble
+// (docs/ACCORDA.md §49). ParseDocument and LoadDocument dispatch between the
+// two shapes: a top-level projects: list selects the Ensemble, otherwise the
+// document is a single Project. Each project in an Ensemble carries an
+// operator-chosen name so one agent can reconcile several workloads (api,
+// worker, monitoring, internal-tools) concurrently, each with its own source,
+// target, and state paths.
 package config

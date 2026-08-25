@@ -26,6 +26,10 @@ type fakeSource struct {
 	fetches    []sources.Commit
 	fetchCalls int
 	desired    *state.DesiredState
+	// fetchHook is invoked (if set) at the start of Fetch. It lets tests
+	// observe that a Fetch ran, e.g. to prove the ensemble fans members out
+	// concurrently.
+	fetchHook func()
 	// desiredByCommit returns the desired state for a specific commit SHA,
 	// used by rollback to restore the full previous service model. When a
 	// requested SHA is present, it takes precedence over desired.
@@ -34,6 +38,9 @@ type fakeSource struct {
 
 func (f *fakeSource) Validate(context.Context) error { return nil }
 func (f *fakeSource) Fetch(context.Context) (sources.Commit, error) {
+	if f.fetchHook != nil {
+		f.fetchHook()
+	}
 	call := f.fetchCalls
 	f.fetchCalls++
 	if f.fetchErr != nil {
