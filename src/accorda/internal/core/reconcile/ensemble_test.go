@@ -25,14 +25,27 @@ func TestNewEnsemble_RequiresMembers(t *testing.T) {
 
 // TestNewEnsemble_DuplicateName verifies the ensemble rejects two members with
 // the same name, which would make output and state attribution ambiguous.
+// Uniqueness is case-insensitive, matching config.ValidateEnsemble and
+// Compose project-name normalization.
 func TestNewEnsemble_DuplicateName(t *testing.T) {
 	r := New(fakeSourceWithDesired(), fakeTargetWithDesired(), nil)
-	_, err := NewEnsemble([]EnsembleMember{
-		{Name: "api", Reconciler: r},
-		{Name: "api", Reconciler: r},
-	})
-	if err == nil {
-		t.Fatal("NewEnsemble(duplicate names) succeeded, want error")
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{"exact", "api", "api"},
+		{"case-insensitive", "API", "api"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewEnsemble([]EnsembleMember{
+				{Name: tc.a, Reconciler: r},
+				{Name: tc.b, Reconciler: r},
+			})
+			if err == nil {
+				t.Fatalf("NewEnsemble(%q, %q) succeeded, want error", tc.a, tc.b)
+			}
+		})
 	}
 }
 

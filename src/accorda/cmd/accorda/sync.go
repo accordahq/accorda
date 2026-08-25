@@ -97,32 +97,9 @@ func runProjectsSync(cmd *cobra.Command, dir string, watch bool, projects []conf
 	if len(projects) == 0 {
 		return errors.New("sync: no projects configured")
 	}
-	members := make([]reconcile.EnsembleMember, 0, len(projects))
-	for i := range projects {
-		p := &projects[i]
-		src, err := buildSource(p, dir, p.Name)
-		if err != nil {
-			return fmt.Errorf("sync %s: %w", p.Name, err)
-		}
-		tgt, err := buildTarget(p, dir, src, p.Name)
-		if err != nil {
-			return fmt.Errorf("sync %s: %w", p.Name, err)
-		}
-		store := history.NewFileStore(receiptPath(dir, p.Name))
-		bus := events.NewBus()
-		unsubscribe := bus.Subscribe(projectSyncProgressWriter(cmd.OutOrStdout(), p.Name))
-		defer unsubscribe()
-		if wh, err := buildWebhook(p.Notifications, bus); err != nil {
-			return err
-		} else if wh != nil {
-			defer wh()
-		}
-		r := reconcile.New(src, tgt, bus).
-			WithDriftPolicy(driftPolicy(p.Reconcile.Drift)).
-			WithEnvironment(p.Environment).
-			WithReceiptStore(store).
-			WithLocker(locking.NewFileLocker(deploymentLockPath(dir, p.Target)))
-		members = append(members, reconcile.EnsembleMember{Name: p.Name, Reconciler: r})
+	members, err := buildEnsembleMembers(cmd, dir, projects)
+	if err != nil {
+		return err
 	}
 	if len(members) == 1 {
 		// A single-project document runs through the same single-reconciler
@@ -143,29 +120,90 @@ func runProjectsSync(cmd *cobra.Command, dir string, watch bool, projects []conf
 			}
 		})
 	}
+	// One-shot: a failed member cycle must propagate as a non-zero exit so
+	// automation keyed on the exit code treats a failed reconcile as failure,
+	// matching the single-project path (docs/ACCORDA.md §11). All members run
+	// (a failure in one does not block the others); the first failed result is
+	// returned after every member's output is printed.
 	results := ensemble.Reconcile(cmd.Context())
+	var firstErr error
 	for _, mr := range results {
-		if err := writeMemberResult(cmd, mr); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "sync %s: %v\n", mr.Name, err)
+		if err := writeMemberResult(cmd, mr); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("sync %s: %w", mr.Name, err)
 		}
 	}
-	return nil
+	return firstErr
+}
+
+// buildEnsembleMembers constructs the reconciler members for each project,
+// wiring per-member source, target, receipt store, lock, and event bus. The
+// per-member webhook and bus subscriptions are scoped to this function call;
+// their cleanup runs when the returned members are discarded.
+func buildEnsembleMembers(cmd *cobra.Command, dir string, projects []config.Project) ([]reconcile.EnsembleMember, error) {
+	members := make([]reconcile.EnsembleMember, 0, len(projects))
+	for i := range projects {
+		p := &projects[i]
+		src, err := buildSource(p, dir, p.Name)
+		if err != nil {
+			return nil, fmt.Errorf("sync %s: %w", p.Name, err)
+		}
+		tgt, err := buildTarget(p, dir, src, p.Name)
+		if err != nil {
+			return nil, fmt.Errorf("sync %s: %w", p.Name, err)
+		}
+		store := history.NewFileStore(receiptPath(dir, p.Name))
+		bus := events.NewBus()
+		bus.Subscribe(projectSyncProgressWriter(cmd.OutOrStdout(), p.Name))
+		if wh, err := buildWebhook(p.Notifications, bus); err != nil {
+			return nil, err
+		} else if wh != nil {
+			// The webhook consumer's lifetime is the process's lifetime; its
+			// unsubscribe is not deferred per-member because the consumer runs
+			// asynchronously and must outlive this builder scope.
+			_ = wh
+		}
+		r := reconcile.New(src, tgt, bus).
+			WithDriftPolicy(driftPolicy(p.Reconcile.Drift)).
+			WithEnvironment(p.Environment).
+			WithReceiptStore(store).
+			WithLocker(locking.NewFileLocker(deploymentLockPath(dir, p.Target)))
+		members = append(members, reconcile.EnsembleMember{Name: p.Name, Reconciler: r})
+	}
+	return members, nil
 }
 
 // writeMemberResult prints one ensemble member's cycle outcome, prefixed with
 // the project name so an operator can attribute the result to a workload.
 func writeMemberResult(cmd *cobra.Command, mr reconcile.MemberResult) error {
-	prefix := syncPrefix(mr.Name)
-	if mr.Result.Phase == reconcile.PhaseFailed {
-		if mr.Result.RolledBack {
-			fmt.Fprintf(cmd.OutOrStdout(), "%ssync: %s\n", prefix, mr.Result.Phase)
-			fmt.Fprintf(cmd.OutOrStdout(), "%srollback: restored to commit %s\n", prefix, mr.Result.RolledBackTo)
-			return fmt.Errorf("reconciliation failed and was rolled back: %w", mr.Result.Err)
+	return writeSyncResultWithPrefix(cmd.OutOrStdout(), syncPrefix(mr.Name), mr.Result)
+}
+
+// writeSyncResult prints one reconciliation cycle. A failed cycle is returned
+// as an error for one-shot sync; watch mode logs it and keeps polling so a
+// transient source or target failure can recover without restarting Accorda.
+func writeSyncResult(cmd *cobra.Command, res *reconcile.Result) error {
+	return writeSyncResultWithPrefix(cmd.OutOrStdout(), "", res)
+}
+
+// writeSyncResultWithPrefix prints one reconciliation cycle with the given
+// prefix (empty for a single-project document, "name: " for an ensemble
+// member). It is the single renderer for a cycle outcome so the failure,
+// rollback, and healthy rendering is shared and cannot drift between the
+// single-project and ensemble paths.
+func writeSyncResultWithPrefix(w io.Writer, prefix string, res *reconcile.Result) error {
+	if res.Phase == reconcile.PhaseFailed {
+		fmt.Fprintf(w, "%ssync: %s\n", prefix, res.Phase)
+		if res.RolledBack {
+			// A failed deployment was rolled back to a known previous commit.
+			// Report the rollback clearly so a user sees what was restored and
+			// why the active state is healthy (docs/ACCORDA.md §20).
+			fmt.Fprintf(w, "%srollback: restored to commit %s\n", prefix, res.RolledBackTo)
+			return fmt.Errorf("reconciliation failed and was rolled back: %w", res.Err)
 		}
-		return fmt.Errorf("reconciliation failed: %w", mr.Result.Err)
+		return fmt.Errorf("reconciliation failed: %w", res.Err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%ssync: %s\n", prefix, mr.Result.Phase)
-	fmt.Fprintf(cmd.OutOrStdout(), "%s%s\n", prefix, mr.Result.Comparison.String())
+	fmt.Fprintf(w, "%ssync: %s\n", prefix, res.Phase)
+	fmt.Fprintf(w, "%s%s\n", prefix, res.Comparison.String())
 	return nil
 }
 
@@ -229,26 +267,6 @@ func runReconciler(cmd *cobra.Command, watch bool, interval time.Duration, r syn
 		})
 	}
 	return writeSyncResult(cmd, r.Reconcile(ctx))
-}
-
-// writeSyncResult prints one reconciliation cycle. A failed cycle is returned
-// as an error for one-shot sync; watch mode logs it and keeps polling so a
-// transient source or target failure can recover without restarting Accorda.
-func writeSyncResult(cmd *cobra.Command, res *reconcile.Result) error {
-	if res.Phase == reconcile.PhaseFailed {
-		fmt.Fprintf(cmd.OutOrStdout(), "sync: %s\n", res.Phase)
-		if res.RolledBack {
-			// A failed deployment was rolled back to a known previous commit.
-			// Report the rollback clearly so a user sees what was restored and
-			// why the active state is healthy (docs/ACCORDA.md §20).
-			fmt.Fprintf(cmd.OutOrStdout(), "rollback: restored to commit %s\n", res.RolledBackTo)
-			return fmt.Errorf("reconciliation failed and was rolled back: %w", res.Err)
-		}
-		return fmt.Errorf("reconciliation failed: %w", res.Err)
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "sync: %s\n", res.Phase)
-	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", res.Comparison.String())
-	return nil
 }
 
 // previousFromHistory returns the last known-healthy deployment state read

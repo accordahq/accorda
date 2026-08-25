@@ -14,6 +14,7 @@ import (
 	"accorda/internal/core/history"
 	"accorda/internal/core/locking"
 	"accorda/internal/core/reconcile"
+	"accorda/internal/core/state"
 	gitSource "accorda/internal/sources/git"
 )
 
@@ -535,6 +536,85 @@ func TestDriftPolicy(t *testing.T) {
 		if got := driftPolicy(c.in); got != c.want {
 			t.Errorf("driftPolicy(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestWriteSyncResultWithPrefix verifies the shared cycle-outcome renderer
+// handles the failed, rolled-back, and healthy paths with and without a
+// project-name prefix, so the single-project and ensemble output cannot drift.
+func TestWriteSyncResultWithPrefix(t *testing.T) {
+	cases := []struct {
+		name    string
+		prefix  string
+		result  *reconcile.Result
+		wantOut string
+		wantErr bool
+	}{
+		{
+			name:    "synced no prefix",
+			prefix:  "",
+			result:  &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}},
+			wantOut: "sync: SYNCED\nsync=SYNCED reasons=0 services=0\n",
+		},
+		{
+			name:    "synced with prefix",
+			prefix:  "api: ",
+			result:  &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}},
+			wantOut: "api: sync: SYNCED\napi: sync=SYNCED reasons=0 services=0\n",
+		},
+		{
+			name:    "failed no prefix",
+			prefix:  "",
+			result:  &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("boom")},
+			wantOut: "sync: FAILED\n",
+			wantErr: true,
+		},
+		{
+			name:    "failed with prefix",
+			prefix:  "api: ",
+			result:  &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("boom")},
+			wantOut: "api: sync: FAILED\n",
+			wantErr: true,
+		},
+		{
+			name:    "rollback with prefix",
+			prefix:  "api: ",
+			result:  &reconcile.Result{Phase: reconcile.PhaseFailed, RolledBack: true, RolledBackTo: "abc123", Err: errors.New("boom")},
+			wantOut: "api: sync: FAILED\napi: rollback: restored to commit abc123\n",
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := writeSyncResultWithPrefix(&out, tc.prefix, tc.result)
+			if out.String() != tc.wantOut {
+				t.Errorf("output = %q, want %q", out.String(), tc.wantOut)
+			}
+			if tc.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestRunProjectsSync_OneShotPropagatesFailure verifies a one-shot ensemble
+// sync aggregates a failed member's error into the returned error, so the
+// exit code is non-zero like the single-project path. It exercises the
+// renderer directly because the ensemble's error aggregation is: print every
+// member, keep the first error (runProjectsSync).
+func TestRunProjectsSync_OneShotPropagatesFailure(t *testing.T) {
+	var out bytes.Buffer
+	failed := &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("fetch boom")}
+	err := writeSyncResultWithPrefix(&out, "api: ", failed)
+	if err == nil {
+		t.Fatal("writeSyncResultWithPrefix returned nil for a failed member, want error")
+	}
+	if !strings.Contains(err.Error(), "fetch boom") {
+		t.Errorf("error = %v, want it to wrap the member failure", err)
 	}
 }
 

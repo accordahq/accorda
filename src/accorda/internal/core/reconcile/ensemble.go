@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,7 +32,10 @@ type EnsembleMember struct {
 
 // NewEnsemble returns an Ensemble that runs the given members concurrently.
 // It requires at least one member; a nil Reconciler in a member is rejected so
-// a partially-built Ensemble is never silently half-run.
+// a partially-built Ensemble is never silently half-run. Name uniqueness is
+// checked case-insensitively to match config.ValidateEnsemble and Compose
+// project-name normalization, so the two validators enforce the same contract
+// rather than diverging (docs/ACCORDA.md §49).
 func NewEnsemble(members []EnsembleMember) (*Ensemble, error) {
 	if len(members) == 0 {
 		return nil, errors.New("reconcile: ensemble requires at least one member")
@@ -44,10 +48,11 @@ func NewEnsemble(members []EnsembleMember) (*Ensemble, error) {
 		if m.Reconciler == nil {
 			return nil, fmt.Errorf("reconcile: ensemble member %q has a nil reconciler", m.Name)
 		}
-		if _, dup := seen[m.Name]; dup {
-			return nil, fmt.Errorf("reconcile: ensemble member name %q is duplicated", m.Name)
+		key := strings.ToLower(m.Name)
+		if _, dup := seen[key]; dup {
+			return nil, fmt.Errorf("reconcile: ensemble member name %q collides with another member after normalization", m.Name)
 		}
-		seen[m.Name] = struct{}{}
+		seen[key] = struct{}{}
 	}
 	return &Ensemble{members: members}, nil
 }

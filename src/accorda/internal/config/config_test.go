@@ -1069,3 +1069,135 @@ projects:
 		t.Fatalf("ParseDocument error = %v, want a mixed-shape rejection naming config.Ensemble", err)
 	}
 }
+
+func TestValidateEnsemble_RejectsInvalidNameCharset(t *testing.T) {
+	cases := []struct {
+		name string
+		proj string
+		want string
+	}{
+		{"path traversal", "../escape", "must start with an alphanumeric"},
+		{"slash", "a/b", "invalid character"},
+		{"dot", "a.b", "invalid character"},
+		{"colon", "a:b", "invalid character"},
+		{"space", "a b", "invalid character"},
+		{"leading underscore", "_api", "must start with an alphanumeric"},
+		{"leading hyphen", "-api", "must start with an alphanumeric"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := ensembleExample
+			doc = strings.Replace(doc, "name: api", "name: "+tc.proj, 1)
+			_, err := ParseDocument([]byte(doc))
+			if err == nil {
+				t.Fatalf("ParseDocument succeeded for name %q, want error", tc.proj)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("ParseDocument error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateEnsemble_AcceptsValidNames(t *testing.T) {
+	doc := `projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+  - name: worker-2
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+  - name: internal_tools
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/tools.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+`
+	parsed, err := ParseDocument([]byte(doc))
+	if err != nil {
+		t.Fatalf("ParseDocument: unexpected error for valid names: %v", err)
+	}
+	if len(parsed.Ensemble.Projects) != 3 {
+		t.Errorf("project count = %d, want 3", len(parsed.Ensemble.Projects))
+	}
+}
+
+func TestValidateEnsemble_RejectsDivergentIntervals(t *testing.T) {
+	doc := `projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    sync:
+      interval: 30s
+  - name: worker
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    sync:
+      interval: 60s
+`
+	_, err := ParseDocument([]byte(doc))
+	if err == nil {
+		t.Fatal("ParseDocument succeeded for divergent intervals, want error")
+	}
+	if !strings.Contains(err.Error(), "differs from") {
+		t.Fatalf("ParseDocument error = %v, want interval-divergence error", err)
+	}
+}
+
+func TestValidateEnsemble_AcceptsUniformIntervals(t *testing.T) {
+	doc := `projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    sync:
+      interval: 30s
+  - name: worker
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    sync:
+      interval: 30s
+`
+	if _, err := ParseDocument([]byte(doc)); err != nil {
+		t.Fatalf("ParseDocument: unexpected error for uniform intervals: %v", err)
+	}
+}

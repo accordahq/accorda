@@ -30,6 +30,16 @@ const (
 	PullNever   = "never"
 )
 
+// projectNameFirstChar is the set of characters allowed as the first
+// character of an ensemble project name, mirroring the Compose project-name
+// charset so a name is always a safe Compose project name and a safe path
+// segment (docs/ACCORDA.md §49).
+const projectNameFirstChar = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+// projectNameChar is the set of characters allowed in an ensemble project
+// name after the first, mirroring the Compose project-name charset.
+const projectNameChar = projectNameFirstChar + "_-"
+
 // Valid drift repair policies (docs/ACCORDA.md §5, §47).
 const (
 	DriftRepair   = "repair"
@@ -516,13 +526,16 @@ func parseEnsemble(data []byte) (*Document, error) {
 }
 
 // ValidateEnsemble validates a multi-project document (docs/ACCORDA.md §49).
-// Every project must be a valid Project, and project names must be unique and
-// non-empty so the CLI and state paths can disambiguate workloads. Uniqueness
+// Every project must be a valid Project, and project names must be unique,
+// non-empty, and confined to the Compose project-name charset so they are
+// safe as a Compose project name and a filesystem path segment. Uniqueness
 // is compared case-insensitively (Compose project names normalize to
 // lowercase), so `API` and `api` are rejected as colliding — two ensemble
 // members with the same effective Compose project name would otherwise make
-// `--remove-orphans` destructive across projects. It returns the first error
-// encountered.
+// `--remove-orphans` destructive across projects. All members must share one
+// sync.interval: the ensemble runs on a single cadence, so divergent
+// per-member intervals would be silently ignored; a divergence is a config
+// error rather than a silent surprise. It returns the first error encountered.
 func ValidateEnsemble(e *Ensemble) error {
 	if e == nil {
 		return errors.New("config: ensemble is nil")
@@ -531,11 +544,15 @@ func ValidateEnsemble(e *Ensemble) error {
 		return errors.New("config: projects: at least one project is required")
 	}
 	seen := make(map[string]struct{}, len(e.Projects))
+	var interval time.Duration
 	for i := range e.Projects {
 		p := &e.Projects[i]
 		name := strings.TrimSpace(p.Name)
 		if name == "" {
 			return fmt.Errorf("config: projects[%d].name is required", i)
+		}
+		if err := validateProjectName(name); err != nil {
+			return fmt.Errorf("config: projects[%d].%w", i, err)
 		}
 		key := strings.ToLower(name)
 		if _, dup := seen[key]; dup {
@@ -544,6 +561,32 @@ func ValidateEnsemble(e *Ensemble) error {
 		seen[key] = struct{}{}
 		if err := Validate(p); err != nil {
 			return err
+		}
+		if i == 0 {
+			interval = p.Sync.Interval
+		} else if p.Sync.Interval != interval && (p.Sync.Interval != 0 || interval != 0) {
+			return fmt.Errorf("config: projects[%d].sync.interval %s differs from %s; all members must share one interval",
+				i, p.Sync.Interval, interval)
+		}
+	}
+	return nil
+}
+
+// validateProjectName checks that name is a safe Compose project name and
+// filesystem path segment: non-empty, first character alphanumeric, remaining
+// characters in [a-zA-Z0-9_-]. This prevents path traversal (e.g. `..`, `/`)
+// and invalid Compose project names from reaching the target or state paths
+// (docs/ACCORDA.md §49; matches compose-go NormalizeProjectName).
+func validateProjectName(name string) error {
+	if name == "" {
+		return errors.New("name is required")
+	}
+	if !strings.ContainsRune(projectNameFirstChar, rune(name[0])) {
+		return fmt.Errorf("name %q must start with an alphanumeric character", name)
+	}
+	for _, r := range name[1:] {
+		if !strings.ContainsRune(projectNameChar, r) {
+			return fmt.Errorf("name %q contains invalid character %q (allowed: alphanumeric, underscore, hyphen)", name, r)
 		}
 	}
 	return nil
