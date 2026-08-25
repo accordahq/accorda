@@ -90,22 +90,38 @@ type statusService struct {
 // the fields that were resolved; a project-level error (config load, target
 // construction) is fatal.
 func runStatus(cmd *cobra.Command, dir string) error {
-	proj, err := config.Load(dir)
+	projects, err := loadProjects(dir)
 	if err != nil {
 		return err
 	}
-	src, err := buildSource(proj, dir)
+	for i := range projects {
+		p := &projects[i]
+		if err := runStatusOne(cmd, dir, p); err != nil {
+			return fmt.Errorf("status %s: %w", p.Name, err)
+		}
+	}
+	return nil
+}
+
+// runStatusOne reports the status for a single project. name is the project's
+// operator-chosen name (empty for a single-project document), used to scope
+// the source, target, and receipt journal.
+func runStatusOne(cmd *cobra.Command, dir string, p *config.Project) error {
+	src, err := buildSource(p, dir, p.Name)
 	if err != nil {
 		return err
 	}
-	tgt, err := buildTarget(proj, dir, src)
+	tgt, err := buildTarget(p, dir, src, p.Name)
 	if err != nil {
 		return err
 	}
 
 	ctx := context.Background()
-	info := collectStatus(ctx, proj, src, tgt, history.NewFileStore(receiptPath(dir)))
-	info.EnvOverrides = proj.Target.Services
+	info := collectStatus(ctx, p, src, tgt, history.NewFileStore(receiptPath(dir, p.Name)))
+	info.EnvOverrides = p.Target.Services
+	if p.Name != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
+	}
 	writeStatus(cmd.OutOrStdout(), info)
 	return nil
 }

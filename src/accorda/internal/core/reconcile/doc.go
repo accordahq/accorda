@@ -42,6 +42,14 @@
 // remains active. Failed cycles do not stop the loop, allowing transient
 // dependencies to recover.
 //
+// Ensemble extends the same lifecycle to several independent targets at once
+// (docs/ACCORDA.md §49, Phase 5 — Multi-Project / Multi-Target Compose). An
+// Ensemble fans cycles out to member Reconcilers concurrently and aggregates
+// their results, so one agent can manage several Compose projects,
+// repositories, and environments without sharing state between them; each
+// member keeps its own lock and receipt store, so independent workloads
+// reconcile concurrently and a failure in one does not block the others.
+//
 // Rollback restores the last known-healthy deployment when a deploy or
 // health-verification phase fails (docs/ACCORDA.md §20). The previous
 // deployment is supplied via WithPrevious; the full previous service model is

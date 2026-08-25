@@ -182,6 +182,8 @@ accorda logs api --follow
 
 ## Operate multiple projects
 
+### One project per directory
+
 Keep a separate operator directory and `accorda.yaml` for each independent
 deployment target or environment:
 
@@ -193,9 +195,46 @@ deployment target or environment:
 ```
 
 Change into the corresponding project directory before running commands. Use
-`--dir <path>` when operating a project from another directory. A single
-long-running agent that supervises several project files is planned but is not
-implemented yet.
+`--dir <path>` when operating a project from another directory.
+
+### One agent, several workloads (ensemble)
+
+A single `accorda.yaml` can list several named projects under a top-level
+`projects:` key so one agent reconciles them concurrently
+(docs/ACCORDA.md §49):
+
+```yaml
+projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+      branch: main
+    target:
+      type: compose
+      file: compose.yaml
+  - name: worker
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+      branch: main
+    target:
+      type: compose
+      file: compose.yaml
+```
+
+Run `accorda sync` (or `accorda sync --watch`) once; both projects reconcile
+concurrently and each line is prefixed with its project name. Every command
+(`status`, `plan`, `diff`, `history`, `inspect`, `logs`, `doctor`) iterates
+over all members. Project names must be unique (case-insensitive, matching
+Compose project-name normalization); each member's Compose project name and
+git checkout are scoped by its name so `--remove-orphans` cannot remove a
+sibling's containers and two members sharing a repository get isolated
+worktrees.
 
 ## Command help
 

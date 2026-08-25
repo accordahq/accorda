@@ -50,12 +50,19 @@ const (
 	TargetHelm       = "helm"
 )
 
-// Project is the decoded and validated Accorda project configuration.
+// Project is the unified representation of one Accorda project configuration.
 //
 // Field ordering and yaml tags mirror the layout shown in docs/ACCORDA.md
 // §25 (Unified Project Format). All nested structs are pointers so that
 // "not set" is distinguishable from "set to zero value" during validation.
+//
+// Name is optional and meaningful only inside an Ensemble (docs/ACCORDA.md
+// §49): a multi-project accorda.yaml groups several Projects under a
+// projects: list, each with an operator-chosen name (api, worker, monitoring,
+// ...) so one agent can manage several workloads. A standalone project leaves
+// Name empty.
 type Project struct {
+	Name          string        `yaml:"name,omitempty"`
 	Version       int           `yaml:"version"`
 	Environment   string        `yaml:"environment"`
 	Source        Source        `yaml:"source"`
@@ -66,6 +73,21 @@ type Project struct {
 	Health        Health        `yaml:"health,omitempty"`
 	Secrets       Secrets       `yaml:"secrets,omitempty"`
 	Notifications Notifications `yaml:"notifications,omitempty"`
+}
+
+// Ensemble is the multi-project configuration for one agent
+// (docs/ACCORDA.md §49). It groups several independent Projects under a
+// single accorda.yaml so one agent reconciles several Compose projects,
+// repositories, and environments concurrently. Each Project is reconciled
+// independently: it has its own source, target, receipt journal, and
+// target-scoped lock, so a failure or deployment in one workload cannot
+// block or mutate another.
+//
+// A document is an Ensemble exactly when it has a top-level projects: list;
+// otherwise it is a single Project. ParseDocument and LoadDocument dispatch
+// between the two shapes.
+type Ensemble struct {
+	Projects []Project `yaml:"projects"`
 }
 
 // Source describes the Git source to reconcile from (docs/ACCORDA.md §13).
@@ -340,6 +362,45 @@ func Load(dir string) (*Project, error) {
 	return project, nil
 }
 
+// LoadDocument reads the accorda.yaml document from dir and returns either a
+// single Project or a multi-project Ensemble (docs/ACCORDA.md §25, §49). It is
+// the dispatcher used by CLI commands so they can serve both the single-project
+// and the multi-project shape without knowing which they read. For the Ensemble
+// shape, per-project env_files paths are resolved relative to dir, and each
+// project's credential-file mode is checked against the same shared file.
+func LoadDocument(dir string) (*Document, error) {
+	path := filepath.Join(dir, File)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	doc, err := ParseDocument(data)
+	if err != nil {
+		return nil, err
+	}
+	if doc.Project != nil {
+		if err := validateCredentialFileMode(path, doc.Project); err != nil {
+			return nil, err
+		}
+		resolveServiceOverridesPaths(doc.Project, dir)
+		return doc, nil
+	}
+	for i := range doc.Ensemble.Projects {
+		p := &doc.Ensemble.Projects[i]
+		if err := validateCredentialFileMode(path, p); err != nil {
+			return nil, err
+		}
+		resolveServiceOverridesPaths(p, dir)
+	}
+	return doc, nil
+}
+
+// resolveServiceOverridesPaths resolves env_file paths for a single project,
+// mirroring the per-project resolution in Load.
+func resolveServiceOverridesPaths(p *Project, dir string) {
+	resolveServiceOverridePaths(p.Target.Services, dir)
+}
+
 // resolveServiceOverridePaths resolves env_files paths relative to the
 // project directory so operators can use relative paths in accorda.yaml
 // (docs/DECISIONS.md #45). Absolute paths are left unchanged.
@@ -379,6 +440,113 @@ func hasInlineCredential(source Source) bool {
 	}
 	_, hasPassword := parsed.User.Password()
 	return hasPassword
+}
+
+// Document is either a single Project or a multi-project Ensemble decoded
+// from an accorda.yaml file (docs/ACCORDA.md §25, §49).
+type Document struct {
+	// Project is the single-project document when the file has no top-level
+	// projects: list; otherwise it is nil.
+	Project *Project
+	// Ensemble is the multi-project document when the file has a top-level
+	// projects: list; otherwise it is nil.
+	Ensemble *Ensemble
+}
+
+// ParseDocument decodes an accorda.yaml document and returns either a single
+// Project or a multi-project Ensemble (docs/ACCORDA.md §25, §49). A top-level
+// projects: list selects the Ensemble shape; its absence selects the single
+// Project shape. Both shapes are validated strictly and receive their
+// defaults. An empty document decodes to a zero Project, which Validate
+// rejects with a clear error rather than silently treating it as valid.
+func ParseDocument(data []byte) (*Document, error) {
+	var root yaml.Node
+	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	if err := dec.Decode(&root); err != nil {
+		return nil, fmt.Errorf("config: parse %q: %w", File, err)
+	}
+	if hasEnsembleProjects(&root) {
+		return parseEnsemble(data)
+	}
+	// Single project: re-decode through the strict loader so the full
+	// document shape is validated.
+	p, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	return &Document{Project: p}, nil
+}
+
+// hasEnsembleProjects reports whether the decoded document has a top-level
+// projects: list. It inspects the mapping keys without applying strict
+// decoding, so a single-project document that lacks a projects key falls
+// through to the single-Project shape regardless of its other fields.
+func hasEnsembleProjects(root *yaml.Node) bool {
+	if root == nil || root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return false
+	}
+	mapping := root.Content[0]
+	if mapping.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == "projects" {
+			return true
+		}
+	}
+	return false
+}
+
+// parseEnsemble decodes and validates a multi-project document
+// (docs/ACCORDA.md §49).
+func parseEnsemble(data []byte) (*Document, error) {
+	var e Ensemble
+	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	dec.KnownFields(true)
+	if err := dec.Decode(&e); err != nil {
+		return nil, fmt.Errorf("config: parse %q: %w", File, err)
+	}
+	for i := range e.Projects {
+		applyDefaults(&e.Projects[i])
+	}
+	if err := ValidateEnsemble(&e); err != nil {
+		return nil, err
+	}
+	return &Document{Ensemble: &e}, nil
+}
+
+// ValidateEnsemble validates a multi-project document (docs/ACCORDA.md §49).
+// Every project must be a valid Project, and project names must be unique and
+// non-empty so the CLI and state paths can disambiguate workloads. Uniqueness
+// is compared case-insensitively (Compose project names normalize to
+// lowercase), so `API` and `api` are rejected as colliding — two ensemble
+// members with the same effective Compose project name would otherwise make
+// `--remove-orphans` destructive across projects. It returns the first error
+// encountered.
+func ValidateEnsemble(e *Ensemble) error {
+	if e == nil {
+		return errors.New("config: ensemble is nil")
+	}
+	if len(e.Projects) == 0 {
+		return errors.New("config: projects: at least one project is required")
+	}
+	seen := make(map[string]struct{}, len(e.Projects))
+	for i := range e.Projects {
+		p := &e.Projects[i]
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			return fmt.Errorf("config: projects[%d].name is required", i)
+		}
+		key := strings.ToLower(name)
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("config: project name %q collides with another project after normalization", name)
+		}
+		seen[key] = struct{}{}
+		if err := Validate(p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Parse decodes and validates an Accorda project file from raw YAML bytes.

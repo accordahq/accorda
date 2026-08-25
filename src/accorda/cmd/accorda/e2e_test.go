@@ -131,7 +131,7 @@ func managedComposeFile(t *testing.T, dir string) string {
 	if err != nil {
 		t.Fatalf("load project: %v", err)
 	}
-	src, err := buildSource(proj, dir)
+	src, err := buildSource(proj, dir, proj.Name)
 	if err != nil {
 		t.Fatalf("build source: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestE2E_Sync_ConvergesToSynced(t *testing.T) {
 		t.Errorf("sync output = %q, want it to contain SYNCED", out.String())
 	}
 
-	store := history.NewFileStore(receiptPath(dir))
+	store := history.NewFileStore(receiptPath(dir, ""))
 	before, err := store.List(context.Background())
 	if err != nil {
 		t.Fatalf("list receipts after first sync: %v", err)
@@ -560,5 +560,157 @@ func TestE2E_History_RecordsFailure(t *testing.T) {
 	}
 	if !strings.Contains(s, "✗ failed") {
 		t.Errorf("history output missing failed row; got:\n%s", s)
+	}
+}
+
+// ensembleComposeAPI and ensembleComposeWorker are the Compose files committed
+// to two independent origin repositories. They declare differently-named
+// services so a successful multi-project sync proves the two targets are
+// isolated: each project deploys only its own service, and neither project's
+// --remove-orphans removes the other's containers (docs/ACCORDA.md §49).
+const ensembleComposeAPI = `services:
+  api:
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 1s
+      timeout: 1s
+      retries: 3
+`
+
+const ensembleComposeWorker = `services:
+  worker:
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 1s
+      timeout: 1s
+      retries: 3
+`
+
+// writeEnsembleOrigin creates a single-commit Git origin with the given
+// Compose content and returns its file:// URL.
+func writeEnsembleOrigin(t *testing.T, compose string) string {
+	t.Helper()
+	origin := t.TempDir()
+	runGit(t, origin, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(origin, testutil.ComposeFile), []byte(compose), 0o644); err != nil {
+		t.Fatalf("write origin compose: %v", err)
+	}
+	runGit(t, origin, "add", testutil.ComposeFile)
+	runGit(t, origin, "commit", "-m", "initial")
+	return "file://" + origin
+}
+
+// writeEnsembleProject writes a multi-project accorda.yaml that declares two
+// named projects (api and worker), each with its own Git origin, so one
+// `accorda sync` drives both workloads concurrently
+// (docs/ACCORDA.md §49).
+func writeEnsembleProject(t *testing.T, apiURL, workerURL string) string {
+	t.Helper()
+	dir := e2eProjectDir(t)
+	doc := `projects:
+  - name: api
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: ` + apiURL + `
+      branch: main
+    target:
+      type: ` + config.TargetCompose + `
+      file: ` + config.DefaultComposeFile + `
+    images:
+      pull: ` + config.PullNever + `
+    health:
+      timeout: 30s
+  - name: worker
+    version: 1
+    environment: production
+    source:
+      type: git
+      url: ` + workerURL + `
+      branch: main
+    target:
+      type: ` + config.TargetCompose + `
+      file: ` + config.DefaultComposeFile + `
+    images:
+      pull: ` + config.PullNever + `
+    health:
+      timeout: 30s
+`
+	if err := os.WriteFile(filepath.Join(dir, config.File), []byte(doc), 0o600); err != nil {
+		t.Fatalf("write accorda.yaml: %v", err)
+	}
+	return dir
+}
+
+// cleanupEnsembleProject tears down both members' Compose projects so one
+// test's containers do not leak into the next. It derives the managed Compose
+// file per member via buildSource so the cleanup targets the actual checkout.
+func cleanupEnsembleProject(t *testing.T, dir string) {
+	t.Helper()
+	projects, err := loadProjects(dir)
+	if err != nil {
+		t.Fatalf("load projects for cleanup: %v", err)
+	}
+	t.Cleanup(func() {
+		for i := range projects {
+			p := &projects[i]
+			src, err := buildSource(p, dir, p.Name)
+			if err != nil {
+				continue
+			}
+			file, err := src.CheckoutPath(src.Source.Path)
+			if err != nil {
+				continue
+			}
+			project := compose.ProjectName(config.Target{File: file})
+			cmd := exec.Command("docker", "compose", "-f", file, "-p", project, "down", "--remove-orphans")
+			_ = cmd.Run()
+		}
+	})
+}
+
+// TestE2E_EnsembleSync_ConvergesBothProjects drives a multi-project
+// `accorda sync` end-to-end: two independent Git origins each declare a
+// single-service Compose file, and one sync reconciles both projects
+// concurrently. Both members must report SYNCED, and each project's receipt
+// journal must contain a healthy entry — proving independent targets reconcile
+// concurrently under one agent (docs/ACCORDA.md §49).
+func TestE2E_EnsembleSync_ConvergesBothProjects(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	apiURL := writeEnsembleOrigin(t, ensembleComposeAPI)
+	workerURL := writeEnsembleOrigin(t, ensembleComposeWorker)
+	dir := writeEnsembleProject(t, apiURL, workerURL)
+	cleanupEnsembleProject(t, dir)
+
+	var out bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("ensemble sync: %v\noutput: %s", err, out.String())
+	}
+	s := out.String()
+	if !strings.Contains(s, "api: sync: SYNCED") {
+		t.Errorf("ensemble sync output missing api SYNCED; got:\n%s", s)
+	}
+	if !strings.Contains(s, "worker: sync: SYNCED") {
+		t.Errorf("ensemble sync output missing worker SYNCED; got:\n%s", s)
+	}
+
+	// Each member must have its own receipt journal with at least one
+	// healthy entry, proving the per-name state paths are isolated.
+	for _, name := range []string{"api", "worker"} {
+		store := history.NewFileStore(receiptPath(dir, name))
+		receipts, err := store.List(context.Background())
+		if err != nil {
+			t.Fatalf("list %s receipts: %v", name, err)
+		}
+		if len(receipts) == 0 {
+			t.Errorf("project %s has no receipts after ensemble sync", name)
+		}
 	}
 }

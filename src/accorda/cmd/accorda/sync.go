@@ -62,35 +62,156 @@ func newSyncCmd() *cobra.Command {
 // and runs one reconciliation cycle or the continuous polling loop, printing
 // each terminal phase and desired/deployed/runtime comparison.
 func runSync(cmd *cobra.Command, dir string, watch bool) error {
-	proj, err := config.Load(dir)
+	projects, err := loadProjects(dir)
 	if err != nil {
 		return err
 	}
+	return runProjectsSync(cmd, dir, watch, projects)
+}
 
-	src, err := buildSource(proj, dir)
+// loadProjects normalizes an accorda.yaml document into a uniform project
+// list (docs/ACCORDA.md §25, §49). A single-project document becomes a
+// one-element list whose member name is empty; a multi-project document
+// yields its named projects. The CLI drives every shape through the same
+// reconciliation path, so single- and multi-project sync differ only in the
+// number and naming of the members, not in how they are reconciled.
+func loadProjects(dir string) ([]config.Project, error) {
+	doc, err := config.LoadDocument(dir)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	tgt, err := buildTarget(proj, dir, src)
-	if err != nil {
-		return err
+	if doc.Ensemble != nil {
+		return doc.Ensemble.Projects, nil
 	}
+	return []config.Project{*doc.Project}, nil
+}
 
-	store := history.NewFileStore(receiptPath(dir))
-	bus := events.NewBus()
-	unsubscribe := bus.Subscribe(syncProgressWriter(cmd.OutOrStdout()))
-	defer unsubscribe()
-	if wh, err := buildWebhook(proj.Notifications, bus); err != nil {
-		return err
-	} else if wh != nil {
-		defer wh()
+// runProjectsSync reconciles every project in an accorda.yaml document
+// concurrently (docs/ACCORDA.md §49). Each project builds its own source,
+// target, receipt store, lock, and event bus, so workloads reconcile
+// independently; results are aggregated and printed per project so an
+// operator can tell which workload a cycle outcome belongs to. A single
+// unnamed project behaves exactly like the legacy one-project sync: no name
+// prefix in output and no name subdirectory in state paths.
+func runProjectsSync(cmd *cobra.Command, dir string, watch bool, projects []config.Project) error {
+	if len(projects) == 0 {
+		return errors.New("sync: no projects configured")
 	}
-	r := reconcile.New(src, tgt, bus).
-		WithDriftPolicy(driftPolicy(proj.Reconcile.Drift)).
-		WithEnvironment(proj.Environment).
-		WithReceiptStore(store).
-		WithLocker(locking.NewFileLocker(deploymentLockPath(dir, proj.Target)))
-	return runReconciler(cmd, watch, proj.Sync.Interval, r)
+	members := make([]reconcile.EnsembleMember, 0, len(projects))
+	for i := range projects {
+		p := &projects[i]
+		src, err := buildSource(p, dir, p.Name)
+		if err != nil {
+			return fmt.Errorf("sync %s: %w", p.Name, err)
+		}
+		tgt, err := buildTarget(p, dir, src, p.Name)
+		if err != nil {
+			return fmt.Errorf("sync %s: %w", p.Name, err)
+		}
+		store := history.NewFileStore(receiptPath(dir, p.Name))
+		bus := events.NewBus()
+		unsubscribe := bus.Subscribe(projectSyncProgressWriter(cmd.OutOrStdout(), p.Name))
+		defer unsubscribe()
+		if wh, err := buildWebhook(p.Notifications, bus); err != nil {
+			return err
+		} else if wh != nil {
+			defer wh()
+		}
+		r := reconcile.New(src, tgt, bus).
+			WithDriftPolicy(driftPolicy(p.Reconcile.Drift)).
+			WithEnvironment(p.Environment).
+			WithReceiptStore(store).
+			WithLocker(locking.NewFileLocker(deploymentLockPath(dir, p.Target)))
+		members = append(members, reconcile.EnsembleMember{Name: p.Name, Reconciler: r})
+	}
+	if len(members) == 1 {
+		// A single-project document runs through the same single-reconciler
+		// path as before, preserving its output and state layout.
+		m := members[0]
+		return runReconciler(cmd, watch, projects[0].Sync.Interval, m.Reconciler)
+	}
+	ensemble, err := reconcile.NewEnsemble(members)
+	if err != nil {
+		return err
+	}
+	if watch {
+		return ensemble.Run(cmd.Context(), projects[0].Sync.Interval, func(results []reconcile.MemberResult) {
+			for _, mr := range results {
+				if resultErr := writeMemberResult(cmd, mr); resultErr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "sync %s: %v\n", mr.Name, resultErr)
+				}
+			}
+		})
+	}
+	results := ensemble.Reconcile(cmd.Context())
+	for _, mr := range results {
+		if err := writeMemberResult(cmd, mr); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "sync %s: %v\n", mr.Name, err)
+		}
+	}
+	return nil
+}
+
+// writeMemberResult prints one ensemble member's cycle outcome, prefixed with
+// the project name so an operator can attribute the result to a workload.
+func writeMemberResult(cmd *cobra.Command, mr reconcile.MemberResult) error {
+	prefix := syncPrefix(mr.Name)
+	if mr.Result.Phase == reconcile.PhaseFailed {
+		if mr.Result.RolledBack {
+			fmt.Fprintf(cmd.OutOrStdout(), "%ssync: %s\n", prefix, mr.Result.Phase)
+			fmt.Fprintf(cmd.OutOrStdout(), "%srollback: restored to commit %s\n", prefix, mr.Result.RolledBackTo)
+			return fmt.Errorf("reconciliation failed and was rolled back: %w", mr.Result.Err)
+		}
+		return fmt.Errorf("reconciliation failed: %w", mr.Result.Err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%ssync: %s\n", prefix, mr.Result.Phase)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s%s\n", prefix, mr.Result.Comparison.String())
+	return nil
+}
+
+// projectSyncProgressWriter returns an event handler that prints lifecycle
+// progress lines for one project. Lines are prefixed with the project name so
+// concurrent ensemble output stays attributable to its workload; an empty name
+// (single-project document) prints with no prefix.
+func projectSyncProgressWriter(w io.Writer, name string) events.Handler {
+	prefix := syncPrefix(name)
+	return func(_ context.Context, event events.Event) {
+		switch event.Type {
+		case events.EventDriftDetected:
+			fmt.Fprintf(w, "%ssync: drift detected\n", prefix)
+		case events.EventDriftReconciled:
+			fmt.Fprintf(w, "%ssync: drift repaired\n", prefix)
+		case events.EventStateTransition:
+			writeProjectTransition(w, prefix, event.Payload)
+		}
+	}
+}
+
+// writeProjectTransition prints a non-terminal state transition line for one
+// project. prefix is the project-name prefix (including any trailing ": ") or
+// empty for a single-project document.
+func writeProjectTransition(w io.Writer, prefix string, payload any) {
+	transition, ok := payload.(reconcile.StateTransition)
+	if !ok || transition.To == reconcile.PhaseSynced || transition.To == reconcile.PhaseFailed {
+		return
+	}
+	fmt.Fprintf(w, "%ssync: %s", prefix, transition.To)
+	if transition.Commit != "" {
+		fmt.Fprintf(w, " commit=%s", shortSHA(transition.Commit))
+	}
+	if transition.DeploymentID != "" {
+		fmt.Fprintf(w, " deployment=%s", transition.DeploymentID)
+	}
+	fmt.Fprintln(w)
+}
+
+// syncPrefix returns the "name: " prefix for a project name, or "" when the
+// name is empty so single-project output has no prefix.
+func syncPrefix(name string) string {
+	if name == "" {
+		return ""
+	}
+	return name + ": "
 }
 
 type syncReconciler interface {
@@ -108,43 +229,6 @@ func runReconciler(cmd *cobra.Command, watch bool, interval time.Duration, r syn
 		})
 	}
 	return writeSyncResult(cmd, r.Reconcile(ctx))
-}
-
-// syncProgressWriter returns an event handler that prints lifecycle progress
-// while reconciliation is running. Terminal phases are left to
-// writeSyncResult so each cycle has one unambiguous final outcome line.
-// Drift detection and repair are surfaced so an operator can see that a
-// drifted runtime was found and, under the repair policy, restored
-// (docs/ACCORDA.md §5.3, §21).
-func syncProgressWriter(w io.Writer) events.Handler {
-	return func(_ context.Context, event events.Event) {
-		switch event.Type {
-		case events.EventDriftDetected:
-			fmt.Fprintln(w, "sync: drift detected")
-		case events.EventDriftReconciled:
-			fmt.Fprintln(w, "sync: drift repaired")
-		case events.EventStateTransition:
-			writeTransition(w, event.Payload)
-		}
-	}
-}
-
-// writeTransition prints a non-terminal state transition line. Terminal
-// phases (SYNCED, FAILED) are suppressed so the final outcome comes from
-// writeSyncResult.
-func writeTransition(w io.Writer, payload any) {
-	transition, ok := payload.(reconcile.StateTransition)
-	if !ok || transition.To == reconcile.PhaseSynced || transition.To == reconcile.PhaseFailed {
-		return
-	}
-	fmt.Fprintf(w, "sync: %s", transition.To)
-	if transition.Commit != "" {
-		fmt.Fprintf(w, " commit=%s", shortSHA(transition.Commit))
-	}
-	if transition.DeploymentID != "" {
-		fmt.Fprintf(w, " deployment=%s", transition.DeploymentID)
-	}
-	fmt.Fprintln(w)
 }
 
 // writeSyncResult prints one reconciliation cycle. A failed cycle is returned
@@ -250,7 +334,13 @@ func buildWebhook(n config.Notifications, bus events.Bus) (func(), error) {
 // buildSource resolves the repository-relative Compose artifact shared by the
 // Git source and Compose target. A source path naming a directory is combined
 // with the target filename; an explicit source YAML path wins.
-func buildSource(p *config.Project, dir string) (*git.Git, error) {
+//
+// name is the operator project name in a multi-project document, or empty for
+// a single-project document. It is appended to the git cache namespace so two
+// ensemble members that share a repository URL (e.g. two branches of one
+// repo) get isolated checkouts instead of racing on the same worktree
+// (docs/ACCORDA.md §49; docs/DECISIONS.md #43).
+func buildSource(p *config.Project, dir, name string) (*git.Git, error) {
 	source := p.Source
 	targetPath := configuredTargetPath(p.Target)
 	if filepath.IsAbs(targetPath) {
@@ -265,13 +355,23 @@ func buildSource(p *config.Project, dir string) (*git.Git, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve project directory: %w", err)
 	}
-	return git.New(source, git.WithCacheNamespace(filepath.Clean(projectDir))), nil
+	namespace := filepath.Clean(projectDir)
+	if name != "" {
+		namespace = filepath.Join(namespace, name)
+	}
+	return git.New(source, git.WithCacheNamespace(namespace)), nil
 }
 
 // buildTarget constructs the deployment target against the Git source's
 // managed checkout. Only the Compose target is implemented; other target
 // types are recognized by the config loader but have no driver yet.
-func buildTarget(p *config.Project, dir string, src *git.Git) (*compose.Target, error) {
+//
+// name is the operator project name in an ensemble document, or empty for a
+// single project. When non-empty, it overrides the Compose project name so two
+// ensemble members whose Compose files live in same-named directories do not
+// derive the same project name — which would make `--remove-orphans`
+// destructive across projects (docs/ACCORDA.md §49).
+func buildTarget(p *config.Project, dir string, src *git.Git, name string) (*compose.Target, error) {
 	if p.Target.Type != config.TargetCompose {
 		return nil, fmt.Errorf("target type %q is not implemented", p.Target.Type)
 	}
@@ -285,7 +385,9 @@ func buildTarget(p *config.Project, dir string, src *git.Git) (*compose.Target, 
 		compose.WithEnvironment(p.Environment),
 		compose.WithServiceOverrides(p.Target.Services),
 	}
-	if managed {
+	if name != "" {
+		options = append(options, compose.WithProjectName(name))
+	} else if managed {
 		projectDir, err := filepath.Abs(dir)
 		if err != nil {
 			return nil, fmt.Errorf("resolve project directory: %w", err)
@@ -325,11 +427,13 @@ func configuredTargetPath(target config.Target) string {
 // receiptPath returns the path of the deployment receipt journal for the
 // project directory. Receipts are stored under a global state directory
 // (docs/ACCORDA.md §28 "local filesystem", §42 "local history"), keyed by the
-// project directory so multiple projects do not share a journal. The state
-// directory honors XDG_STATE_HOME when set, falling back to ~/.local/state,
-// and finally ~/.accorda for environments without XDG.
-func receiptPath(dir string) string {
-	return projectStatePath("receipts", dir, ".jsonl")
+// project directory so multiple projects do not share a journal. In a
+// multi-project document, name disambiguates each member's journal so one
+// agent keeps per-workload history (docs/ACCORDA.md §49). The state directory
+// honors XDG_STATE_HOME when set, falling back to ~/.local/state, and finally
+// ~/.accorda for environments without XDG.
+func receiptPath(dir, name string) string {
+	return projectStatePath("receipts", dir, name, ".jsonl")
 }
 
 // withDeploymentLock acquires the target-scoped deployment lock for the
@@ -365,11 +469,14 @@ func deploymentLockPath(dir string, target config.Target) string {
 	return filepath.Join(stateBase(), "accorda", "locks", fmt.Sprintf("%x.lock", digest))
 }
 
-func projectStatePath(kind, dir, extension string) string {
+func projectStatePath(kind, dir, name, extension string) string {
 	base := stateBase()
 	key := filepath.Clean(dir)
 	if key == "." {
 		key = "default"
+	}
+	if name != "" {
+		key = filepath.Join(key, name)
 	}
 	return filepath.Join(base, "accorda", kind, key+extension)
 }

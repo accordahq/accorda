@@ -60,20 +60,30 @@ func newHistoryCmd() *cobra.Command {
 // deployment history table to the command's output. A project-level error
 // (config load) is fatal; an empty journal prints the header with no rows.
 func runHistory(cmd *cobra.Command, dir string) error {
-	proj, err := config.Load(dir)
+	projects, err := loadProjects(dir)
 	if err != nil {
 		return err
 	}
-	// The environment is read so the command validates the project, but it
-	// is not printed: the §11 history table is per-deployment, not per-
-	// environment. Loading the project also resolves the receipt journal
-	// path keyed by the project directory (receiptPath).
-	_ = proj
+	for i := range projects {
+		p := &projects[i]
+		if err := runHistoryOne(cmd, dir, p); err != nil {
+			return fmt.Errorf("history %s: %w", p.Name, err)
+		}
+	}
+	return nil
+}
 
-	store := history.NewFileStore(receiptPath(dir))
+// runHistoryOne prints the deployment history for a single project. Loading
+// the project validates it and resolves the receipt journal path keyed by the
+// project directory and name (receiptPath).
+func runHistoryOne(cmd *cobra.Command, dir string, p *config.Project) error {
+	store := history.NewFileStore(receiptPath(dir, p.Name))
 	rows, err := collectHistory(context.Background(), store)
 	if err != nil {
 		return err
+	}
+	if p.Name != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
 	}
 	writeHistory(cmd.OutOrStdout(), rows)
 	return nil

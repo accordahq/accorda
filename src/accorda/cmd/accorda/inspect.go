@@ -72,16 +72,28 @@ func newInspectCmd() *cobra.Command {
 // commit or empty journal is reported as an error so the operator knows the
 // deployment was never recorded.
 func runInspect(cmd *cobra.Command, dir, commit string) error {
-	proj, err := config.Load(dir)
+	projects, err := loadProjects(dir)
 	if err != nil {
 		return err
 	}
-	_ = proj
+	for i := range projects {
+		p := &projects[i]
+		if err := runInspectOne(cmd, dir, commit, p); err != nil {
+			return fmt.Errorf("inspect %s: %w", p.Name, err)
+		}
+	}
+	return nil
+}
 
-	store := history.NewFileStore(receiptPath(dir))
+// runInspectOne inspects the deployment history for a single project.
+func runInspectOne(cmd *cobra.Command, dir, commit string, p *config.Project) error {
+	store := history.NewFileStore(receiptPath(dir, p.Name))
 	services, err := collectInspect(context.Background(), store, commit)
 	if err != nil {
 		return err
+	}
+	if p.Name != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
 	}
 	writeInspect(cmd.OutOrStdout(), services)
 	return nil

@@ -62,24 +62,39 @@ func newDoctorCmd() *cobra.Command {
 
 // diagnose runs checks in dependency order. A malformed or missing project
 // prevents construction of the source and target, so that failure is returned
-// alone instead of producing misleading follow-on failures.
+// alone instead of producing misleading follow-on failures. In a multi-project
+// document, each member is diagnosed independently and its results are
+// prefixed with the member name (docs/ACCORDA.md §49).
 func diagnose(ctx context.Context, dir string) []doctorResult {
-	proj, err := config.Load(dir)
-	results := []doctorResult{doctorCheck(doctorProject, err)}
+	projects, err := loadProjects(dir)
 	if err != nil {
-		return results
+		return []doctorResult{doctorCheck(doctorProject, err)}
 	}
+	var results []doctorResult
+	for i := range projects {
+		p := &projects[i]
+		results = append(results, diagnoseProject(ctx, dir, p)...)
+	}
+	return results
+}
 
-	src, err := buildSource(proj, dir)
+// diagnoseProject runs the dependency-order checks for one project. The
+// results are prefixed with the project name so a multi-project report stays
+// attributable to its workload; a single unnamed project prints with no
+// prefix.
+func diagnoseProject(ctx context.Context, dir string, p *config.Project) []doctorResult {
+	results := []doctorResult{doctorCheck(doctorProject, nil)}
+
+	src, err := buildSource(p, dir, p.Name)
 	if err != nil {
 		return append(results, doctorCheck(doctorSource, err))
 	}
 	results = append(results, doctorCheck(doctorSource, src.Validate(ctx)))
 
-	tgt, err := buildTarget(proj, dir, src)
+	tgt, err := buildTarget(p, dir, src, p.Name)
 	if err == nil {
 		err = tgt.Validate(ctx)
-		if err != nil && managedTargetPending(src, proj.Target, err) {
+		if err != nil && managedTargetPending(src, p.Target, err) {
 			err = tgt.ValidateEnvironment(ctx)
 		}
 	}
@@ -94,6 +109,12 @@ func diagnose(ctx context.Context, dir string) []doctorResult {
 			status: doctorInfo,
 			detail: checkoutDir,
 		})
+	}
+
+	if p.Name != "" {
+		for i := range results {
+			results[i].name = p.Name + ": " + results[i].name
+		}
 	}
 	return results
 }

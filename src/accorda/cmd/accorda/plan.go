@@ -51,15 +51,28 @@ func newPlanCmd() *cobra.Command {
 // the deployment plan from the current desired and runtime states, printing
 // the intended actions to the command's output. The plan is never applied.
 func runPlan(cmd *cobra.Command, dir string) error {
-	proj, err := config.Load(dir)
+	projects, err := loadProjects(dir)
 	if err != nil {
 		return err
 	}
-	src, err := buildSource(proj, dir)
+	for i := range projects {
+		p := &projects[i]
+		if err := runPlanOne(cmd, dir, p); err != nil {
+			return fmt.Errorf("plan %s: %w", p.Name, err)
+		}
+	}
+	return nil
+}
+
+// runPlanOne computes and prints the plan for a single project. name is the
+// project's operator-chosen name (empty for a single-project document), used
+// to scope the source, target, and receipt journal.
+func runPlanOne(cmd *cobra.Command, dir string, p *config.Project) error {
+	src, err := buildSource(p, dir, p.Name)
 	if err != nil {
 		return err
 	}
-	tgt, err := buildTarget(proj, dir, src)
+	tgt, err := buildTarget(p, dir, src, p.Name)
 	if err != nil {
 		return err
 	}
@@ -69,7 +82,7 @@ func runPlan(cmd *cobra.Command, dir string) error {
 	// checks out a historical revision, so plan takes the same deployment
 	// lock as sync to avoid racing a concurrent deployment
 	// (docs/DECISIONS.md #43).
-	return withDeploymentLock(ctx, dir, proj.Target, func() error {
+	return withDeploymentLock(ctx, dir, p.Target, func() error {
 		commit, err := src.Fetch(ctx)
 		if err != nil {
 			return fmt.Errorf("fetch desired state: %w", err)
@@ -89,15 +102,18 @@ func runPlan(cmd *cobra.Command, dir string) error {
 		// so plan and sync compare equivalent full models. When history has no
 		// healthy deployment, the baseline is nil and the plan treats every
 		// desired service as new.
-		store := history.NewFileStore(receiptPath(dir))
+		store := history.NewFileStore(receiptPath(dir, p.Name))
 		deployed := deployedStateFromDesired(deployedAtCommit(ctx, src, store, cmd.ErrOrStderr()))
-		p, err := tgt.Plan(ctx, desired, deployed)
+		pn, err := tgt.Plan(ctx, desired, deployed)
 		if err != nil {
 			return err
 		}
 
-		writePlan(cmd.OutOrStdout(), p)
-		writeEnvOverrides(cmd.OutOrStdout(), proj.Target.Services)
+		if p.Name != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
+		}
+		writePlan(cmd.OutOrStdout(), pn)
+		writeEnvOverrides(cmd.OutOrStdout(), p.Target.Services)
 		return nil
 	})
 }

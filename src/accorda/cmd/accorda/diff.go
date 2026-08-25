@@ -72,11 +72,24 @@ type diffNode struct {
 // at the deployed commit so the full service definition is available for
 // per-field comparison (the receipt journal stores only image/digest).
 func runDiff(cmd *cobra.Command, dir string) error {
-	proj, err := config.Load(dir)
+	projects, err := loadProjects(dir)
 	if err != nil {
 		return err
 	}
-	src, err := buildSource(proj, dir)
+	for i := range projects {
+		p := &projects[i]
+		if err := runDiffOne(cmd, dir, p); err != nil {
+			return fmt.Errorf("diff %s: %w", p.Name, err)
+		}
+	}
+	return nil
+}
+
+// runDiffOne computes and prints the diff for a single project. name is the
+// project's operator-chosen name (empty for a single-project document), used
+// to scope the source and receipt journal.
+func runDiffOne(cmd *cobra.Command, dir string, p *config.Project) error {
+	src, err := buildSource(p, dir, p.Name)
 	if err != nil {
 		return err
 	}
@@ -85,7 +98,7 @@ func runDiff(cmd *cobra.Command, dir string) error {
 	// Re-reading the deployed commit from the managed worktree temporarily
 	// checks out a historical revision, so diff takes the same deployment lock
 	// as sync to avoid racing a concurrent deployment (docs/DECISIONS.md #43).
-	return withDeploymentLock(ctx, dir, proj.Target, func() error {
+	return withDeploymentLock(ctx, dir, p.Target, func() error {
 		// Fetch first so the desired side reflects the current remote tip, not a
 		// stale local cache (the git source's Desired only fetches when the cache
 		// is empty). This matches `accorda plan` and `accorda status`.
@@ -98,9 +111,12 @@ func runDiff(cmd *cobra.Command, dir string) error {
 			return fmt.Errorf("read desired state: %w", err)
 		}
 
-		store := history.NewFileStore(receiptPath(dir))
+		store := history.NewFileStore(receiptPath(dir, p.Name))
 		deployed := deployedAtCommit(ctx, src, store, cmd.ErrOrStderr())
 
+		if p.Name != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
+		}
 		writeDiff(cmd.OutOrStdout(), buildDiff(deployed, desired))
 		return nil
 	})
