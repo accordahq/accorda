@@ -656,25 +656,38 @@ func TestWriteEnsembleResults_PropagatesFirstFailure(t *testing.T) {
 			cmd := newSyncCmd()
 			cmd.SetOut(&out)
 			err := writeEnsembleResults(cmd, tc.results)
-			s := out.String()
-			for _, want := range tc.wantOut {
-				if !strings.Contains(s, want) {
-					t.Errorf("output missing %q; got:\n%s", want, s)
-				}
-			}
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-				}
-			} else {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				if !strings.Contains(err.Error(), tc.wantErr) {
-					t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
-				}
-			}
+			assertOutputContains(t, out.String(), tc.wantOut)
+			assertErrorContains(t, err, tc.wantErr)
 		})
+	}
+}
+
+// assertOutputContains fails the test unless every expected substring is
+// present in got.
+func assertOutputContains(t *testing.T, got string, wants []string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// assertErrorContains fails the test unless err matches want: when want is
+// empty the error must be nil, otherwise err must be non-nil and contain want.
+func assertErrorContains(t *testing.T, err error, wantErr string) {
+	t.Helper()
+	if wantErr == "" {
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Errorf("error = %v, want it to contain %q", err, wantErr)
 	}
 }
 
