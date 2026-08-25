@@ -601,20 +601,80 @@ func TestWriteSyncResultWithPrefix(t *testing.T) {
 	}
 }
 
-// TestRunProjectsSync_OneShotPropagatesFailure verifies a one-shot ensemble
-// sync aggregates a failed member's error into the returned error, so the
-// exit code is non-zero like the single-project path. It exercises the
-// renderer directly because the ensemble's error aggregation is: print every
-// member, keep the first error (runProjectsSync).
-func TestRunProjectsSync_OneShotPropagatesFailure(t *testing.T) {
-	var out bytes.Buffer
-	failed := &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("fetch boom")}
-	err := writeSyncResultWithPrefix(&out, "api: ", failed)
-	if err == nil {
-		t.Fatal("writeSyncResultWithPrefix returned nil for a failed member, want error")
+// TestWriteEnsembleResults_PropagatesFirstFailure verifies a one-shot
+// ensemble sync aggregates the first failed member's error into the returned
+// error, so the exit code is non-zero like the single-project path. It drives
+// the actual writeEnsembleResults aggregation end-to-end with mixed
+// successful and failed members.
+func TestWriteEnsembleResults_PropagatesFirstFailure(t *testing.T) {
+	cases := []struct {
+		name    string
+		results []reconcile.MemberResult
+		wantErr string
+		wantOut []string
+	}{
+		{
+			name: "all synced",
+			results: []reconcile.MemberResult{
+				{Name: "api", Result: &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}}},
+				{Name: "worker", Result: &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}}},
+			},
+			wantErr: "",
+			wantOut: []string{"api: sync: SYNCED", "worker: sync: SYNCED"},
+		},
+		{
+			name: "first member fails",
+			results: []reconcile.MemberResult{
+				{Name: "api", Result: &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("fetch boom")}},
+				{Name: "worker", Result: &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}}},
+			},
+			wantErr: "sync api: reconciliation failed: fetch boom",
+			wantOut: []string{"api: sync: FAILED", "worker: sync: SYNCED"},
+		},
+		{
+			name: "second member fails",
+			results: []reconcile.MemberResult{
+				{Name: "api", Result: &reconcile.Result{Phase: reconcile.PhaseSynced, Comparison: state.Comparison{Result: state.ResultSynced}}},
+				{Name: "worker", Result: &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("apply boom")}},
+			},
+			wantErr: "sync worker: reconciliation failed: apply boom",
+			wantOut: []string{"api: sync: SYNCED", "worker: sync: FAILED"},
+		},
+		{
+			name: "both fail returns first error",
+			results: []reconcile.MemberResult{
+				{Name: "api", Result: &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("first")}},
+				{Name: "worker", Result: &reconcile.Result{Phase: reconcile.PhaseFailed, Err: errors.New("second")}},
+			},
+			wantErr: "sync api: reconciliation failed: first",
+			wantOut: []string{"api: sync: FAILED", "worker: sync: FAILED"},
+		},
 	}
-	if !strings.Contains(err.Error(), "fetch boom") {
-		t.Errorf("error = %v, want it to wrap the member failure", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cmd := newSyncCmd()
+			cmd.SetOut(&out)
+			err := writeEnsembleResults(cmd, tc.results)
+			s := out.String()
+			for _, want := range tc.wantOut {
+				if !strings.Contains(s, want) {
+					t.Errorf("output missing %q; got:\n%s", want, s)
+				}
+			}
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
+				}
+			}
+		})
 	}
 }
 

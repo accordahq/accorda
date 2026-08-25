@@ -128,6 +128,15 @@ func runProjectsSync(cmd *cobra.Command, dir string, watch bool, projects []conf
 	// (a failure in one does not block the others); the first failed result is
 	// returned after every member's output is printed.
 	results := ensemble.Reconcile(cmd.Context())
+	return writeEnsembleResults(cmd, results)
+}
+
+// writeEnsembleResults prints every member's cycle outcome and returns the
+// first failed member's error, so a one-shot ensemble sync propagates a
+// non-zero exit when any member fails (docs/ACCORDA.md §11). It is extracted
+// from runProjectsSync so the aggregation is testable without a live source
+// or target.
+func writeEnsembleResults(cmd *cobra.Command, results []reconcile.MemberResult) error {
 	var firstErr error
 	for _, mr := range results {
 		if err := writeMemberResult(cmd, mr); err != nil && firstErr == nil {
