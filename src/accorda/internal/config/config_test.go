@@ -883,11 +883,13 @@ notifications:
 }
 
 // ensembleExample is a multi-project accorda.yaml document
-// (docs/ACCORDA.md §49): several named projects each carrying a full unified
-// project configuration, so one agent reconciles multiple workloads.
-const ensembleExample = `projects:
+// (docs/ACCORDA.md §49): several named projects each carrying their own
+// source, target, and environment under one agent. The schema version, sync
+// cadence, and policy defaults live at the document root and are shared by
+// every member (docs/DECISIONS.md #48).
+const ensembleExample = `version: 1
+projects:
   - name: api
-    version: 1
     environment: production
     source:
       type: git
@@ -897,7 +899,6 @@ const ensembleExample = `projects:
       type: ` + TargetCompose + `
       file: compose.yaml
   - name: worker
-    version: 1
     environment: production
     source:
       type: git
@@ -925,12 +926,143 @@ func TestParseDocument_Ensemble(t *testing.T) {
 	if doc.Ensemble.Projects[1].Name != "worker" {
 		t.Errorf("project[1].Name = %q, want %q", doc.Ensemble.Projects[1].Name, "worker")
 	}
+	// The schema version lives at the document root and is inherited by every
+	// member (docs/DECISIONS.md #48).
+	if doc.Ensemble.Version != SchemaVersion {
+		t.Errorf("ensemble Version = %d, want %d", doc.Ensemble.Version, SchemaVersion)
+	}
+	// Global defaults are applied to the root and resolved into each member.
+	if doc.Ensemble.Projects[0].Version != SchemaVersion {
+		t.Errorf("project[0].Version = %d, want inherited %d", doc.Ensemble.Projects[0].Version, SchemaVersion)
+	}
+	if doc.Ensemble.Projects[0].Sync.Interval != 30*time.Second {
+		t.Errorf("project[0].Sync.Interval = %s, want the global default 30s", doc.Ensemble.Projects[0].Sync.Interval)
+	}
 	// Defaults are applied to each member (git type, main branch).
 	if doc.Ensemble.Projects[0].Source.Type != "git" {
 		t.Errorf("project[0].Source.Type = %q, want %q", doc.Ensemble.Projects[0].Source.Type, "git")
 	}
 	if doc.Ensemble.Projects[0].Source.Branch != "main" {
 		t.Errorf("project[0].Source.Branch = %q, want %q", doc.Ensemble.Projects[0].Source.Branch, "main")
+	}
+}
+
+func TestParseDocument_EnsembleGlobalDefaults(t *testing.T) {
+	doc, err := ParseDocument([]byte(ensembleExample))
+	if err != nil {
+		t.Fatalf("ParseDocument: unexpected error: %v", err)
+	}
+	// Global defaults for pull, drift, and health resolve into every member
+	// unless the member overrides them (docs/DECISIONS.md #48).
+	for i, p := range doc.Ensemble.Projects {
+		if p.Images.Pull != PullChanged {
+			t.Errorf("project[%d].Images.Pull = %q, want inherited default %q", i, p.Images.Pull, PullChanged)
+		}
+		if p.Reconcile.Drift != DriftReport {
+			t.Errorf("project[%d].Reconcile.Drift = %q, want inherited default %q", i, p.Reconcile.Drift, DriftReport)
+		}
+		if p.Health.Timeout != 120*time.Second {
+			t.Errorf("project[%d].Health.Timeout = %s, want inherited default 120s", i, p.Health.Timeout)
+		}
+	}
+}
+
+func TestParseDocument_EnsembleMemberOverrides(t *testing.T) {
+	doc := `version: 1
+images:
+  pull: ` + PullChanged + `
+health:
+  timeout: 60s
+projects:
+  - name: api
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    images:
+      pull: ` + PullAlways + `
+  - name: worker
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+`
+	parsed, err := ParseDocument([]byte(doc))
+	if err != nil {
+		t.Fatalf("ParseDocument: unexpected error: %v", err)
+	}
+	// api overrides images.pull; worker inherits the global default.
+	if got := parsed.Ensemble.Projects[0].Images.Pull; got != PullAlways {
+		t.Errorf("api Images.Pull = %q, want override %q", got, PullAlways)
+	}
+	if got := parsed.Ensemble.Projects[1].Images.Pull; got != PullChanged {
+		t.Errorf("worker Images.Pull = %q, want inherited %q", got, PullChanged)
+	}
+	// health.timeout is global-only in this document, so both inherit it.
+	if got := parsed.Ensemble.Projects[1].Health.Timeout; got != 60*time.Second {
+		t.Errorf("worker Health.Timeout = %s, want inherited global 60s", got)
+	}
+}
+
+// TestParseDocument_EnsembleReconcileOverrideKeepsRootFields verifies that a
+// member overriding reconcile merges field-by-field rather than replacing the
+// whole struct: overriding only drift must retain the root's remove_orphans
+// default, and vice versa (docs/DECISIONS.md #48). A whole-struct replacement
+// would silently drop the root orphan-removal default the moment remove_orphans
+// is consumed, which is the exact "silent surprise" the design avoids.
+func TestParseDocument_EnsembleReconcileOverrideKeepsRootFields(t *testing.T) {
+	rootRemoveOrphans := true
+	doc := `version: 1
+reconcile:
+  drift: ` + DriftRepair + `
+  remove_orphans: true
+projects:
+  - name: api
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    reconcile:
+      drift: ` + DriftDisabled + `
+  - name: worker
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    reconcile:
+      remove_orphans: false
+`
+	parsed, err := ParseDocument([]byte(doc))
+	if err != nil {
+		t.Fatalf("ParseDocument: unexpected error: %v", err)
+	}
+	api := parsed.Ensemble.Projects[0]
+	// api overrides only drift; the root remove_orphans must survive.
+	if api.Reconcile.Drift != DriftDisabled {
+		t.Errorf("api Reconcile.Drift = %q, want override %q", api.Reconcile.Drift, DriftDisabled)
+	}
+	if api.Reconcile.RemoveOrphans == nil || *api.Reconcile.RemoveOrphans != rootRemoveOrphans {
+		t.Errorf("api Reconcile.RemoveOrphans = %v, want retained root %v", api.Reconcile.RemoveOrphans, rootRemoveOrphans)
+	}
+	worker := parsed.Ensemble.Projects[1]
+	// worker overrides only remove_orphans; the root drift must survive.
+	if worker.Reconcile.Drift != DriftRepair {
+		t.Errorf("worker Reconcile.Drift = %q, want retained root %q", worker.Reconcile.Drift, DriftRepair)
+	}
+	if worker.Reconcile.RemoveOrphans == nil || *worker.Reconcile.RemoveOrphans {
+		t.Errorf("worker Reconcile.RemoveOrphans = %v, want override false", worker.Reconcile.RemoveOrphans)
 	}
 }
 
@@ -948,16 +1080,23 @@ func TestParseDocument_SingleProjectIsNotEnsemble(t *testing.T) {
 }
 
 func TestValidateEnsemble_Empty(t *testing.T) {
-	err := ValidateEnsemble(&Ensemble{})
+	err := ValidateEnsemble(&Ensemble{Version: SchemaVersion})
 	if err == nil || !strings.Contains(err.Error(), "at least one project is required") {
 		t.Fatalf("ValidateEnsemble error = %v, want empty-ensemble validation", err)
 	}
 }
 
+func TestValidateEnsemble_MissingVersion(t *testing.T) {
+	err := ValidateEnsemble(&Ensemble{})
+	if err == nil || !strings.Contains(err.Error(), "version is required") {
+		t.Fatalf("ValidateEnsemble error = %v, want version validation", err)
+	}
+}
+
 func TestValidateEnsemble_RequiresName(t *testing.T) {
-	doc, err := ParseDocument([]byte(`projects:
-  - version: 1
-    environment: production
+	doc, err := ParseDocument([]byte(`version: 1
+projects:
+  - environment: production
     source:
       type: git
       url: git@github.com:acme/api.git
@@ -987,9 +1126,9 @@ func TestValidateEnsemble_DuplicateName(t *testing.T) {
 
 func TestValidateEnsemble_RejectsInvalidMember(t *testing.T) {
 	// The second project has no source.url, which must fail validation.
-	invalid := `projects:
+	invalid := `version: 1
+projects:
   - name: api
-    version: 1
     environment: production
     source:
       type: git
@@ -998,7 +1137,6 @@ func TestValidateEnsemble_RejectsInvalidMember(t *testing.T) {
       type: ` + TargetCompose + `
       file: compose.yaml
   - name: worker
-    version: 1
     environment: production
     source:
       type: git
@@ -1024,13 +1162,14 @@ func TestParseDocument_EnsembleUnknownFieldRejected(t *testing.T) {
 }
 
 // TestParseDocument_RejectsMixedShape verifies that a document mixing the
-// single-project top-level fields (version, environment, source, target)
-// with a multi-project projects: list is rejected. The two shapes are
-// mutually exclusive (docs/ACCORDA.md §25, §49): a single agent drives either
-// one project or a list of named projects, never both. Letting the two shapes
-// coexist would let an operator accidentally configure a top-level source/
-// target that is silently ignored because the projects: list takes
-// precedence (docs/ACCORDA.md §49).
+// single-project top-level source/target fields with a multi-project
+// projects: list is rejected. The two shapes are mutually exclusive
+// (docs/ACCORDA.md §25, §49): a single agent drives either one project or a
+// list of named projects, never both. A top-level version and policy globals
+// are shared by the ensemble (docs/DECISIONS.md #48), but a top-level
+// source/target would be silently ignored because the projects: list takes
+// precedence — that is a configuration error, not a silent surprise
+// (docs/ACCORDA.md §49).
 func TestParseDocument_RejectsMixedShape(t *testing.T) {
 	mixed := `version: 1
 environment: production
@@ -1043,7 +1182,6 @@ target:
   file: ` + DefaultComposeFile + `
 projects:
   - name: api
-    version: 1
     environment: production
     source:
       type: git
@@ -1062,11 +1200,13 @@ projects:
 		t.Fatal("ParseDocument succeeded on a mixed single+ensemble document, want rejection")
 	}
 	// The strict ensemble loader rejects the top-level single-project fields
-	// (version, environment, source, target) as unknown because the Ensemble
-	// type only has projects:. Any "not found in type config.Ensemble" error
-	// proves the mix was rejected rather than silently accepted.
-	if !strings.Contains(err.Error(), "not found in type config.Ensemble") {
-		t.Fatalf("ParseDocument error = %v, want a mixed-shape rejection naming config.Ensemble", err)
+	// (environment, source, target) as unknown because they are not Ensemble
+	// fields. The rejection must name at least one of the offending unknown
+	// fields to prove the mix was rejected rather than silently accepted.
+	if !strings.Contains(err.Error(), "field environment not found") &&
+		!strings.Contains(err.Error(), "field source not found") &&
+		!strings.Contains(err.Error(), "field target not found") {
+		t.Fatalf("ParseDocument error = %v, want a mixed-shape rejection naming an unknown Ensemble field", err)
 	}
 }
 
@@ -1100,9 +1240,9 @@ func TestValidateEnsemble_RejectsInvalidNameCharset(t *testing.T) {
 }
 
 func TestValidateEnsemble_AcceptsValidNames(t *testing.T) {
-	doc := `projects:
+	doc := `version: 1
+projects:
   - name: api
-    version: 1
     environment: production
     source:
       type: git
@@ -1111,7 +1251,6 @@ func TestValidateEnsemble_AcceptsValidNames(t *testing.T) {
       type: ` + TargetCompose + `
       file: compose.yaml
   - name: worker-2
-    version: 1
     environment: production
     source:
       type: git
@@ -1120,7 +1259,6 @@ func TestValidateEnsemble_AcceptsValidNames(t *testing.T) {
       type: ` + TargetCompose + `
       file: compose.yaml
   - name: internal_tools
-    version: 1
     environment: production
     source:
       type: git
@@ -1138,10 +1276,11 @@ func TestValidateEnsemble_AcceptsValidNames(t *testing.T) {
 	}
 }
 
-func TestValidateEnsemble_RejectsDivergentIntervals(t *testing.T) {
-	doc := `projects:
+// TestValidateEnsemble_RequiresVersion verifies the schema version is required
+// at the document root of an ensemble, mirroring the single-project rule.
+func TestValidateEnsemble_RequiresVersion(t *testing.T) {
+	_, err := ParseDocument([]byte(`projects:
   - name: api
-    version: 1
     environment: production
     source:
       type: git
@@ -1149,33 +1288,53 @@ func TestValidateEnsemble_RejectsDivergentIntervals(t *testing.T) {
     target:
       type: ` + TargetCompose + `
       file: compose.yaml
-    sync:
-      interval: 30s
-  - name: worker
-    version: 1
-    environment: production
-    source:
-      type: git
-      url: git@github.com:acme/worker.git
-    target:
-      type: ` + TargetCompose + `
-      file: compose.yaml
-    sync:
-      interval: 60s
-`
-	_, err := ParseDocument([]byte(doc))
+`))
 	if err == nil {
-		t.Fatal("ParseDocument succeeded for divergent intervals, want error")
+		t.Fatal("ParseDocument succeeded without an ensemble version, want version validation error")
 	}
-	if !strings.Contains(err.Error(), "differs from") {
-		t.Fatalf("ParseDocument error = %v, want interval-divergence error", err)
+	if !strings.Contains(err.Error(), "version is required") {
+		t.Fatalf("ParseDocument error = %v, want version validation", err)
 	}
 }
 
-func TestValidateEnsemble_AcceptsUniformIntervals(t *testing.T) {
-	doc := `projects:
+// TestValidateEnsemble_RejectsMemberVersion verifies a per-member version: is
+// rejected: the schema version is a document-root property and must not be
+// duplicated per project (docs/DECISIONS.md #48).
+func TestValidateEnsemble_RejectsMemberVersion(t *testing.T) {
+	doc := strings.Replace(ensembleExample, "environment: production", "version: 1\n    environment: production", 1)
+	_, err := ParseDocument([]byte(doc))
+	if err == nil {
+		t.Fatal("ParseDocument succeeded with a per-member version, want rejection")
+	}
+	if !strings.Contains(err.Error(), "not found in type config.ensembleMember") {
+		t.Fatalf("ParseDocument error = %v, want a per-member-version rejection naming config.ensembleMember", err)
+	}
+}
+
+// TestValidateEnsemble_RejectsMemberSync verifies a per-member sync: block is
+// rejected: the polling cadence is global and not overridable, so a per-member
+// interval that could not be honored is a configuration error rather than a
+// silent surprise (docs/DECISIONS.md #48).
+func TestValidateEnsemble_RejectsMemberSync(t *testing.T) {
+	doc := strings.Replace(ensembleExample, "file: compose.yaml\n  - name: worker", "file: compose.yaml\n    sync:\n      interval: 30s\n  - name: worker", 1)
+	_, err := ParseDocument([]byte(doc))
+	if err == nil {
+		t.Fatal("ParseDocument succeeded with a per-member sync block, want rejection")
+	}
+	if !strings.Contains(err.Error(), "not found in type config.ensembleMember") {
+		t.Fatalf("ParseDocument error = %v, want a per-member-sync rejection naming config.ensembleMember", err)
+	}
+}
+
+// TestParseDocument_EnsembleGlobalInterval verifies that the sync interval is
+// global: it is declared at the document root and inherited by every member,
+// and there is no per-member interval to diverge (docs/DECISIONS.md #48).
+func TestParseDocument_EnsembleGlobalInterval(t *testing.T) {
+	doc := `version: 1
+sync:
+  interval: 45s
+projects:
   - name: api
-    version: 1
     environment: production
     source:
       type: git
@@ -1183,10 +1342,7 @@ func TestValidateEnsemble_AcceptsUniformIntervals(t *testing.T) {
     target:
       type: ` + TargetCompose + `
       file: compose.yaml
-    sync:
-      interval: 30s
   - name: worker
-    version: 1
     environment: production
     source:
       type: git
@@ -1194,10 +1350,14 @@ func TestValidateEnsemble_AcceptsUniformIntervals(t *testing.T) {
     target:
       type: ` + TargetCompose + `
       file: compose.yaml
-    sync:
-      interval: 30s
 `
-	if _, err := ParseDocument([]byte(doc)); err != nil {
-		t.Fatalf("ParseDocument: unexpected error for uniform intervals: %v", err)
+	parsed, err := ParseDocument([]byte(doc))
+	if err != nil {
+		t.Fatalf("ParseDocument: unexpected error for global interval: %v", err)
+	}
+	for i, p := range parsed.Ensemble.Projects {
+		if got := p.Sync.Interval; got != 45*time.Second {
+			t.Errorf("project[%d].Sync.Interval = %s, want the global 45s", i, got)
+		}
 	}
 }

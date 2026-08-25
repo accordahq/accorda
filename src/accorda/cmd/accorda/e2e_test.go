@@ -607,13 +607,19 @@ func writeEnsembleOrigin(t *testing.T, compose string) string {
 // writeEnsembleProject writes a multi-project accorda.yaml that declares two
 // named projects (api and worker), each with its own Git origin, so one
 // `accorda sync` drives both workloads concurrently
-// (docs/ACCORDA.md §49).
+// (docs/ACCORDA.md §49). The schema version, sync cadence, and policy
+// defaults live at the document root and are inherited by both members
+// (docs/DECISIONS.md #48).
 func writeEnsembleProject(t *testing.T, apiURL, workerURL string) string {
 	t.Helper()
 	dir := e2eProjectDir(t)
-	doc := `projects:
+	doc := `version: 1
+images:
+  pull: ` + config.PullNever + `
+health:
+  timeout: 30s
+projects:
   - name: api
-    version: 1
     environment: production
     source:
       type: git
@@ -622,12 +628,7 @@ func writeEnsembleProject(t *testing.T, apiURL, workerURL string) string {
     target:
       type: ` + config.TargetCompose + `
       file: ` + config.DefaultComposeFile + `
-    images:
-      pull: ` + config.PullNever + `
-    health:
-      timeout: 30s
   - name: worker
-    version: 1
     environment: production
     source:
       type: git
@@ -636,10 +637,6 @@ func writeEnsembleProject(t *testing.T, apiURL, workerURL string) string {
     target:
       type: ` + config.TargetCompose + `
       file: ` + config.DefaultComposeFile + `
-    images:
-      pull: ` + config.PullNever + `
-    health:
-      timeout: 30s
 `
 	if err := os.WriteFile(filepath.Join(dir, config.File), []byte(doc), 0o600); err != nil {
 		t.Fatalf("write accorda.yaml: %v", err)

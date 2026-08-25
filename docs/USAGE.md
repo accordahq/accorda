@@ -201,12 +201,23 @@ Change into the corresponding project directory before running commands. Use
 
 A single `accorda.yaml` can list several named projects under a top-level
 `projects:` key so one agent reconciles them concurrently
-(docs/ACCORDA.md §49):
+(docs/ACCORDA.md §49). The schema version, sync cadence, and policy defaults
+are shared at the document root; the schema version and sync interval are
+global and not overridable, while `images`, `reconcile`, and `health` act as
+defaults each member may override (docs/DECISIONS.md #48):
 
 ```yaml
+version: 1
+sync:
+  interval: 30s
+images:
+  pull: changed
+reconcile:
+  drift: repair
+health:
+  timeout: 120s
 projects:
   - name: api
-    version: 1
     environment: production
     source:
       type: git
@@ -216,7 +227,6 @@ projects:
       type: compose
       file: compose.yaml
   - name: worker
-    version: 1
     environment: production
     source:
       type: git

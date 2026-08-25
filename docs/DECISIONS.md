@@ -1471,3 +1471,45 @@ project name). Single-project behavior is unchanged: no name prefix, no name
 subdirectory in state paths, and the same single-reconciler code path. Core
 stays target-agnostic; the Ensemble only orchestrates `Reconciler` instances
 and adds no provider dependency.
+
+### 48. Ensemble globals are shared at the document root with per-project overrides
+
+**Context.** The ensemble shape introduced by #57 let each member carry a full
+unified `Project`, including `version`, `sync.interval`, `images.pull`,
+`reconcile.drift`, and `health.timeout`. Repeating these per member is wrong
+for two reasons. First, `version` is the schema version of the document, not
+a property of a workload: every member must be `version: 1`, so repeating it
+is meaningless duplication. Second, the agent runs a single polling loop:
+`reconcile.Ensemble.Run` fans members out under one `time.Timer` and
+`cmd/accorda` passes a single `projects[0].Sync.Interval` to it, so a
+per-member interval is a fiction — the previous validator only tolerated
+identical intervals, which masked a real single-cadence constraint. A member
+that could never honor a different interval should not be able to declare
+one.
+
+**Decision.** The ensemble document root now owns the shared settings:
+`version`, `sync`, `images`, `reconcile`, and `health` live beside the
+`projects:` list. `version` and `sync.interval` are global and **not
+overridable**: a per-member `version:` or `sync:` block is rejected by the
+strict loader (the `ensembleMember` shape omits both), so an operator cannot
+silently declare a schema version or cadence that would be ignored or diverge.
+`images`, `reconcile`, and `health` remain overridable defaults: `parseEnsemble`
+decodes a strict `ensembleMember` per workload (with pointer `Images`,
+`Reconcile`, `Health` so "unset" is distinguishable), then resolves each
+member into a concrete `config.Project` that inherits the root value unless
+the member overrides it. The single-project shape is unchanged — `version`,
+`environment`, `source`, `target`, `sync`, `images`, `reconcile`, and `health`
+stay at the top level — so existing single-project `accorda.yaml` files load
+identically. CLI wiring needs no change because every member is already a
+resolved `Project` when it reaches `buildSource`/`buildTarget` and the
+ensemble loop.
+
+**Consequence.** One agent has exactly one schema version and one polling
+cadence; per-workload pull, drift, and health policies are expressed only
+where they differ from the shared default, reducing duplication in
+multi-workload `accorda.yaml` files. The `interval` divergence check in
+`config.ValidateEnsemble` is removed because the interval cannot diverge.
+Because `version` and `sync` are now rejected at the member level, an existing
+ensemble document that repeats `version` or `sync` per member must be migrated
+to hoist those fields to the document root; this is a deliberate, breaking
+schema change that the loader surfaces with a clear field-oriented error.
