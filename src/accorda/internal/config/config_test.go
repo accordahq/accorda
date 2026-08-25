@@ -1010,6 +1010,62 @@ projects:
 	}
 }
 
+// TestParseDocument_EnsembleReconcileOverrideKeepsRootFields verifies that a
+// member overriding reconcile merges field-by-field rather than replacing the
+// whole struct: overriding only drift must retain the root's remove_orphans
+// default, and vice versa (docs/DECISIONS.md #48). A whole-struct replacement
+// would silently drop the root orphan-removal default the moment remove_orphans
+// is consumed, which is the exact "silent surprise" the design avoids.
+func TestParseDocument_EnsembleReconcileOverrideKeepsRootFields(t *testing.T) {
+	rootRemoveOrphans := true
+	doc := `version: 1
+reconcile:
+  drift: ` + DriftRepair + `
+  remove_orphans: true
+projects:
+  - name: api
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/api.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    reconcile:
+      drift: ` + DriftDisabled + `
+  - name: worker
+    environment: production
+    source:
+      type: git
+      url: git@github.com:acme/worker.git
+    target:
+      type: ` + TargetCompose + `
+      file: compose.yaml
+    reconcile:
+      remove_orphans: false
+`
+	parsed, err := ParseDocument([]byte(doc))
+	if err != nil {
+		t.Fatalf("ParseDocument: unexpected error: %v", err)
+	}
+	api := parsed.Ensemble.Projects[0]
+	// api overrides only drift; the root remove_orphans must survive.
+	if api.Reconcile.Drift != DriftDisabled {
+		t.Errorf("api Reconcile.Drift = %q, want override %q", api.Reconcile.Drift, DriftDisabled)
+	}
+	if api.Reconcile.RemoveOrphans == nil || *api.Reconcile.RemoveOrphans != rootRemoveOrphans {
+		t.Errorf("api Reconcile.RemoveOrphans = %v, want retained root %v", api.Reconcile.RemoveOrphans, rootRemoveOrphans)
+	}
+	worker := parsed.Ensemble.Projects[1]
+	// worker overrides only remove_orphans; the root drift must survive.
+	if worker.Reconcile.Drift != DriftRepair {
+		t.Errorf("worker Reconcile.Drift = %q, want retained root %q", worker.Reconcile.Drift, DriftRepair)
+	}
+	if worker.Reconcile.RemoveOrphans == nil || *worker.Reconcile.RemoveOrphans {
+		t.Errorf("worker Reconcile.RemoveOrphans = %v, want override false", worker.Reconcile.RemoveOrphans)
+	}
+}
+
 func TestParseDocument_SingleProjectIsNotEnsemble(t *testing.T) {
 	doc, err := ParseDocument([]byte(composeExample))
 	if err != nil {

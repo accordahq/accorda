@@ -137,7 +137,8 @@ type ensembleMember struct {
 // #48). The schema version and the sync interval are global and not
 // overridable, so every member inherits them verbatim; Images, Reconcile, and
 // Health fall back to the root value only when the member does not override
-// them.
+// them. Reconcile, which has more than one field, is merged field-by-field so
+// a member overriding only drift retains the root remove_orphans default.
 func (e *Ensemble) resolveMembers(members []ensembleMember) {
 	e.Projects = make([]Project, len(members))
 	for i, m := range members {
@@ -158,7 +159,17 @@ func (e *Ensemble) resolveMembers(members []ensembleMember) {
 			p.Images = e.Images
 		}
 		if m.Reconcile != nil {
-			p.Reconcile = *m.Reconcile
+			// Reconcile has more than one field (Drift, RemoveOrphans), so the
+			// override must merge field-by-field: a member overriding only
+			// drift must not silently drop the root's remove_orphans default
+			// (docs/DECISIONS.md #48).
+			p.Reconcile = e.Reconcile
+			if m.Reconcile.Drift != "" {
+				p.Reconcile.Drift = m.Reconcile.Drift
+			}
+			if m.Reconcile.RemoveOrphans != nil {
+				p.Reconcile.RemoveOrphans = m.Reconcile.RemoveOrphans
+			}
 		} else {
 			p.Reconcile = e.Reconcile
 		}
