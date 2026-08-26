@@ -35,7 +35,7 @@ func (r cliRunner) Run(ctx context.Context, args ...string) error {
 	// `docker` CLI gets connectivity, credentials, proxies, and certificate
 	// discovery without inheriting arbitrary host variables (least privilege,
 	// consistent with the Compose target; docs/ACCORDA.md §18, §56,
-	// docs/DECISIONS.md #41).
+	// docs/DECISIONS.md #21).
 	cmd.Env = shareddocker.ControlledEnvironment(os.Environ())
 	out, err := cmd.CombinedOutput()
 	if err != nil {

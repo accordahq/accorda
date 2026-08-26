@@ -155,7 +155,7 @@ func resultLabel(o history.Outcome) string {
 }
 
 // joinChanges joins the changed service names with a space. The receipt's
-// Changes field is already sorted (docs/DECISIONS.md #12), so the column is
+// Changes field is already sorted (docs/DECISIONS.md #7), so the column is
 // deterministic. An empty list prints a dash so the column is never blank.
 func joinChanges(changes []string) string {
 	if len(changes) == 0 {

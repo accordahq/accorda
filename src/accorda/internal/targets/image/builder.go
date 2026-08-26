@@ -18,7 +18,7 @@ func init() {
 }
 
 // BuildFromContext is the image target's TargetBuilder. The image target's
-// desired state is config-driven (docs/DECISIONS.md #49), so it does not
+// desired state is config-driven (docs/DECISIONS.md #24), so it does not
 // resolve a file from the Git checkout. The service name is the ensemble
 // member name or the project-directory basename.
 func BuildFromContext(ctx targets.TargetContext) (targets.Target, error) {

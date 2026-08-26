@@ -7,5 +7,5 @@
 // `go test ./...` run stays hermetic. The helpers here are shared by the git
 // source, compose target, and end-to-end integration suites so repository
 // fixtures and prerequisite checks are not duplicated across packages
-// (docs/DECISIONS.md #13 DRY).
+// (docs/DECISIONS.md #8 DRY).
 package testutil

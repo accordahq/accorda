@@ -71,7 +71,7 @@ health:
 
 For Compose, relative `target.file` and `target.path` values are repository-relative and resolve inside Accorda's managed Git checkout. When `source.path` names a directory, the target filename is appended (for example `services/api` plus `compose.yaml`); when `source.path` names a YAML file, that exact file is used. An absolute target path remains an explicit local-file override for compatibility.
 
-For a raw single-image target (`target.type: image`), the desired state is declared directly in `accorda.yaml` — no Compose file is parsed. The image, env, and ports fields build a single-service desired state, which the reconcile loop reads from the target via the `DesiredProvider` capability while still anchoring receipts and history to the Git commit (`docs/DECISIONS.md` #49):
+For a raw single-image target (`target.type: image`), the desired state is declared directly in `accorda.yaml` — no Compose file is parsed. The image, env, and ports fields build a single-service desired state, which the reconcile loop reads from the target via the `DesiredProvider` capability while still anchoring receipts and history to the Git commit (`docs/DECISIONS.md` #24):
 
 ```yaml
 target:
@@ -90,7 +90,7 @@ projects under a top-level `projects:` key
 (docs/ACCORDA.md §49, Phase 5 — Multi-Project / Multi-Target Compose). The
 schema version, sync cadence, and policy defaults live at the document root
 and are shared by every member; members may override the image pull, drift,
-and health defaults (docs/DECISIONS.md #48):
+and health defaults (docs/DECISIONS.md #43):
 
 ```yaml
 version: 1

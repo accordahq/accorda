@@ -33,7 +33,7 @@ import (
 // the Git source (internal/sources/git), and the target driver selected by
 // the project's target.type (internal/targets). It threads the project's
 // drift policy, image pull policy, and health timeout into the reconciler
-// and target (docs/DECISIONS.md #18, #21, #22).
+// and target (docs/DECISIONS.md #17, #19, #26).
 func newSyncCmd() *cobra.Command {
 	var (
 		dir   string
@@ -378,7 +378,7 @@ func buildWebhook(n config.Notifications, bus events.Bus) (func(), error) {
 // a single-project document. It is appended to the git cache namespace so two
 // ensemble members that share a repository URL (e.g. two branches of one
 // repo) get isolated checkouts instead of racing on the same worktree
-// (docs/ACCORDA.md §49; docs/DECISIONS.md #43).
+// (docs/ACCORDA.md §49; docs/DECISIONS.md #22).
 func buildSource(p *config.Project, dir, name string) (*git.Git, error) {
 	source := p.Source
 	targetPath := p.Target.ConfiguredPath()
@@ -443,7 +443,7 @@ func receiptPath(dir, name string) string {
 // historical desired state from the managed Git worktree (plan, diff) take
 // the same lock as sync so their temporary worktree checkout cannot race a
 // concurrent deployment that reads the on-disk Compose file
-// (docs/DECISIONS.md #43).
+// (docs/DECISIONS.md #40).
 func withDeploymentLock(ctx context.Context, dir string, target config.Target, fn func() error) error {
 	unlock, err := locking.NewFileLocker(deploymentLockPath(dir, target)).Lock(ctx)
 	if err != nil {
@@ -468,7 +468,7 @@ func deploymentLockPath(dir string, target config.Target) string {
 // targetIdentity returns the stable, target-scoped identity used to key the
 // deployment lock, derived from the raw config.Target via the registered
 // builder so the command layer does not switch on target type
-// (docs/ACCORDA.md §47, docs/DECISIONS.md #44).
+// (docs/ACCORDA.md §47, docs/DECISIONS.md #40).
 func targetIdentity(dir string, target config.Target) string {
 	return targets.LockIdentityFromConfig(dir, target)
 }
@@ -498,7 +498,7 @@ func stateBase() string {
 }
 
 // driftPolicy maps the project's reconcile.drift setting to the reconciler's
-// DriftPolicy (docs/ACCORDA.md §5.3, docs/DECISIONS.md #22). The config loader
+// DriftPolicy (docs/ACCORDA.md §5.3, docs/DECISIONS.md #26). The config loader
 // validates the value upstream, so an unknown value degrades to report-only.
 func driftPolicy(p string) reconcile.DriftPolicy {
 	switch p {

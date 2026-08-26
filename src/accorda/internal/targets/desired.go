@@ -8,7 +8,7 @@ import (
 
 // DesiredProvider is the optional capability a target implements when its
 // desired state is derived from its own configuration rather than from a
-// Git-parsed artifact (docs/DECISIONS.md #49). A raw image target is the
+// Git-parsed artifact (docs/DECISIONS.md #24). A raw image target is the
 // motivating case: its desired state is a single service built from the
 // accorda.yaml `target.image`/`env`/`ports` fields, not a Compose file the
 // Git source parses.

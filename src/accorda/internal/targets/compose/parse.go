@@ -287,7 +287,7 @@ func portableProjectPath(value, workingDir string) string {
 // network names. The result is sorted so a service's networks are stable
 // regardless of Go's randomized map iteration order; downstream consumers
 // (plan hashing, desired/deployed diff) depend on deterministic ordering
-// (docs/DECISIONS.md #12).
+// (docs/DECISIONS.md #7).
 func normalizeNetworks(networks map[string]*types.ServiceNetworkConfig) []string {
 	if len(networks) == 0 {
 		return nil
@@ -333,7 +333,7 @@ func normalizeHealthcheck(hc *types.HealthCheckConfig) state.Healthcheck {
 // of service names. The result is sorted so a service's dependencies are
 // stable regardless of Go's randomized map iteration order; downstream
 // consumers (plan hashing, desired/deployed diff) depend on deterministic
-// ordering (docs/DECISIONS.md #12).
+// ordering (docs/DECISIONS.md #7).
 func normalizeDependsOn(deps types.DependsOnConfig) []string {
 	if len(deps) == 0 {
 		return nil

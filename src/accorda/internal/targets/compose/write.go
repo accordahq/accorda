@@ -47,7 +47,7 @@ func writeComposeServices(path string, services map[string]state.Service) error 
 
 // composeServices converts Accorda services into the YAML-marshalable map
 // form. Service names are sorted so the output is deterministic
-// (docs/DECISIONS.md #12).
+// (docs/DECISIONS.md #7).
 func composeServices(services map[string]state.Service) map[string]map[string]any {
 	out := make(map[string]map[string]any, len(services))
 	for _, name := range shareddocker.SortedServiceNames(services) {
@@ -91,7 +91,7 @@ func composeService(s state.Service) map[string]any {
 	}
 	if len(s.DependsOn) > 0 {
 		// DependsOn is already sorted by the state model for deterministic
-		// comparison and hashing (docs/DECISIONS.md #12).
+		// comparison and hashing (docs/DECISIONS.md #7).
 		m["depends_on"] = s.DependsOn
 	}
 	return m

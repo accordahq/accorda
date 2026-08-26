@@ -21,7 +21,11 @@ not authorize unrelated cleanup, deployment, or remote GitHub mutations.
   component README files before changing the repository.
 - Read `docs/ISSUES-BEFORE-FIRST-RUN.md` if you got the issue from the list mark it as checked when implemented. Issues are run in the order i want them to be implemented. If not specific issue requested grab first non implemented issue from the list
 - Read `docs/DECISIONS.md` before non-trivial changes; append a decision
-  entry when the change introduces or alters a durable design choice.
+  entry when the change introduces or alters a durable design choice. Add new
+  entries in the relevant themed section with the next sequential number,
+  keep them terse (context, decision, consequence), and reference shared
+  principles (interface dependence, determinism, DRY) by number rather than
+  restating them.
 - Gather the initial context with `scripts/prepare-issue-context.sh <issue>`
   (fetches the issue, its PRs, diffs, CI, and working-tree state in one
   read-only call) so the implementation is grounded in the issue and any

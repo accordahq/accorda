@@ -70,7 +70,7 @@ func parsePort(p string) state.Port {
 }
 
 // sortedEnvKeys returns the keys of env in sorted order so the `docker run`
-// argument list is deterministic (docs/DECISIONS.md #12).
+// argument list is deterministic (docs/DECISIONS.md #7).
 func sortedEnvKeys(env map[string]string) []string {
 	keys := make([]string, 0, len(env))
 	for k := range env {

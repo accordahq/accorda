@@ -105,7 +105,7 @@ func (e *Ensemble) reconcile(ctx context.Context) []MemberResult {
 // cycle immediately and then every interval. Each member runs concurrently,
 // so a slow or failing workload does not delay the others; failed member
 // cycles are reported via handle and do not stop the loop
-// (docs/DECISIONS.md #39). It is the multi-project analog of Reconciler.Run.
+// (docs/DECISIONS.md #31). It is the multi-project analog of Reconciler.Run.
 func (e *Ensemble) Run(ctx context.Context, interval time.Duration, handle func([]MemberResult)) error {
 	if interval <= 0 {
 		return fmt.Errorf("reconcile: ensemble polling interval must be positive: %s", interval)

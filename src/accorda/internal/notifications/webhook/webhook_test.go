@@ -287,7 +287,7 @@ func TestHandle_DoesNotBlockPublishPath(t *testing.T) {
 	// Handle must return immediately even when the endpoint is unreachable and
 	// retries would otherwise take seconds: delivery is dispatched to a
 	// goroutine so it never blocks the synchronous event bus
-	// (docs/DECISIONS.md #46).
+	// (docs/DECISIONS.md #41).
 	srv := newMockServer(t)
 	addr := startMock(t, srv)
 	con, err := New(config.WebhookConfig{URL: addr, MaxRetries: 5, Timeout: time.Hour},
@@ -347,7 +347,7 @@ func TestSubscribe_DeliversViaBus(t *testing.T) {
 	bus := events.NewBus()
 	unsub := con.Subscribe(bus)
 	defer unsub()
-	// Handle dispatches asynchronously (docs/DECISIONS.md #46), so wait for
+	// Handle dispatches asynchronously (docs/DECISIONS.md #41), so wait for
 	// the goroutine to deliver.
 	bus.Publish(context.Background(), events.Event{Type: events.EventDeploymentStarted})
 	if !waitFor(t, func() bool { return srv.count() == 1 }) {

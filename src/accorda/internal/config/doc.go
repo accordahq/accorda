@@ -20,7 +20,7 @@
 // two shapes: a top-level projects: list selects the Ensemble, otherwise the
 // document is a single Project. In an Ensemble the schema version, the sync
 // cadence, and the image/drift/health defaults are shared at the document
-// root and resolved into every named member (docs/DECISIONS.md #48); each
+// root and resolved into every named member (docs/DECISIONS.md #43); each
 // member carries an operator-chosen name so one agent can reconcile several
 // workloads (api, worker, monitoring, internal-tools) concurrently, each with
 // its own source, target, and state paths.

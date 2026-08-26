@@ -95,7 +95,7 @@ type Project struct {
 // block or mutate another.
 //
 // The document root carries the settings that are shared by all members
-// (docs/DECISIONS.md #48): the schema Version, the global Sync cadence, and
+// (docs/DECISIONS.md #43): the schema Version, the global Sync cadence, and
 // the global Images, Reconcile, and Health defaults. Version and Sync are
 // global and not overridable — one agent runs on one schema and one polling
 // cadence. Images, Reconcile, and Health act as defaults that each member may
@@ -118,7 +118,7 @@ type Ensemble struct {
 // deliberately narrower than Project: it rejects the global fields (version,
 // sync) that live at the Ensemble root so an operator cannot silently declare
 // a per-member schema version or polling cadence that would be ignored or
-// diverge from the single agent loop (docs/DECISIONS.md #48). Images,
+// diverge from the single agent loop (docs/DECISIONS.md #43). Images,
 // Reconcile, and Health are optional pointers so "unset" is distinguishable
 // from "set to zero value" when merging the global default.
 type ensembleMember struct {
@@ -184,7 +184,7 @@ func resolveValue[T any](override *T, root T) T {
 }
 
 // resolveReconcile merges a member's Reconcile override into the root default
-// field-by-field (docs/DECISIONS.md #48). A member overriding only drift must
+// field-by-field (docs/DECISIONS.md #43). A member overriding only drift must
 // not silently drop the root's remove_orphans default.
 func (e *Ensemble) resolveReconcile(override *Reconcile) Reconcile {
 	if override == nil {
@@ -247,22 +247,22 @@ type Target struct {
 	Path string `yaml:"path,omitempty"`
 	File string `yaml:"file,omitempty"`
 	// Services holds per-service environment overrides applied at deploy time
-	// (docs/DECISIONS.md #45). They do not enter desired state, hashing, or
+	// (docs/DECISIONS.md #23). They do not enter desired state, hashing, or
 	// receipts; they are merged into the deploy Compose file's environment:
 	// before `docker compose up -d` runs.
 	Services map[string]ServiceOverride `yaml:"services,omitempty"`
 	// Image is the single container image reference for a raw image target
-	// (target.type: image, docs/DECISIONS.md #49). It is the desired image the
+	// (target.type: image, docs/DECISIONS.md #24). It is the desired image the
 	// image driver reconciles; no Compose file is parsed.
 	Image string `yaml:"image,omitempty"`
 	// Env is the inline environment for a raw image target, keyed by variable
-	// name (docs/DECISIONS.md #49). It is the per-image analog of the Compose
+	// name (docs/DECISIONS.md #24). It is the per-image analog of the Compose
 	// ServiceOverride.env and enters desired state because, unlike Compose
 	// env_files, it is Git-authored config rather than operator-local secret
 	// material.
 	Env map[string]string `yaml:"env,omitempty"`
 	// Ports are the published port mappings for a raw image target
-	// (docs/DECISIONS.md #49), in the Docker "host:container" short form.
+	// (docs/DECISIONS.md #24), in the Docker "host:container" short form.
 	Ports []string `yaml:"ports,omitempty"`
 }
 
@@ -278,7 +278,7 @@ func (t Target) ConfiguredPath() string {
 }
 
 // ServiceOverride declares per-service environment inputs applied at deploy
-// time (docs/DECISIONS.md #45). Both fields are optional and combinable;
+// time (docs/DECISIONS.md #23). Both fields are optional and combinable;
 // inline env values take precedence over env_files entries on key collision.
 type ServiceOverride struct {
 	// Env is inline key/value environment variables merged into the
@@ -537,7 +537,7 @@ func resolveServiceOverridesPaths(p *Project, dir string) {
 
 // resolveServiceOverridePaths resolves env_files paths relative to the
 // project directory so operators can use relative paths in accorda.yaml
-// (docs/DECISIONS.md #45). Absolute paths are left unchanged.
+// (docs/DECISIONS.md #23). Absolute paths are left unchanged.
 func resolveServiceOverridePaths(services map[string]ServiceOverride, dir string) {
 	for name, svc := range services {
 		for i, f := range svc.EnvFiles {
@@ -579,7 +579,7 @@ func hasInlineCredential(source Source) bool {
 // Document is either a single Project or a multi-project Ensemble decoded
 // from an accorda.yaml file (docs/ACCORDA.md §25, §49). In the Ensemble shape,
 // the schema version, sync cadence, and policy defaults are resolved into
-// each member's concrete Project at parse time (docs/DECISIONS.md #48).
+// each member's concrete Project at parse time (docs/DECISIONS.md #43).
 type Document struct {
 	// Project is the single-project document when the file has no top-level
 	// projects: list; otherwise it is nil.
@@ -639,7 +639,7 @@ func hasEnsembleProjects(root *yaml.Node) bool {
 // version, sync, images, reconcile, health — live beside the projects: list)
 // alongside strict per-member entries, then merges the globals into each
 // member so every Project carries the concrete effective values the CLI and
-// targets consume (docs/DECISIONS.md #48). The members are decoded through
+// targets consume (docs/DECISIONS.md #43). The members are decoded through
 // ensembleMember, which rejects the per-member version and sync blocks, so
 // those globals cannot be silently duplicated or diverge per workload.
 func parseEnsemble(data []byte) (*Document, error) {
@@ -970,7 +970,7 @@ func validateTarget(p *Project) error {
 }
 
 // validateServiceOverrides checks the per-service env override entries
-// (docs/DECISIONS.md #45). Each service name must be non-empty, and each
+// (docs/DECISIONS.md #23). Each service name must be non-empty, and each
 // env_files path must be non-empty.
 func validateServiceOverrides(services map[string]ServiceOverride) error {
 	for name, svc := range services {

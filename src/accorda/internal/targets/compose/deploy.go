@@ -14,7 +14,7 @@ import (
 // overrides from accorda.yaml into each named service's environment:, and
 // writes the result to a deploy Compose file alongside the source. It returns
 // the deploy file path, or the source path unchanged when no overrides are
-// configured (docs/DECISIONS.md #45).
+// configured (docs/DECISIONS.md #23).
 //
 // The deploy file carries only the merged environment: entries for overridden
 // services; all other services and fields are preserved verbatim from the
@@ -74,7 +74,7 @@ func deployComposePath(sourceFile string) string {
 
 // cleanupDeployFile removes the rendered deploy Compose file after Apply
 // completes (success or failure) so the managed checkout is not polluted
-// with a secret-bearing artifact (docs/DECISIONS.md #45). It is a no-op when
+// with a secret-bearing artifact (docs/DECISIONS.md #23). It is a no-op when
 // the deploy file is the source file (no overrides were rendered).
 func cleanupDeployFile(deployFile, sourceFile string) {
 	if deployFile == sourceFile {

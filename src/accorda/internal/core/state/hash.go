@@ -28,7 +28,7 @@ func (s Service) Hash() string {
 // canonical returns a deterministic string encoding of the service's
 // reconciliation-relevant fields. Unordered collections are sorted so
 // reordering-equivalent configs produce identical output, honoring the
-// determinism contract (docs/DECISIONS.md #12).
+// determinism contract (docs/DECISIONS.md #7).
 func (s Service) canonical() string {
 	var b strings.Builder
 
@@ -162,7 +162,7 @@ func (h Healthcheck) canonical() string {
 }
 
 // sortedStringKeys returns the keys of m in sorted order so map-derived
-// output is deterministic (docs/DECISIONS.md #12).
+// output is deterministic (docs/DECISIONS.md #7).
 func sortedStringKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

@@ -324,7 +324,7 @@ func TestBuildSourceIsolatesEnsembleMembersByName(t *testing.T) {
 	// Two ensemble members in the same project directory with different names
 	// must get isolated managed checkouts even though they share a repo URL,
 	// otherwise two branches of one repository would race on the same worktree
-	// (docs/ACCORDA.md §49, docs/DECISIONS.md #43).
+	// (docs/ACCORDA.md §49, docs/DECISIONS.md #22).
 	api, err := buildSource(p, "shared-dir", "api")
 	if err != nil {
 		t.Fatalf("build api source: %v", err)

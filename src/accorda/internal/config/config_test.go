@@ -936,7 +936,7 @@ notifications:
 // (docs/ACCORDA.md §49): several named projects each carrying their own
 // source, target, and environment under one agent. The schema version, sync
 // cadence, and policy defaults live at the document root and are shared by
-// every member (docs/DECISIONS.md #48).
+// every member (docs/DECISIONS.md #43).
 const ensembleExample = `version: 1
 projects:
   - name: api
@@ -977,7 +977,7 @@ func TestParseDocument_Ensemble(t *testing.T) {
 		t.Errorf("project[1].Name = %q, want %q", doc.Ensemble.Projects[1].Name, "worker")
 	}
 	// The schema version lives at the document root and is inherited by every
-	// member (docs/DECISIONS.md #48).
+	// member (docs/DECISIONS.md #43).
 	if doc.Ensemble.Version != SchemaVersion {
 		t.Errorf("ensemble Version = %d, want %d", doc.Ensemble.Version, SchemaVersion)
 	}
@@ -1003,7 +1003,7 @@ func TestParseDocument_EnsembleGlobalDefaults(t *testing.T) {
 		t.Fatalf("ParseDocument: unexpected error: %v", err)
 	}
 	// Global defaults for pull, drift, and health resolve into every member
-	// unless the member overrides them (docs/DECISIONS.md #48).
+	// unless the member overrides them (docs/DECISIONS.md #43).
 	for i, p := range doc.Ensemble.Projects {
 		if p.Images.Pull != PullChanged {
 			t.Errorf("project[%d].Images.Pull = %q, want inherited default %q", i, p.Images.Pull, PullChanged)
@@ -1063,7 +1063,7 @@ projects:
 // TestParseDocument_EnsembleReconcileOverrideKeepsRootFields verifies that a
 // member overriding reconcile merges field-by-field rather than replacing the
 // whole struct: overriding only drift must retain the root's remove_orphans
-// default, and vice versa (docs/DECISIONS.md #48). A whole-struct replacement
+// default, and vice versa (docs/DECISIONS.md #43). A whole-struct replacement
 // would silently drop the root orphan-removal default the moment remove_orphans
 // is consumed, which is the exact "silent surprise" the design avoids.
 func TestParseDocument_EnsembleReconcileOverrideKeepsRootFields(t *testing.T) {
@@ -1216,7 +1216,7 @@ func TestParseDocument_EnsembleUnknownFieldRejected(t *testing.T) {
 // projects: list is rejected. The two shapes are mutually exclusive
 // (docs/ACCORDA.md §25, §49): a single agent drives either one project or a
 // list of named projects, never both. A top-level version and policy globals
-// are shared by the ensemble (docs/DECISIONS.md #48), but a top-level
+// are shared by the ensemble (docs/DECISIONS.md #43), but a top-level
 // source/target would be silently ignored because the projects: list takes
 // precedence — that is a configuration error, not a silent surprise
 // (docs/ACCORDA.md §49).
@@ -1349,7 +1349,7 @@ func TestValidateEnsemble_RequiresVersion(t *testing.T) {
 
 // TestValidateEnsemble_RejectsMemberVersion verifies a per-member version: is
 // rejected: the schema version is a document-root property and must not be
-// duplicated per project (docs/DECISIONS.md #48).
+// duplicated per project (docs/DECISIONS.md #43).
 func TestValidateEnsemble_RejectsMemberVersion(t *testing.T) {
 	doc := strings.Replace(ensembleExample, "environment: production", "version: 1\n    environment: production", 1)
 	_, err := ParseDocument([]byte(doc))
@@ -1364,7 +1364,7 @@ func TestValidateEnsemble_RejectsMemberVersion(t *testing.T) {
 // TestValidateEnsemble_RejectsMemberSync verifies a per-member sync: block is
 // rejected: the polling cadence is global and not overridable, so a per-member
 // interval that could not be honored is a configuration error rather than a
-// silent surprise (docs/DECISIONS.md #48).
+// silent surprise (docs/DECISIONS.md #43).
 func TestValidateEnsemble_RejectsMemberSync(t *testing.T) {
 	doc := strings.Replace(ensembleExample, "file: compose.yaml\n  - name: worker", "file: compose.yaml\n    sync:\n      interval: 30s\n  - name: worker", 1)
 	_, err := ParseDocument([]byte(doc))
@@ -1378,7 +1378,7 @@ func TestValidateEnsemble_RejectsMemberSync(t *testing.T) {
 
 // TestParseDocument_EnsembleGlobalInterval verifies that the sync interval is
 // global: it is declared at the document root and inherited by every member,
-// and there is no per-member interval to diverge (docs/DECISIONS.md #48).
+// and there is no per-member interval to diverge (docs/DECISIONS.md #43).
 func TestParseDocument_EnsembleGlobalInterval(t *testing.T) {
 	doc := `version: 1
 sync:

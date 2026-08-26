@@ -15,7 +15,7 @@ import (
 // lines). Values are not interpolated; Compose does not expand variables in
 // env_file entries.
 //
-// This is a deploy-time helper (docs/DECISIONS.md #45): the parsed values
+// This is a deploy-time helper (docs/DECISIONS.md #23): the parsed values
 // are merged into the deploy Compose file's environment: and never enter
 // desired state, hashing, or receipts.
 func parseEnvFile(path string) ([]envEntry, error) {

@@ -32,7 +32,7 @@ type PullAction struct {
 //   - never: pull nothing; the target relies on images already being present.
 //
 // The returned actions are ordered by service name so the plan stays
-// deterministic (docs/DECISIONS.md #12). drift is the desired-vs-deployed
+// deterministic (docs/DECISIONS.md #7). drift is the desired-vs-deployed
 // diff already computed by plan.DriftActions; the "changed" policy uses it to
 // know which services changed. client is used only by the "missing" policy to
 // enumerate local images.
@@ -131,7 +131,7 @@ func LocalImages(ctx context.Context, client Client) (map[string]bool, error) {
 
 // SortedServiceNames returns the service names of services in sorted order so
 // pull actions are deterministic regardless of Go map iteration order
-// (docs/DECISIONS.md #12).
+// (docs/DECISIONS.md #7).
 func SortedServiceNames(services map[string]state.Service) []string {
 	names := make([]string, 0, len(services))
 	for name := range services {

@@ -451,7 +451,7 @@ func (r *Reconciler) validate(ctx context.Context, res *Result, commit sources.C
 	// A target whose desired state is derived from its own config (for
 	// example a raw image target) replaces the source-parsed services with
 	// its config-derived model while keeping the source's commit metadata
-	// (docs/DECISIONS.md #49). The source is still fetched so receipts and
+	// (docs/DECISIONS.md #24). The source is still fetched so receipts and
 	// history stay anchored to a Git revision.
 	desired, ok := r.resolveDesired(ctx, res, desired, commit)
 	if !ok {
@@ -471,7 +471,7 @@ func (r *Reconciler) validate(ctx context.Context, res *Result, commit sources.C
 // resolveDesired returns the desired state the reconciler should plan and
 // deploy. When the target implements targets.DesiredProvider, the target's
 // config-derived desired state replaces the source-parsed services; otherwise
-// the source's desired state is used unchanged (docs/DECISIONS.md #49).
+// the source's desired state is used unchanged (docs/DECISIONS.md #24).
 func (r *Reconciler) resolveDesired(ctx context.Context, res *Result, desired *state.DesiredState, commit sources.Commit) (*state.DesiredState, bool) {
 	provider, ok := r.target.(targets.DesiredProvider)
 	if !ok {
@@ -558,7 +558,7 @@ func (r *Reconciler) deploy(ctx context.Context, res *Result, desired *state.Des
 	r.transition(ctx, PhasePulling, PhaseDeploying, commit.SHA, p.DeploymentID, nil)
 	// A no-op plan (only noop actions) performs no deployment work, so a
 	// "deployment started" event would be misleading to consumers. Gate the
-	// event on the plan actually changing the target (docs/DECISIONS.md #16).
+	// event on the plan actually changing the target (docs/DECISIONS.md #15).
 	if !changed {
 		return true
 	}
@@ -765,7 +765,7 @@ func (r *Reconciler) receiptChanges(p *plan.Plan) []string {
 // changedServices returns the sorted, unique service names the plan changes
 // (every action that is not a noop), so a receipt's Changes field is
 // deterministic regardless of action order or duplicates
-// (docs/ACCORDA.md §11, docs/DECISIONS.md #12).
+// (docs/ACCORDA.md §11, docs/DECISIONS.md #7).
 func changedServices(p *plan.Plan) []string {
 	if p == nil {
 		return nil
@@ -976,7 +976,7 @@ func (r *Reconciler) emit(ctx context.Context, eventType string, payload any) {
 // newDeploymentID returns a fresh, collision-resistant deployment identifier
 // of the form "dep_<hex>", matching the spec's example "dep_01K..."
 // (docs/ACCORDA.md §7). It is assigned by the reconcile loop, which owns
-// deployment identifier assignment (docs/DECISIONS.md #16).
+// deployment identifier assignment (docs/DECISIONS.md #15).
 func newDeploymentID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {

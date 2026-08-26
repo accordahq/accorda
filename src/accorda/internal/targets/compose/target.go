@@ -78,7 +78,7 @@ type Target struct {
 	// environment concept, not the Git-declared desired-state repository.
 	environment string
 	// serviceOverrides holds per-service env overrides from accorda.yaml
-	// (docs/DECISIONS.md #45). They are merged into a deploy Compose file
+	// (docs/DECISIONS.md #23). They are merged into a deploy Compose file
 	// before Apply runs; they never enter desired state or hashing.
 	serviceOverrides map[string]config.ServiceOverride
 }
@@ -135,7 +135,7 @@ func WithEnvironment(env string) Option {
 }
 
 // WithServiceOverrides sets per-service env overrides applied at deploy time
-// (docs/DECISIONS.md #45). The overrides are merged into a deploy Compose
+// (docs/DECISIONS.md #23). The overrides are merged into a deploy Compose
 // file's environment: before `docker compose up -d` runs; they do not enter
 // desired state, hashing, or receipts.
 func WithServiceOverrides(overrides map[string]config.ServiceOverride) Option {
@@ -313,7 +313,7 @@ func (t *Target) Current(ctx context.Context) (*state.RuntimeState, error) {
 // target does not yet assign deployment identifiers (that is the reconcile
 // loop's responsibility, docs/ACCORDA.md §7). CreatedAt is wall-clock time,
 // so two runs differ only in that field; the action ordering is
-// deterministic (docs/DECISIONS.md #12).
+// deterministic (docs/DECISIONS.md #7).
 //
 // deployed supplies the previously deployed service configuration so
 // DriftActions can compare the canonical service hash (docs/ACCORDA.md §10)
@@ -485,7 +485,7 @@ func (t *Target) applyActionOn(ctx context.Context, a plan.Action, composeFile s
 
 // renderDeployFile renders a deploy Compose file with per-service env
 // overrides merged in, or returns the source file unchanged when no
-// overrides are configured (docs/DECISIONS.md #45).
+// overrides are configured (docs/DECISIONS.md #23).
 func (t *Target) renderDeployFile() (string, error) {
 	return renderDeployCompose(t.file, t.serviceOverrides)
 }
