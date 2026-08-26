@@ -13,6 +13,7 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
+	shareddocker "accorda/internal/docker"
 	"accorda/internal/targets"
 )
 
@@ -20,6 +21,7 @@ import (
 // missing method is caught at build time, not at runtime.
 var _ targets.Target = (*Target)(nil)
 var _ targets.LogTarget = (*Target)(nil)
+var _ targets.RuntimeHealth = (*Target)(nil)
 
 // Target is the Docker Compose target driver (docs/ACCORDA.md §8). It
 // reconciles the desired state declared in a Compose file against the
@@ -158,12 +160,12 @@ func New(cfg config.Target, opts ...Option) (*Target, error) {
 	if file == "" {
 		return nil, errors.New("compose target: target.file or target.path is required")
 	}
-	t := &Target{file: file, project: ProjectName(cfg), pullPolicy: config.PullChanged, healthTimeout: defaultHealthTimeout}
+	t := &Target{file: file, project: ProjectName(cfg), pullPolicy: config.PullChanged, healthTimeout: shareddocker.DefaultHealthTimeout}
 	for _, opt := range opts {
 		opt(t)
 	}
 	if t.docker == nil {
-		cli, err := newDockerClient()
+		cli, err := shareddocker.NewClient()
 		if err != nil {
 			return nil, fmt.Errorf("compose target: docker client: %w", err)
 		}
@@ -279,9 +281,9 @@ func (t *Target) Current(ctx context.Context) (*state.RuntimeState, error) {
 		if err != nil {
 			return nil, fmt.Errorf("compose target: inspect %q: %w", name, err)
 		}
-		rs := toRuntimeService(inspected)
+		rs := shareddocker.RuntimeService(inspected)
 		if prev, ok := services[name]; ok {
-			rs = mergeRuntime(prev, rs)
+			rs = shareddocker.MergeRuntime(prev, rs)
 		}
 		services[name] = rs
 	}
@@ -289,49 +291,8 @@ func (t *Target) Current(ctx context.Context) (*state.RuntimeState, error) {
 	// receipts can record the immutable digest rather than a mutable tag
 	// (docs/ACCORDA.md §7). Resolution is best-effort: a service whose image
 	// cannot be inspected keeps an empty digest rather than failing Current.
-	resolveDigests(ctx, t.docker, services)
+	shareddocker.ResolveDigests(ctx, t.docker, services)
 	return &state.RuntimeState{Services: services}, nil
-}
-
-// resolveDigests fills in the Digest field of each runtime service by
-// inspecting the service's image on the engine and reading its manifest
-// digest (RepoDigests). It is best-effort: an image that cannot be inspected
-// (for example a locally built image with no registry manifest) keeps an
-// empty digest. Results are cached per image reference so a multi-replica
-// service or a shared image is inspected only once.
-func resolveDigests(ctx context.Context, docker dockerClient, services map[string]state.RuntimeService) {
-	cache := make(map[string]string)
-	for name, svc := range services {
-		if svc.Image == "" {
-			continue
-		}
-		digest, ok := cache[svc.Image]
-		if !ok {
-			digest = imageDigest(ctx, docker, svc.Image)
-			cache[svc.Image] = digest
-		}
-		svc.Digest = digest
-		services[name] = svc
-	}
-}
-
-// imageDigest returns the manifest digest of the given image reference, or ""
-// when it cannot be resolved. The digest is read from the image's
-// RepoDigests, which Docker populates when the image was pulled from (or
-// pushed to) a registry; a locally built image has no manifest digest and
-// yields "".
-func imageDigest(ctx context.Context, docker dockerClient, ref string) string {
-	if docker == nil {
-		return ""
-	}
-	inspected, err := docker.ImageInspect(ctx, ref)
-	if err != nil {
-		return ""
-	}
-	if len(inspected.RepoDigests) == 0 {
-		return ""
-	}
-	return inspected.RepoDigests[0]
 }
 
 // Plan computes the deployment plan that reconciles desired state with the
@@ -583,75 +544,6 @@ func serviceName(labels map[string]string) string {
 		return ""
 	}
 	return labels[composeServiceLabel]
-}
-
-// toRuntimeService maps a Docker container inspect response to Accorda's
-// RuntimeService. The Status field uses Docker's ContainerState string
-// ("running", "exited", ...); the Health field uses the healthcheck status
-// ("healthy", "unhealthy", "starting") or "" when there is no healthcheck.
-//
-// The Image field is set from the image reference the operator passed to the
-// engine (Config.Image), not the resolved image ID (ContainerJSONBase.Image).
-// The desired state carries image references (e.g. "busybox:1.36"), so the
-// runtime image must be a reference for the desired-vs-runtime comparison to
-// agree; comparing against the image ID would always report drift. Config.Image
-// is preferred when present; ContainerJSONBase.Image is used only as a
-// fallback for engine responses that omit Config (docs/ACCORDA.md §5.3).
-func toRuntimeService(c container.InspectResponse) state.RuntimeService {
-	svc := state.RuntimeService{}
-	if c.ContainerJSONBase != nil {
-		svc.Image = imageReference(c)
-		if c.ContainerJSONBase.State != nil {
-			svc.Status = string(c.ContainerJSONBase.State.Status)
-			if c.ContainerJSONBase.State.Health != nil {
-				h := string(c.ContainerJSONBase.State.Health.Status)
-				// "none" means no healthcheck; surface it as empty so callers
-				// can treat "" as "no health information".
-				if h != string(container.NoHealthcheck) {
-					svc.Health = h
-				}
-			}
-		}
-	}
-	return svc
-}
-
-// imageReference returns the image reference of the container for comparison
-// against desired state. It prefers Config.Image (the reference the operator
-// passed, e.g. "busybox:1.36") and falls back to ContainerJSONBase.Image (the
-// resolved image ID, e.g. "sha256:91a...") only when Config is absent. The
-// desired state models image references (docs/ACCORDA.md §8), so comparing
-// against a reference keeps desired and runtime comparable.
-func imageReference(c container.InspectResponse) string {
-	if c.Config != nil && c.Config.Image != "" {
-		return c.Config.Image
-	}
-	if c.ContainerJSONBase != nil {
-		return c.ContainerJSONBase.Image
-	}
-	return ""
-}
-
-// degradedStatus is the runtime status reported for a service whose replicas
-// disagree (for example one running and one stopped). It signals drift that
-// a single last-wins entry would otherwise hide (docs/ACCORDA.md §5.3).
-const degradedStatus = "degraded"
-
-// defaultHealthTimeout is the maximum time Health waits for services to
-// become healthy when no explicit timeout is configured. It mirrors the
-// config default for health.timeout (docs/ACCORDA.md §19).
-const defaultHealthTimeout = 120 * time.Second
-
-// mergeRuntime combines two RuntimeService values for the same service name
-// (multiple replicas). When the replicas agree, the merged value is that
-// shared state; when they disagree on status or health, the merged value
-// reports degradedStatus so per-replica drift is surfaced rather than
-// silently overwritten.
-func mergeRuntime(a, b state.RuntimeService) state.RuntimeService {
-	if a.Status != b.Status || a.Health != b.Health {
-		return state.RuntimeService{Status: degradedStatus, Health: "", Image: a.Image}
-	}
-	return a
 }
 
 // composeProjectName derives the Compose project name from the Compose file

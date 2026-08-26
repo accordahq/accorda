@@ -250,6 +250,89 @@ func TestReconcile_HappyPath_ReachesSynced(t *testing.T) {
 	}
 }
 
+// configDesiredTarget wraps fakeTarget and implements targets.DesiredProvider
+// so a test can verify the reconciler uses the target's config-derived
+// desired state in place of the source-parsed one (docs/DECISIONS.md #49).
+type configDesiredTarget struct {
+	*fakeTarget
+	desiredProvider func(*state.DesiredState) (*state.DesiredState, error)
+}
+
+func (c *configDesiredTarget) Desired(_ context.Context, src *state.DesiredState) (*state.DesiredState, error) {
+	return c.desiredProvider(src)
+}
+
+func TestReconcile_UsesTargetDesiredProvider(t *testing.T) {
+	// The source supplies commit metadata and a Compose-parsed service set;
+	// the target's DesiredProvider replaces the services with a config-derived
+	// single-service model while preserving the commit metadata.
+	src := &fakeSource{
+		commit:  sources.Commit{SHA: "abc123", Branch: "main"},
+		desired: healthyDesired(),
+	}
+	configDesired := &state.DesiredState{
+		Services: map[string]state.Service{"edge-agent": {Image: "edge-agent:1.2.3"}},
+	}
+	var planned *state.DesiredState
+	tgt := &configDesiredTarget{
+		fakeTarget: &fakeTarget{
+			health: healthyHealth(),
+			runtime: &state.RuntimeState{Services: map[string]state.RuntimeService{
+				"edge-agent": {Status: "running", Image: "edge-agent:1.2.3"},
+			}},
+		},
+		desiredProvider: func(src *state.DesiredState) (*state.DesiredState, error) {
+			d := configDesired.Clone()
+			d.Repository = src.Repository
+			d.Branch = src.Branch
+			d.Commit = src.Commit
+			return &d, nil
+		},
+	}
+	// Capture the desired state Plan received so the test can assert the
+	// reconciler passed the config-derived model, not the source's.
+	wrapped := &planCapturingTarget{Target: tgt, capture: &planned, desired: tgt}
+	r := New(src, wrapped, events.NewBus())
+
+	res := r.Reconcile(context.Background())
+
+	if res.Phase != PhaseSynced {
+		t.Fatalf("Phase = %q, want %q (err=%v)", res.Phase, PhaseSynced, res.Err)
+	}
+	if planned == nil {
+		t.Fatal("Plan was not called")
+	}
+	if _, ok := planned.Services["edge-agent"]; !ok {
+		t.Errorf("Plan received source services %+v, want config-derived edge-agent", planned.Services)
+	}
+	if _, ok := planned.Services["api"]; ok {
+		t.Errorf("Plan received source service api, want it replaced by DesiredProvider")
+	}
+	if planned.Commit != "abc123" {
+		t.Errorf("Plan received Commit = %q, want abc123 preserved from source", planned.Commit)
+	}
+}
+
+// planCapturingTarget wraps a Target and captures the desired state passed to
+// Plan. It exists so a test can assert which desired state the reconciler
+// handed the target without modifying the fakeTarget's Plan implementation.
+// It forwards the optional DesiredProvider capability so the reconciler still
+// detects it through the wrapper.
+type planCapturingTarget struct {
+	targets.Target
+	capture **state.DesiredState
+	desired targets.DesiredProvider
+}
+
+func (p *planCapturingTarget) Plan(ctx context.Context, desired *state.DesiredState, deployed *state.DeployedState) (*plan.Plan, error) {
+	*p.capture = desired
+	return p.Target.Plan(ctx, desired, deployed)
+}
+
+func (p *planCapturingTarget) Desired(ctx context.Context, src *state.DesiredState) (*state.DesiredState, error) {
+	return p.desired.Desired(ctx, src)
+}
+
 func TestReconcile_FetchFailure(t *testing.T) {
 	src := &fakeSource{fetchErr: errors.New("fetch boom")}
 	tgt := &fakeTarget{}

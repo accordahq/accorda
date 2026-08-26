@@ -1513,3 +1513,81 @@ Because `version` and `sync` are now rejected at the member level, an existing
 ensemble document that repeats `version` or `sync` per member must be migrated
 to hoist those fields to the document root; this is a deliberate, breaking
 schema change that the loader surfaces with a clear field-oriented error.
+
+### 49. Raw single-image target (`target.type: image`)
+
+**Context.** Issue #94 (post-#57) asked whether a dedicated
+`target.type: image` is worth adding once the multi-project/multi-target
+ensemble landed. Today a bare image is expressed as a one-service Compose
+project, which is friction in the fleet/edge scenario #57 introduced: one
+agent driving many small workloads where each workload is "just an image +
+env + port" and a hand-written `compose.yaml` per workload is noise. The
+`Target` interface (Validate, Current, Plan, Apply, Health) is already
+target-agnostic, so core needs no change for a new driver; the value is a
+UX/onboarding win, not a reconciliation-engine gap. The design-recommendation
+comment on #94 settled two questions before implementation: keep `compose` as
+a separate type and add `image` as a sibling (do **not** rename to `docker`
+with `file:`/`image:` modes), and extract the shared Docker operations layer
+from `internal/targets/compose` so the two Docker targets do not diverge.
+
+**Decision.** Add `target.type: image` as a sibling of `compose`. The image
+target lives in `internal/targets/image` and implements `targets.Target` plus
+the optional `targets.DesiredProvider` and `targets.LogTarget` capabilities.
+Its desired state is **config-driven**, not Git-parsed: a single-service
+`state.DesiredState` is built from the `target.image`, `target.env`, and
+`target.ports` accorda.yaml fields. The Git source still supplies the commit
+metadata (SHA, branch, repository) so receipts and history stay anchored to a
+Git revision; the target supplies the service model. The reconcile loop
+consults the new `targets.DesiredProvider` capability after `source.Desired`:
+when a target implements it, the loop replaces the source-parsed services with
+the target's config-derived model (preserving the source's identifying
+fields) before planning, deployment, and drift detection. A target that does
+not implement it keeps the existing source-driven behavior unchanged, so the
+Compose target and the rollback path are unaffected.
+
+The shared Docker operations layer is extracted into `internal/docker` and
+consumed by both `targets/compose` and `targets/image`: the `Client`/`LogClient`
+seams, the `RuntimeService`/`ImageReference`/`MergeRuntime` inspect-to-state
+mapping, `ResolveDigests`/`ImageDigest` manifest digest resolution,
+`HealthFromRuntime`/`HealthStatus`/`MarkTimedOut` health mapping, and the
+`SelectPulls`/`PullAll`/`PullChanged`/`PullMissing`/`LocalImages` image pull
+policy. Compose-label-specific logic (`projectFilters`, `serviceFilters`,
+`ProjectName`, `normalizeProjectName`) stays in `targets/compose`. The Docker
+SDK dependency remains confined to the adapters; core never imports it
+(docs/DECISIONS.md #3). `cmd/accorda` `buildTarget` now returns
+`targets.Target` and dispatches by `target.type` to `buildComposeTarget` or
+`buildImageTarget`; `accorda status` and `accorda doctor` use the shared
+`docker.HealthFromRuntime` and a `validateEnvironmentTarget` capability
+interface so they stay target-agnostic.
+
+The image target's config fields are: `target.image` (required, the container
+image reference), `target.env` (inline key/value environment, keyed by
+variable name), and `target.ports` (Docker short-form port mappings). An
+optional `target.pull` is **not** added per-member: the global `images.pull`
+setting already selects the pull policy, and the image target inherits it via
+`buildImageTarget`'s `WithPullPolicy`, matching the Compose target. `target.env`
+is the per-image analog of the Compose `ServiceOverride.env`; a simpler
+`env_files` equivalent for the image target is deferred and will be designed
+together with the Compose override post-#57 so precedence semantics do not
+diverge. Unlike the Compose `ServiceOverride`, the image target's `env` enters
+desired state because it is Git-authored config declared in `accorda.yaml`,
+not operator-local secret material staged at deploy time. Apply runs the
+single container with `docker run -d` through a `Runner` seam (mirroring the
+Compose `composeRunner`), removing any existing container for the service
+name first so a recreate is clean. The service name is the ensemble project
+name, or the project-directory basename for a standalone project, matching the
+Compose target's default project name.
+
+**Consequence.** Operators can reconcile a single container image directly
+from `accorda.yaml` without a Compose file, which removes the per-workload
+`compose.yaml` friction in fleet/edge ensembles. The two Docker targets share
+one Docker operations layer, so runtime-state mapping, digest resolution,
+health mapping, and pull policy cannot drift between them. The
+`targets.DesiredProvider` capability is the seam for any future target whose
+desired state is config-derived rather than file-parsed; it keeps the
+reconcile loop source-driven for file-backed targets and opt-in for
+config-backed ones. The spec (`docs/ACCORDA.md`) has no section for an image
+target and remains immutable; this decision is the authoritative record.
+`docs/ACCORDA.md §8/§24/§25` continue to describe the Compose and Kubernetes
+targets; the image target is an implementation-scope addition documented here
+and in the package `doc.go`.

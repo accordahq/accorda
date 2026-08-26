@@ -15,7 +15,6 @@ import (
 	"accorda/internal/core/locking"
 	"accorda/internal/core/reconcile"
 	"accorda/internal/core/state"
-	gitSource "accorda/internal/sources/git"
 )
 
 type fakeSyncReconciler struct {
@@ -246,57 +245,6 @@ func TestBuildTarget_Unsupported(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not implemented") {
 		t.Fatalf("unexpected error %v", err)
-	}
-}
-
-func TestResolveTargetPaths(t *testing.T) {
-	base := t.TempDir()
-	src := gitSource.New(config.Source{URL: "https://example.com/acme/repo.git", Path: config.DefaultComposeFile},
-		gitSource.WithBaseDir(base))
-	managed, err := src.CheckoutPath(config.DefaultComposeFile)
-	if err != nil {
-		t.Fatalf("CheckoutPath: %v", err)
-	}
-	absolute := filepath.Join(t.TempDir(), config.DefaultComposeFile)
-	nested := filepath.Join("deploy", config.DefaultComposeFile)
-	cases := []struct {
-		name    string
-		target  config.Target
-		want    config.Target
-		managed bool
-	}{
-		{
-			name:    "relative file",
-			target:  config.Target{File: config.DefaultComposeFile},
-			want:    config.Target{File: managed},
-			managed: true,
-		},
-		{
-			name:    "relative path",
-			target:  config.Target{Path: nested},
-			want:    config.Target{File: managed},
-			managed: true,
-		},
-		{
-			name:   "absolute file",
-			target: config.Target{File: absolute},
-			want:   config.Target{File: absolute},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, managed, err := resolveTargetPaths(tc.target, src)
-			if err != nil {
-				t.Fatalf("resolveTargetPaths(): %v", err)
-			}
-			if got.Type != tc.want.Type || got.File != tc.want.File || got.Path != tc.want.Path {
-				t.Fatalf("resolveTargetPaths() = %+v, want %+v", got, tc.want)
-			}
-			if managed != tc.managed {
-				t.Fatalf("resolveTargetPaths() managed = %t, want %t", managed, tc.managed)
-			}
-		})
 	}
 }
 

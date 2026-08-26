@@ -9,8 +9,8 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/health"
 	"accorda/internal/core/state"
+	shareddocker "accorda/internal/docker"
 	"accorda/internal/sources"
-	"accorda/internal/targets/compose"
 )
 
 func TestShortSHA(t *testing.T) {
@@ -58,16 +58,16 @@ func TestHealthLabel(t *testing.T) {
 	}{
 		{"nil", nil, "UNKNOWN"},
 		{"empty", &health.Health{}, "UNKNOWN"},
-		{"healthy", compose.HealthFromRuntime(&state.RuntimeState{Services: map[string]state.RuntimeService{
+		{"healthy", shareddocker.HealthFromRuntime(&state.RuntimeState{Services: map[string]state.RuntimeService{
 			"api": {Health: "healthy", Status: "running"},
 		}}, time.Unix(0, 0)), "HEALTHY"},
-		{"unknown health", compose.HealthFromRuntime(&state.RuntimeState{Services: map[string]state.RuntimeService{
+		{"unknown health", shareddocker.HealthFromRuntime(&state.RuntimeState{Services: map[string]state.RuntimeService{
 			"api": {Health: "", Status: "running"},
 		}}, time.Unix(0, 0)), "HEALTHY"},
-		{"unhealthy", compose.HealthFromRuntime(&state.RuntimeState{Services: map[string]state.RuntimeService{
+		{"unhealthy", shareddocker.HealthFromRuntime(&state.RuntimeState{Services: map[string]state.RuntimeService{
 			"api": {Health: "unhealthy", Status: "running"},
 		}}, time.Unix(0, 0)), "UNHEALTHY"},
-		{"mixed unhealthy", compose.HealthFromRuntime(&state.RuntimeState{Services: map[string]state.RuntimeService{
+		{"mixed unhealthy", shareddocker.HealthFromRuntime(&state.RuntimeState{Services: map[string]state.RuntimeService{
 			"api":    {Health: "healthy", Status: "running"},
 			"worker": {Health: "unhealthy", Status: "exited"},
 		}}, time.Unix(0, 0)), "UNHEALTHY"},
@@ -89,7 +89,7 @@ func TestBuildRows_UnionAndOrdering(t *testing.T) {
 		"db":  {Image: "postgres:17", Status: "running", Health: "healthy"},
 	}}
 
-	rows := buildRows(desired, runtime, compose.HealthFromRuntime(runtime, time.Unix(0, 0)))
+	rows := buildRows(desired, runtime, shareddocker.HealthFromRuntime(runtime, time.Unix(0, 0)))
 	// Deterministic ordering by name regardless of map iteration order
 	// (docs/DECISIONS.md #12): api, db, worker.
 	got := make([]string, 0, len(rows))
@@ -114,7 +114,7 @@ func TestBuildRows_Rows(t *testing.T) {
 	runtime := &state.RuntimeState{Services: map[string]state.RuntimeService{
 		"api": {Image: "ghcr.io/acme/api:2.4.1", Status: "running", Health: "healthy"},
 	}}
-	rows := buildRows(desired, runtime, compose.HealthFromRuntime(runtime, time.Unix(0, 0)))
+	rows := buildRows(desired, runtime, shareddocker.HealthFromRuntime(runtime, time.Unix(0, 0)))
 	if len(rows) != 1 {
 		t.Fatalf("rows = %v, want one", rows)
 	}

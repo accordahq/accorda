@@ -711,3 +711,79 @@ func TestE2E_EnsembleSync_ConvergesBothProjects(t *testing.T) {
 		}
 	}
 }
+
+// writeImageProject creates a Git origin repository with a placeholder file
+// (the image target's desired state is config-driven, so Git only anchors the
+// commit) and an independent operator directory containing an accorda.yaml
+// whose target.type is image. The project's directory basename is the service
+// name the single container is managed under.
+func writeImageProject(t *testing.T) string {
+	t.Helper()
+	origin := t.TempDir()
+	runGit(t, origin, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(origin, "README.md"), []byte("fleet\n"), 0o644); err != nil {
+		t.Fatalf("write origin placeholder: %v", err)
+	}
+	runGit(t, origin, "add", "README.md")
+	runGit(t, origin, "commit", "-m", "initial")
+	dir := e2eProjectDir(t)
+	project := `version: 1
+environment: production
+source:
+  type: git
+  url: file://` + origin + `
+  branch: main
+target:
+  type: ` + config.TargetImage + `
+  image: nginx:alpine
+images:
+  pull: ` + config.PullNever + `
+health:
+  timeout: 30s
+`
+	if err := os.WriteFile(filepath.Join(dir, config.File), []byte(project), 0o644); err != nil {
+		t.Fatalf("write accorda.yaml: %v", err)
+	}
+	return dir
+}
+
+// cleanupImageProject removes the single container the image target manages so
+// repeated E2E runs do not accumulate containers. The service name is the
+// project directory basename, matching buildImageTarget's default.
+func cleanupImageProject(t *testing.T, dir string) {
+	t.Helper()
+	t.Cleanup(func() {
+		name := filepath.Base(filepath.Clean(dir))
+		_ = exec.Command("docker", "rm", "-f", name).Run()
+	})
+}
+
+// TestE2E_ImageSync_ConvergesToSynced drives a raw single-image target
+// end-to-end: a Git origin anchors the commit, and accorda.yaml declares the
+// image directly. `accorda sync` must run the container from the config-
+// derived desired state and converge to SYNCED (docs/DECISIONS.md #49).
+func TestE2E_ImageSync_ConvergesToSynced(t *testing.T) {
+	testutil.RequireDocker(t)
+	testutil.RequireGit(t)
+
+	dir := writeImageProject(t)
+	cleanupImageProject(t, dir)
+
+	var out bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("sync: %v\noutput: %s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "SYNCED") {
+		t.Errorf("sync output = %q, want it to contain SYNCED", out.String())
+	}
+
+	// A second sync must observe the converged container and stay SYNCED
+	// without redeploying.
+	out.Reset()
+	if err := run([]string{"sync", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if !strings.Contains(out.String(), "SYNCED") {
+		t.Errorf("second sync output = %q, want it to contain SYNCED", out.String())
+	}
+}

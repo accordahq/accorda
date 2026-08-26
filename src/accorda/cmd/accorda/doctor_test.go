@@ -51,7 +51,7 @@ target:
 	}{
 		{doctorPass, doctorProject, ""},
 		{doctorPass, doctorSource, ""},
-		{doctorFail, doctorCompose, "not implemented"},
+		{doctorFail, doctorTarget, "not implemented"},
 		{doctorInfo, doctorCheckout, ""},
 	}
 	if len(results) != len(wantResults) {
@@ -129,21 +129,21 @@ func TestWriteDoctorReport(t *testing.T) {
 			results: []doctorResult{
 				{name: doctorProject, status: doctorPass},
 				{name: doctorSource, status: doctorPass},
-				{name: doctorCompose, status: doctorPass},
+				{name: doctorTarget, status: doctorPass},
 			},
 			wantOutput: "PASS  Project configuration\n" +
 				"PASS  Git source configuration\n" +
-				"PASS  Compose target and Docker\n" +
+				"PASS  Deployment target and Docker\n" +
 				"Accorda is ready.\n",
 		},
 		{
 			name: "failure includes detail",
 			results: []doctorResult{
 				{name: doctorProject, status: doctorPass},
-				{name: doctorCompose, status: doctorFail, detail: "daemon unavailable"},
+				{name: doctorTarget, status: doctorFail, detail: "daemon unavailable"},
 			},
 			wantOutput: "PASS  Project configuration\n" +
-				"FAIL  Compose target and Docker: daemon unavailable\n",
+				"FAIL  Deployment target and Docker: daemon unavailable\n",
 			wantFailed: true,
 		},
 	}

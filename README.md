@@ -67,9 +67,21 @@ health:
   timeout: 120s
 ```
 
-`config.Load(dir)` reads and validates `accorda.yaml` from a directory; `config.Parse(data)` does the same for raw YAML bytes. A file containing `source.auth.token` or an inline URL password must have mode `0600` or stricter. The loader is target-agnostic (Compose, Kubernetes, and Helm target types are recognized), applies defaults for omitted optional fields, rejects unknown fields, and returns field-oriented errors for invalid configuration. See the package documentation in `src/accorda/internal/config` for the accepted fields and validation rules.
+`config.Load(dir)` reads and validates `accorda.yaml` from a directory; `config.Parse(data)` does the same for raw YAML bytes. A file containing `source.auth.token` or an inline URL password must have mode `0600` or stricter. The loader is target-agnostic (Compose, image, Kubernetes, and Helm target types are recognized), applies defaults for omitted optional fields, rejects unknown fields, and returns field-oriented errors for invalid configuration. See the package documentation in `src/accorda/internal/config` for the accepted fields and validation rules.
 
 For Compose, relative `target.file` and `target.path` values are repository-relative and resolve inside Accorda's managed Git checkout. When `source.path` names a directory, the target filename is appended (for example `services/api` plus `compose.yaml`); when `source.path` names a YAML file, that exact file is used. An absolute target path remains an explicit local-file override for compatibility.
+
+For a raw single-image target (`target.type: image`), the desired state is declared directly in `accorda.yaml` — no Compose file is parsed. The image, env, and ports fields build a single-service desired state, which the reconcile loop reads from the target via the `DesiredProvider` capability while still anchoring receipts and history to the Git commit (`docs/DECISIONS.md` #49):
+
+```yaml
+target:
+  type: image
+  image: registry.example.com/edge-agent:1.2.3
+  env:
+    REGION: eu-west-1
+  ports:
+    - "8080:8080"
+```
 
 ### Multi-project (ensemble)
 
@@ -138,7 +150,7 @@ The core abstractions defined in `docs/ACCORDA.md` §12 are implemented so that 
 - `internal/core/events` — the generic event `Bus` and event type names (`deployment.detected`, `deployment.succeeded`, `state.transition`, etc.) that core publishes to; concrete delivery adapters live under `internal/notifications`.
 - `internal/notifications/webhook` — the generic outbound webhook notification target (`docs/ACCORDA.md` §21): it subscribes to the event `Bus` and POSTs each event as a JSON payload to a configurable URL, with bounded retry on transient failures (dispatched asynchronously so it never blocks reconciliation), redirect-rejection hardening, an optional shared-secret HMAC signature header, and redaction of secret environment values before serialization. `accorda sync` subscribes it when `notifications.webhook: true` and `notifications.webhooks.url` are set in `accorda.yaml`.
 - `internal/core/reconcile` — the `Reconciler` that drives the reconciliation lifecycle state machine (`DETECTED → FETCHING → VALIDATING → PLANNING → PULLING → DEPLOYING → VERIFYING → HEALTHY → SYNCED`) with failure paths to `FAILED` and rollback to a known previous deployment, emitting state transitions and deployment events on a `Bus`. On a deploy or health-verification failure with a known previous deployment, it restores the previous state (for a Compose target this re-materializes the services file before re-applying) and records an `OutcomeRolledBack` receipt; with no prior healthy deployment in history it leaves the failure standing (the "where safely possible" qualifier in `docs/ACCORDA.md` §20). When the runtime has drifted, it reacts according to its drift policy (`WithDriftPolicy`): `report` emits `DriftDetected`, `repair` additionally re-plans and re-applies to restore the desired runtime and emits `DriftReconciled`, and `disabled` ignores drift.
-- `internal/targets` — the `Target` interface (`Validate`, `Current`, `Plan`, `Apply`, `Health`) with a compile-time `Stub` implementation guarding the interface, and the `internal/targets/compose` driver implementing Compose file load/validate.
+- `internal/targets` — the `Target` interface (`Validate`, `Current`, `Plan`, `Apply`, `Health`) with a compile-time `Stub` implementation guarding the interface, the optional `DesiredProvider` capability for targets whose desired state is config-derived, and the `internal/targets/compose` and `internal/targets/image` drivers. The shared Docker operations layer lives in `internal/docker` and is consumed by both Docker targets so the Docker SDK dependency stays confined to the adapters.
 - `internal/sources` — the `Source` interface (`Validate`, `Fetch`, `Desired`) with a compile-time `Stub` implementation guarding the interface.
 
 ## Git source
@@ -298,7 +310,8 @@ Beyond the hermetic unit tests, the repository ships an integration and end-to-e
 
 - `internal/sources/git` — clones, fetches, checks out, and reads desired state from a real local Git repository.
 - `internal/targets/compose` — validates, plans, applies, reads runtime state, and verifies health against a real Docker daemon and `docker compose`.
-- `cmd/accorda` — drives the full lifecycle end-to-end: a Git commit declares the desired state, `accorda sync` detects it, plans, deploys, verifies health, and reports `SYNCED`.
+- `internal/targets/image` — validates, plans, applies, reads runtime state, verifies health, and streams logs for a raw single-image target against a real Docker daemon (`docker run`).
+- `cmd/accorda` — drives the full lifecycle end-to-end: a Git commit declares the desired state, `accorda sync` detects it, plans, deploys, verifies health, and reports `SYNCED`. Includes a raw-image target E2E covering the config-driven desired-state path.
 
 Shared fixtures and prerequisite checks live in `internal/testutil` so the three suites do not duplicate repository setup or skip logic.
 
@@ -316,7 +329,7 @@ You can also run the integration suite directly from the module directory:
 
 ```bash
 cd src/accorda
-go test -tags integration ./internal/sources/git/ ./internal/targets/compose/ ./cmd/accorda/
+go test -tags integration ./internal/sources/git/ ./internal/targets/compose/ ./internal/targets/image/ ./cmd/accorda/
 ```
 
 ## Notes

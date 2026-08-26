@@ -7,6 +7,7 @@ import (
 
 	"accorda/internal/core/health"
 	"accorda/internal/core/state"
+	shareddocker "accorda/internal/docker"
 )
 
 // Health verifies the health of the currently deployed workloads
@@ -40,113 +41,28 @@ import (
 // through the returned Health value, not an error, so the reconcile loop can
 // distinguish "could not verify" from "verified and unhealthy".
 func (t *Target) Health(ctx context.Context) (*health.Health, error) {
-	if t == nil {
-		return nil, errors.New("compose target: nil target")
-	}
-	if t.docker == nil {
+	if t == nil || t.docker == nil {
 		return nil, errors.New("compose target: docker client is nil")
 	}
-
-	timeout := t.healthTimeout
-	if timeout <= 0 {
-		timeout = defaultHealthTimeout
-	}
-
-	deadline := time.Now().Add(timeout)
-	for {
-		runtime, err := t.Current(ctx)
-		if err != nil {
-			return nil, err
-		}
-		h := HealthFromRuntime(runtime, time.Now())
-		if !hasStarting(h) {
-			return h, nil
-		}
-		if time.Now().After(deadline) {
-			markTimedOut(h, timeout)
-			return h, nil
-		}
-		if err := sleepCtx(ctx, healthPollInterval); err != nil {
-			return nil, err
-		}
-	}
+	return shareddocker.WaitForHealthy(ctx, t.Current, t.healthTimeout)
 }
 
-// healthPollInterval is how long Health waits between polls of the runtime
-// state while services are still starting (docs/ACCORDA.md §19). It is a var
-// so tests can shorten it.
-var healthPollInterval = 2 * time.Second
-
-// HealthFromRuntime maps a RuntimeState to a health.Health. Each service's
-// Docker healthcheck status is translated to a health.Status; services with
-// no healthcheck are reported as unknown.
+// HealthFromRuntime maps a RuntimeState to a health.Health. It delegates to
+// the shared Docker health mapping so the Compose target, the image target,
+// and the `accorda status` CLI command all agree on what "healthy" means
+// (docs/ACCORDA.md §19).
 //
 // It is exported so callers outside the compose package (for example the
 // `accorda status` CLI command) can derive the current per-service and
 // aggregate health from a runtime state read via Target.Current, matching the
 // same mapping the reconcile loop's Health phase uses (docs/ACCORDA.md §19).
 func HealthFromRuntime(runtime *state.RuntimeState, checkedAt time.Time) *health.Health {
-	h := health.New(checkedAt)
-	if runtime == nil {
-		return &h
-	}
-	for name, svc := range runtime.Services {
-		h.SetService(name, healthStatus(svc.Health), "")
-	}
-	h.Summarize()
-	return &h
+	return shareddocker.HealthFromRuntime(runtime, checkedAt)
 }
 
-// markTimedOut converts every still-starting service to unhealthy with a
-// message naming the timeout, then re-summarizes so the aggregate reflects
-// the failure (docs/ACCORDA.md §19).
-func markTimedOut(h *health.Health, timeout time.Duration) {
-	for name, sh := range h.Services {
-		if sh.Status == health.StatusStarting {
-			h.SetService(name, health.StatusUnhealthy, "health check timed out after "+timeout.String())
-		}
-	}
-	h.Summarize()
-}
-
-// healthStatus maps a Docker healthcheck status string to a health.Status.
-// An empty status means the service has no healthcheck, which Accorda reports
-// as unknown rather than healthy or unhealthy (docs/ACCORDA.md §19).
-func healthStatus(s string) health.Status {
-	switch s {
-	case "healthy":
-		return health.StatusHealthy
-	case "starting":
-		return health.StatusStarting
-	case "":
-		return health.StatusUnknown
-	default:
-		return health.StatusUnhealthy
-	}
-}
-
-// hasStarting reports whether any service in h is still starting.
-func hasStarting(h *health.Health) bool {
-	if h == nil {
-		return false
-	}
-	for _, sh := range h.Services {
-		if sh.Status == health.StatusStarting {
-			return true
-		}
-	}
-	return false
-}
-
-// sleepCtx sleeps for d, returning early with ctx.Err when ctx is canceled or
-// its deadline expires before d elapses.
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
+// HealthFromRuntime implements targets.RuntimeHealth so read-only commands
+// like `accorda status` can derive health from a runtime state without
+// importing the shared Docker operations layer (docs/ACCORDA.md §19).
+func (t *Target) HealthFromRuntime(runtime *state.RuntimeState, checkedAt time.Time) *health.Health {
+	return HealthFromRuntime(runtime, checkedAt)
 }

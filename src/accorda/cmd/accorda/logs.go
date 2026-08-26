@@ -63,5 +63,9 @@ func runLogsOne(cmd *cobra.Command, dir, service string, opts targets.LogOptions
 	if err != nil {
 		return err
 	}
-	return tgt.Logs(cmd.Context(), service, opts, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	logTarget, ok := tgt.(targets.LogTarget)
+	if !ok {
+		return fmt.Errorf("logs %s: target type %q does not support logs", p.Name, p.Target.Type)
+	}
+	return logTarget.Logs(cmd.Context(), service, opts, cmd.OutOrStdout(), cmd.ErrOrStderr())
 }

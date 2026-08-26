@@ -1,55 +1,29 @@
 package compose
 
 import (
-	"context"
-	"io"
-
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
+
+	shareddocker "accorda/internal/docker"
 )
 
-// dockerClient is the seam the Compose target uses to talk to the Docker
-// engine. It is a subset of the Docker SDK's APIClient surface, narrowed to
-// the calls the runtime-state reader and image-pull policy need (Ping,
-// ContainerList, ContainerInspect, ImageList, ImageInspect). Defining the
-// seam as a local interface keeps the Docker SDK dependency inside this
-// adapter (core never sees it) and lets tests substitute a fake client
-// without a running daemon (docs/ACCORDA.md §12, docs/DECISIONS.md #3).
-//
-// The real Docker client (client.Client) satisfies this interface; see the
-// compile-time assertion below.
-type dockerClient interface {
-	Ping(ctx context.Context) (types.Ping, error)
-	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
-	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
-	ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
-	ImageInspect(ctx context.Context, imageID string, inspectOpts ...client.ImageInspectOption) (image.InspectResponse, error)
-}
+// dockerClient is the shared Docker engine client seam, re-exported from
+// internal/docker. The Compose target talks to the Docker engine through the
+// same narrow interface as the image target; both live in internal/docker so
+// the Docker SDK dependency stays out of core (docs/ACCORDA.md §12,
+// docs/DECISIONS.md #3).
+type dockerClient = shareddocker.Client
 
 // dockerLogClient is the additional Docker capability used only by the logs
 // command. Keeping it separate means runtime-state test doubles and future
 // read-only clients do not need to implement an operation outside the core
 // reconciliation path.
-type dockerLogClient interface {
-	ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
-}
-
-// Compile-time check: the Docker SDK client satisfies dockerClient.
-var _ dockerClient = (*client.Client)(nil)
-var _ dockerLogClient = (*client.Client)(nil)
+type dockerLogClient = shareddocker.LogClient
 
 // newDockerClient returns a real Docker engine client configured from the
 // environment with automatic API version negotiation. It is used by the
 // Compose target when no client is injected (production path).
 func newDockerClient() (dockerClient, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return nil, err
-	}
-	return cli, nil
+	return shareddocker.NewClient()
 }
 
 // composeProjectLabel is the Docker label Compose v2 sets on every container

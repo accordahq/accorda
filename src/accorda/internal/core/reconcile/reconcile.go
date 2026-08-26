@@ -448,6 +448,15 @@ func (r *Reconciler) validate(ctx context.Context, res *Result, commit sources.C
 		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
 		return nil, false
 	}
+	// A target whose desired state is derived from its own config (for
+	// example a raw image target) replaces the source-parsed services with
+	// its config-derived model while keeping the source's commit metadata
+	// (docs/DECISIONS.md #49). The source is still fetched so receipts and
+	// history stay anchored to a Git revision.
+	desired, ok := r.resolveDesired(ctx, res, desired, commit)
+	if !ok {
+		return nil, false
+	}
 	if err := desired.Validate(); err != nil {
 		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
 		return nil, false
@@ -457,6 +466,28 @@ func (r *Reconciler) validate(ctx context.Context, res *Result, commit sources.C
 		return nil, false
 	}
 	return desired, true
+}
+
+// resolveDesired returns the desired state the reconciler should plan and
+// deploy. When the target implements targets.DesiredProvider, the target's
+// config-derived desired state replaces the source-parsed services; otherwise
+// the source's desired state is used unchanged (docs/DECISIONS.md #49).
+func (r *Reconciler) resolveDesired(ctx context.Context, res *Result, desired *state.DesiredState, commit sources.Commit) (*state.DesiredState, bool) {
+	provider, ok := r.target.(targets.DesiredProvider)
+	if !ok {
+		return desired, true
+	}
+	resolved, err := provider.Desired(ctx, desired)
+	if err != nil {
+		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
+		return nil, false
+	}
+	if resolved == nil {
+		r.fail(ctx, res, PhaseValidating, commit.SHA, "",
+			errors.New("reconcile: target desired state is nil"))
+		return nil, false
+	}
+	return resolved, true
 }
 
 // checkDrift handles a polling cycle whose Git HEAD is unchanged. It reads
