@@ -81,7 +81,7 @@ func runPlanOne(cmd *cobra.Command, dir string, p *config.Project) error {
 	// Re-reading the deployed commit from the managed worktree temporarily
 	// checks out a historical revision, so plan takes the same deployment
 	// lock as sync to avoid racing a concurrent deployment
-	// (docs/DECISIONS.md #43).
+	// (docs/DECISIONS.md #40).
 	return withDeploymentLock(ctx, dir, p.Target, func() error {
 		commit, err := src.Fetch(ctx)
 		if err != nil {
@@ -129,7 +129,7 @@ func writePlan(w io.Writer, p *plan.Plan) {
 }
 
 // writeEnvOverrides prints a summary of per-service env overrides configured
-// in accorda.yaml (docs/DECISIONS.md #45), so the operator knows which
+// in accorda.yaml (docs/DECISIONS.md #23), so the operator knows which
 // services have deploy-time env inputs and from where (inline values, local
 // files, or both). Nothing is printed when no overrides are configured.
 func writeEnvOverrides(w io.Writer, services map[string]config.ServiceOverride) {

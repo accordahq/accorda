@@ -252,7 +252,7 @@ func TestReconcile_HappyPath_ReachesSynced(t *testing.T) {
 
 // configDesiredTarget wraps fakeTarget and implements targets.DesiredProvider
 // so a test can verify the reconciler uses the target's config-derived
-// desired state in place of the source-parsed one (docs/DECISIONS.md #49).
+// desired state in place of the source-parsed one (docs/DECISIONS.md #24).
 type configDesiredTarget struct {
 	*fakeTarget
 	desiredProvider func(*state.DesiredState) (*state.DesiredState, error)
@@ -740,7 +740,7 @@ func TestReconcile_DriftReport_DetectedOnly(t *testing.T) {
 
 func TestReconcile_DriftRepair_ApplyFails_NoReconciled(t *testing.T) {
 	// A failed repair (Apply error) must not emit DriftReconciled and must
-	// leave the result DRIFTED (docs/DECISIONS.md #22).
+	// leave the result DRIFTED (docs/DECISIONS.md #26).
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123"},
 		desired: healthyDesired(),
@@ -1026,7 +1026,7 @@ func TestReconcile_HydratesReceiptBaselineForUnchangedCommit(t *testing.T) {
 }
 
 // TestReconcile_HydrationFailsClosedWhenPreviousCommitUnavailable verifies
-// the documented fail-closed behavior (docs/DECISIONS.md #42): when the
+// the documented fail-closed behavior (docs/DECISIONS.md #32): when the
 // receipt-derived baseline's commit cannot be read from the source (for
 // example the managed cache was cleared or the commit was force-pushed
 // away), reconciliation fails before any target mutation rather than
@@ -1275,7 +1275,7 @@ func TestReconcile_HealthFailure_RecordsFailedReceipt(t *testing.T) {
 
 func TestChangedServices_SortedAndDeduped(t *testing.T) {
 	// changedServices returns the sorted, unique changed service names
-	// regardless of action order or duplicates (docs/DECISIONS.md #12). The
+	// regardless of action order or duplicates (docs/DECISIONS.md #7). The
 	// raw order must be asserted (not re-sorted after the fact) so a
 	// non-deterministic helper fails the test.
 	p := plan.New("dep_1", "acme/infra", "abc123", time.Unix(0, 0)).

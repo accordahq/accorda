@@ -68,11 +68,11 @@ type statusInfo struct {
 	// that Compose resolves relative to the checkout.
 	Checkout string
 	// EnvOverrides holds per-service env overrides from accorda.yaml
-	// (docs/DECISIONS.md #45), shown so the operator can see which services
+	// (docs/DECISIONS.md #23), shown so the operator can see which services
 	// have deploy-time env inputs configured.
 	EnvOverrides map[string]config.ServiceOverride
 	// services is the per-service table, sorted by name for deterministic
-	// output (docs/DECISIONS.md #12).
+	// output (docs/DECISIONS.md #7).
 	services []statusService
 }
 
@@ -325,7 +325,7 @@ func healthLabel(hc *health.Health) string {
 // states plus the health mapping. Each service's state/health/image come from
 // the running container when present; otherwise the state reflects the
 // desired-but-not-running service. Rows are sorted by service name for
-// deterministic output (docs/DECISIONS.md #12).
+// deterministic output (docs/DECISIONS.md #7).
 func buildRows(desired *state.DesiredState, runtime *state.RuntimeState, hc *health.Health) []statusService {
 	names := unionServiceNames(desired, runtime)
 	sorted := make([]string, 0, len(names))
@@ -437,7 +437,7 @@ func writeStatus(w io.Writer, info statusInfo) {
 
 // writeEnvOverridesStatus prints the per-service env overrides section so the
 // operator can see which services have deploy-time env inputs configured
-// (docs/DECISIONS.md #45). Nothing is printed when no overrides are set.
+// (docs/DECISIONS.md #23). Nothing is printed when no overrides are set.
 func writeEnvOverridesStatus(w io.Writer, overrides map[string]config.ServiceOverride) {
 	if len(overrides) == 0 {
 		return

@@ -90,7 +90,7 @@ projects under a top-level `projects:` key
 (docs/ACCORDA.md §49, Phase 5 — Multi-Project / Multi-Target Compose). The
 schema version, sync cadence, and policy defaults live at the document root
 and are shared by every member; members may override the image pull, drift,
-and health defaults (docs/DECISIONS.md #48):
+and health defaults (docs/DECISIONS.md #43):
 
 ```yaml
 version: 1

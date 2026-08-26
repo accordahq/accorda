@@ -32,7 +32,7 @@ var (
 // target without relying on Compose labels.
 const containerNameLabel = "accorda.image.service"
 
-// Target is the raw single-image target driver (docs/DECISIONS.md #49). It
+// Target is the raw single-image target driver (docs/DECISIONS.md #24). It
 // reconciles a single container image declared in accorda.yaml against the
 // container actually running on a Docker engine.
 //
@@ -165,7 +165,7 @@ func (t *Target) Validate(ctx context.Context) error {
 }
 
 // Desired returns the target's config-derived desired state, anchored to the
-// commit metadata carried by sourceDesired (docs/DECISIONS.md #49). It
+// commit metadata carried by sourceDesired (docs/DECISIONS.md #24). It
 // builds a single-service DesiredState from the image, env, and ports config
 // fields; no Compose file is parsed. The source's Repository, Branch, Commit,
 // and CommitTime are preserved so receipts and history stay Git-anchored.
@@ -325,7 +325,7 @@ func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
 
 // runArgs builds the `docker run -d` argument list for the desired image,
 // env, ports, and service name. Env and ports are emitted in sorted order so
-// the command is deterministic (docs/DECISIONS.md #12).
+// the command is deterministic (docs/DECISIONS.md #7).
 func (t *Target) runArgs() []string {
 	args := []string{"run", "-d", "--name", t.name, "--label", containerNameLabel + "=" + t.name}
 	for _, k := range sortedEnvKeys(t.env) {

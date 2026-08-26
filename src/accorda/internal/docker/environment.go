@@ -10,7 +10,7 @@ import (
 // certificate discovery. Arbitrary application variables are deliberately
 // excluded so Docker Compose interpolation cannot override Git-authored
 // defaults, and so a `docker run` child process does not inherit host secrets
-// (docs/ACCORDA.md §18, §56, docs/DECISIONS.md #41).
+// (docs/ACCORDA.md §18, §56, docs/DECISIONS.md #21).
 var operationalEnvironment = map[string]struct{}{
 	"DOCKER_API_VERSION": {}, "DOCKER_CERT_PATH": {}, "DOCKER_CONFIG": {},
 	"DOCKER_CONTEXT": {}, "DOCKER_HOST": {}, "DOCKER_TLS": {},

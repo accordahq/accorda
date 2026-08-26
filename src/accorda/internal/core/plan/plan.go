@@ -244,7 +244,7 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 	// Iterate service names in sorted order so the returned action slice is
 	// deterministic regardless of Go's randomized map iteration order. A
 	// plan is intended to be hashed and signed (docs/ACCORDA.md §31), so its
-	// action order must be stable (docs/DECISIONS.md #12).
+	// action order must be stable (docs/DECISIONS.md #7).
 	var actions []Action
 	for _, name := range sortedKeys(desired.Services) {
 		dsvc := desired.Services[name]
@@ -295,7 +295,7 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 }
 
 // sortedKeys returns the keys of m in sorted order. It is used to make plan
-// action ordering deterministic (docs/DECISIONS.md #12).
+// action ordering deterministic (docs/DECISIONS.md #7).
 func sortedKeys[V any](m map[string]V) []string {
 	names := make([]string, 0, len(m))
 	for name := range m {

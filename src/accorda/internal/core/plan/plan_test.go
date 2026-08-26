@@ -291,7 +291,7 @@ func TestDriftActions_NilSafe(t *testing.T) {
 func TestDriftActions_DeterministicOrder(t *testing.T) {
 	// Multiple services must produce actions in sorted service-name order so
 	// a plan is stable regardless of Go's randomized map iteration order
-	// (docs/DECISIONS.md #12). The raw slice order is asserted, not re-sorted.
+	// (docs/DECISIONS.md #7). The raw slice order is asserted, not re-sorted.
 	desired := &state.DesiredState{
 		Commit: "abc",
 		Services: map[string]state.Service{

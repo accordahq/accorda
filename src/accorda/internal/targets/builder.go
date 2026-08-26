@@ -45,7 +45,7 @@ type TargetBuilder interface {
 	// LockIdentityFromConfig returns the stable, target-scoped identity used
 	// to key the deployment lock, derived from the raw config.Target without
 	// constructing the driver. The lock is acquired before the target is built
-	// (docs/DECISIONS.md #44), so the identity must be computable from config
+	// (docs/DECISIONS.md #40), so the identity must be computable from config
 	// alone. dir is the project directory, used to resolve relative target
 	// paths into the identity.
 	LockIdentityFromConfig(dir string, target config.Target) string

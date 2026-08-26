@@ -609,7 +609,7 @@ func writeEnsembleOrigin(t *testing.T, compose string) string {
 // `accorda sync` drives both workloads concurrently
 // (docs/ACCORDA.md §49). The schema version, sync cadence, and policy
 // defaults live at the document root and are inherited by both members
-// (docs/DECISIONS.md #48).
+// (docs/DECISIONS.md #43).
 func writeEnsembleProject(t *testing.T, apiURL, workerURL string) string {
 	t.Helper()
 	dir := e2eProjectDir(t)
@@ -761,7 +761,7 @@ func cleanupImageProject(t *testing.T, dir string) {
 // TestE2E_ImageSync_ConvergesToSynced drives a raw single-image target
 // end-to-end: a Git origin anchors the commit, and accorda.yaml declares the
 // image directly. `accorda sync` must run the container from the config-
-// derived desired state and converge to SYNCED (docs/DECISIONS.md #49).
+// derived desired state and converge to SYNCED (docs/DECISIONS.md #24).
 func TestE2E_ImageSync_ConvergesToSynced(t *testing.T) {
 	testutil.RequireDocker(t)
 	testutil.RequireGit(t)

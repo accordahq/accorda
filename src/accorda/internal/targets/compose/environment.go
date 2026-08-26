@@ -10,7 +10,7 @@ const composeDisableEnvFile = "COMPOSE_DISABLE_ENV_FILE"
 
 // composeCommandEnvironment returns the filtered environment for the
 // `docker compose` child process. It delegates to the shared Docker
-// operational allowlist (docs/DECISIONS.md #41) and adds
+// operational allowlist (docs/DECISIONS.md #21) and adds
 // COMPOSE_DISABLE_ENV_FILE=1 so Compose's implicit .env loading does not
 // override Git-authored defaults.
 func composeCommandEnvironment(environ []string) []string {

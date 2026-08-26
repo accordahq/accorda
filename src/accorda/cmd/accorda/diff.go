@@ -96,7 +96,7 @@ func runDiffOne(cmd *cobra.Command, dir string, p *config.Project) error {
 
 	// Re-reading the deployed commit from the managed worktree temporarily
 	// checks out a historical revision, so diff takes the same deployment lock
-	// as sync to avoid racing a concurrent deployment (docs/DECISIONS.md #43).
+	// as sync to avoid racing a concurrent deployment (docs/DECISIONS.md #40).
 	return withDeploymentLock(ctx, dir, p.Target, func() error {
 		// Fetch first so the desired side reflects the current remote tip, not a
 		// stale local cache (the git source's Desired only fetches when the cache
@@ -163,7 +163,7 @@ func deployedStateFromDesired(d *state.DesiredState) *state.DeployedState {
 
 // buildDiff produces the per-field diff tree from the deployed and desired
 // states. Only services with at least one differing field are included, in
-// sorted service-name order for deterministic output (docs/DECISIONS.md #12).
+// sorted service-name order for deterministic output (docs/DECISIONS.md #7).
 func buildDiff(deployed, desired *state.DesiredState) []diffNode {
 	names := unionDesiredNames(deployed, desired)
 	sorted := make([]string, 0, len(names))
@@ -284,7 +284,7 @@ func diffJoined(name string, deployed, desired []string) []diffNode {
 
 // diffKV returns a nested node of key→deployed/desired leaves for non-sensitive
 // map-typed fields when any key differs. The keys are sorted for
-// deterministic output (docs/DECISIONS.md #12).
+// deterministic output (docs/DECISIONS.md #7).
 func diffKV(name string, deployed, desired map[string]string) []diffNode {
 	keys := sortedMapKeys(deployed, desired)
 	children := make([]diffNode, 0, len(keys))

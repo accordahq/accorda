@@ -128,7 +128,7 @@ func collectInspect(ctx context.Context, store history.Store, commit string) ([]
 
 	// Build the per-service view for every service the inspected receipt
 	// declares. Sorted by name for deterministic output
-	// (docs/DECISIONS.md #12).
+	// (docs/DECISIONS.md #7).
 	names := rc.SortedServiceNames()
 	services := make([]inspectService, 0, len(names))
 	changed := toSet(rc.Changes)

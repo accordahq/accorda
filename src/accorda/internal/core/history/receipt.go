@@ -104,7 +104,7 @@ func (r Receipt) Clone() Receipt {
 
 // SortedServiceNames returns the service names of the receipt in sorted
 // order so serialization and display are deterministic regardless of Go's
-// randomized map iteration order (docs/DECISIONS.md #12).
+// randomized map iteration order (docs/DECISIONS.md #7).
 func (r Receipt) SortedServiceNames() []string {
 	names := make([]string, 0, len(r.Services))
 	for name := range r.Services {

@@ -91,7 +91,7 @@ func TestBuildRows_UnionAndOrdering(t *testing.T) {
 
 	rows := buildRows(desired, runtime, shareddocker.HealthFromRuntime(runtime, time.Unix(0, 0)))
 	// Deterministic ordering by name regardless of map iteration order
-	// (docs/DECISIONS.md #12): api, db, worker.
+	// (docs/DECISIONS.md #7): api, db, worker.
 	got := make([]string, 0, len(rows))
 	for _, r := range rows {
 		got = append(got, r.name)

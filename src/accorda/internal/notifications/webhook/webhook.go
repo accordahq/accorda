@@ -46,7 +46,7 @@ type errorSink func(err error)
 // the whole retry budget, so unbounded goroutines would leak and exhaust the
 // process. Bounding concurrency caps in-flight deliveries; when the limit is
 // reached, Handle drops the event and reports it to the error sink rather
-// than blocking the bus publish path (docs/DECISIONS.md #46).
+// than blocking the bus publish path (docs/DECISIONS.md #41).
 const maxConcurrentDeliveries = 16
 
 // Consumer is a generic outbound webhook notification target
@@ -159,7 +159,7 @@ func (c *Consumer) Subscribe(bus events.Bus) func() {
 // Handle is the event bus handler that delivers one event as a webhook. It
 // never blocks the bus publish path: each event is dispatched to a goroutine
 // so retries and backoff run off the reconcile loop (the event bus is
-// synchronous; docs/DECISIONS.md #46). It never panics across the bus
+// synchronous; docs/DECISIONS.md #41). It never panics across the bus
 // boundary: a delivery error is reported to the error sink and does not
 // propagate.
 func (c *Consumer) Handle(ctx context.Context, e events.Event) {
@@ -339,7 +339,7 @@ func redactErrorText(s string) string {
 
 // redactHealth returns a JSON-safe copy of a health assessment. encoding/json
 // sorts map keys on marshal, so the services map serializes deterministically
-// (docs/DECISIONS.md #12).
+// (docs/DECISIONS.md #7).
 func redactHealth(h *health.Health) any {
 	if h == nil {
 		return nil
@@ -363,7 +363,7 @@ func redactHealth(h *health.Health) any {
 // redactDesiredState returns a JSON-safe copy of a desired state with every
 // service's Env values replaced by secrets.RedactedValue. encoding/json sorts
 // map keys on marshal, so the services map is deterministic
-// (docs/DECISIONS.md #12).
+// (docs/DECISIONS.md #7).
 func redactDesiredState(d *state.DesiredState) any {
 	if d == nil {
 		return nil

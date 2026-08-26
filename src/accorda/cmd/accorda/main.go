@@ -207,7 +207,7 @@ func newInitCmd() *cobra.Command {
 // accorda.yaml format (docs/ACCORDA.md §25) so that `accorda sync` can load
 // it. The file is the unified project format consumed by the config loader
 // (internal/config), aligning `init` with the rest of the CLI
-// (docs/DECISIONS.md #11).
+// (docs/DECISIONS.md #10).
 //
 // It returns a non-empty hint string when the user requested HTTPS auth
 // (which requires a token that cannot be supplied via a flag without

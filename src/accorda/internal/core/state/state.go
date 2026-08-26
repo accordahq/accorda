@@ -62,7 +62,7 @@ type Service struct {
 	// from Compose's short and long forms.
 	Volumes []Volume
 	// Networks is the set of network names the service is attached to,
-	// sorted for deterministic comparison and hashing (docs/DECISIONS.md #12).
+	// sorted for deterministic comparison and hashing (docs/DECISIONS.md #7).
 	Networks []string
 	// Labels is the set of labels applied to the service, keyed by label
 	// name.
@@ -73,7 +73,7 @@ type Service struct {
 	// means no healthcheck was declared.
 	Healthcheck Healthcheck
 	// DependsOn is the set of service names this service depends on,
-	// sorted for deterministic comparison and hashing (docs/DECISIONS.md #12).
+	// sorted for deterministic comparison and hashing (docs/DECISIONS.md #7).
 	DependsOn []string
 }
 
