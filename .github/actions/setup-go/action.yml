@@ -5,7 +5,7 @@
 # assumes the repository is already checked out (a job must run
 # actions/checkout first — a local action's manifest must exist on disk when
 # the job loads, so the action itself cannot perform the checkout). It pins
-# the toolchain explicitly (docs/DECISIONS.md #36): the module's `go`
+# the toolchain explicitly (docs/DECISIONS.md #49): the module's `go`
 # directive requires the patched 1.25.13 toolchain, matching CI. The cache is
 # keyed on the actual module
 # file (`src/accorda/go.sum`) via `cache-dependency-path` so

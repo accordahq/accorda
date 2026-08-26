@@ -9,4 +9,4 @@ updates:
         # Security vulnerability (e.g., ... ) is an accepted risk 
         # because Accorda only uses the SDK as a client and does not 
         # interact with the vulnerable plugin/AuthZ surfaces. 
-        # See docs/DECISIONS.md #25.
+        # See docs/DECISIONS.md #47.
