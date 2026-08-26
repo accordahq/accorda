@@ -4,7 +4,7 @@ This file gives GitHub Copilot context about the Accorda project so it can work 
 
 ## Project overview
 
-This repository is the open-source Accorda OSS project described in `docs/ACCORDA.md`. The active implementation is Go-based and should stay aligned with that product definition rather than older archived implementation details. Architecture and design decisions are recorded in `docs/DECISIONS.md`; read it before non-trivial changes and append an entry when a change alters a durable design choice.
+This repository is the open-source Accorda OSS project described in `docs/ACCORDA.md`. The active implementation is Go-based and should stay aligned with that product definition rather than older archived implementation details. Architecture and design decisions are recorded in `docs/DECISIONS.md`; read it before non-trivial changes and append a decision when a change alters a durable design choice. Add new decisions in the relevant themed section with the next sequential number, keep them terse (context, decision, consequence), and reference shared principles (interface dependence, determinism, DRY) by number rather than restating them.
 
 ## README maintenance
 

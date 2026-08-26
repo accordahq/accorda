@@ -6,7 +6,7 @@ Guidelines for AI agents working in this repository.
 
 Accorda OSS is a Go project for GitOps reconciliation. The repository is intentionally scoped to the open-source product described in `docs/ACCORDA.md` and should stay aligned with that source of truth.
 
-Architecture and design decisions are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md). Read it before making non-trivial changes, and append a decision entry when a change introduces or alters a durable design choice. `docs/ACCORDA.md` remains the authoritative product spec and must not be modified.
+Architecture and design decisions are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md). Read it before making non-trivial changes, and append a decision entry when a change introduces or alters a durable design choice. New entries go in the relevant themed section with the next sequential number, stay terse (context, decision, consequence), and reference shared principles (interface dependence, determinism, DRY) by number rather than restating them. `docs/ACCORDA.md` remains the authoritative product spec and must not be modified.
 
 ## Shared instructions
 
