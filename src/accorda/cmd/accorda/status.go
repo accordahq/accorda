@@ -23,7 +23,7 @@ import (
 	"accorda/internal/core/state"
 	"accorda/internal/sources"
 	"accorda/internal/sources/git"
-	"accorda/internal/targets/compose"
+	"accorda/internal/targets"
 )
 
 // newStatusCmd builds the `accorda status` command (docs/ACCORDA.md §11). It
@@ -138,7 +138,7 @@ type checkoutDirer interface {
 // failures of the non-critical source/runtime/history reads. The target must
 // be reachable (it is needed for the runtime state); a nil target yields the
 // source-only part of the report.
-func collectStatus(ctx context.Context, proj *config.Project, src sources.Source, tgt *compose.Target, store history.Store) statusInfo {
+func collectStatus(ctx context.Context, proj *config.Project, src sources.Source, tgt targets.Target, store history.Store) statusInfo {
 	info := statusInfo{
 		Environment: proj.Environment,
 		// Redact the configured URL up front so a raw embedded token is never
@@ -230,8 +230,12 @@ func applyDeployedReceipt(info *statusInfo, store history.Store) {
 
 // readRuntime reads the target runtime state and derives its health mapping.
 // It returns ok=false when the target is nil or unreachable; the caller then
-// reports the runtime label without a service table.
-func readRuntime(ctx context.Context, tgt *compose.Target) (*state.RuntimeState, *health.Health, bool) {
+// reports the runtime label without a service table. The health mapping is
+// obtained through the optional targets.RuntimeHealth capability so the
+// command layer does not import a concrete driver or the shared Docker
+// operations layer (docs/ACCORDA.md §19); a target that does not implement it
+// gets an empty health mapping and the service table renders health as "-".
+func readRuntime(ctx context.Context, tgt targets.Target) (*state.RuntimeState, *health.Health, bool) {
 	if tgt == nil {
 		return nil, nil, false
 	}
@@ -239,16 +243,16 @@ func readRuntime(ctx context.Context, tgt *compose.Target) (*state.RuntimeState,
 	if err != nil {
 		return nil, nil, false
 	}
-	// The aggregate runtime label and the per-service health column both come
-	// from the same health mapping the reconcile loop's Health phase uses
-	// (compose.HealthFromRuntime), so `status` and a live sync agree on what
-	// "healthy" means (docs/ACCORDA.md §19).
-	return runtime, compose.HealthFromRuntime(runtime, time.Now()), true
+	var hc *health.Health
+	if rh, ok := tgt.(targets.RuntimeHealth); ok {
+		hc = rh.HealthFromRuntime(runtime, time.Now())
+	}
+	return runtime, hc, true
 }
 
 // runtimeLabel reports the runtime status word when the target is nil or
 // unreachable (docs/ACCORDA.md §11).
-func runtimeLabel(tgt *compose.Target) string {
+func runtimeLabel(tgt targets.Target) string {
 	if tgt == nil {
 		return "unknown"
 	}

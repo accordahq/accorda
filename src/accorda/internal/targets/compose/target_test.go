@@ -19,6 +19,7 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
+	shareddocker "accorda/internal/docker"
 	"accorda/internal/targets"
 )
 
@@ -146,7 +147,7 @@ func TestImageReference_PrefersConfigImage(t *testing.T) {
 	// e.g. "busybox:1.36"), not the resolved image ID (ContainerJSONBase.Image,
 	// e.g. "sha256:91a..."), so desired-vs-runtime comparison agrees
 	// (docs/ACCORDA.md §5.3, §8).
-	got := imageReference(container.InspectResponse{
+	got := shareddocker.ImageReference(container.InspectResponse{
 		ContainerJSONBase: &container.ContainerJSONBase{Image: "sha256:91a"},
 		Config:            &container.Config{Image: "busybox:1.36"},
 	})
@@ -157,7 +158,7 @@ func TestImageReference_PrefersConfigImage(t *testing.T) {
 
 func TestImageReferenceFallsBackToImageID(t *testing.T) {
 	// When Config is absent (some engine responses), fall back to the image ID.
-	got := imageReference(container.InspectResponse{
+	got := shareddocker.ImageReference(container.InspectResponse{
 		ContainerJSONBase: &container.ContainerJSONBase{Image: "sha256:91a"},
 	})
 	if got != "sha256:91a" {
@@ -166,7 +167,7 @@ func TestImageReferenceFallsBackToImageID(t *testing.T) {
 }
 
 func TestImageReferenceEmpty(t *testing.T) {
-	if got := imageReference(container.InspectResponse{}); got != "" {
+	if got := shareddocker.ImageReference(container.InspectResponse{}); got != "" {
 		t.Errorf("imageReference = %q, want empty", got)
 	}
 }
@@ -467,8 +468,8 @@ func TestCurrent_ScaledReplicasDisagree_IsDegraded(t *testing.T) {
 	if len(rs.Services) != 1 {
 		t.Fatalf("got %d services, want 1: %+v", len(rs.Services), rs.Services)
 	}
-	if got := rs.Services["api"].Status; got != degradedStatus {
-		t.Errorf("api.Status = %q, want %q", got, degradedStatus)
+	if got := rs.Services["api"].Status; got != shareddocker.DegradedStatus() {
+		t.Errorf("api.Status = %q, want %q", got, shareddocker.DegradedStatus())
 	}
 }
 
@@ -1056,7 +1057,7 @@ func TestToRuntimeService_StatusAndHealth(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := toRuntimeService(c.inspect); !reflect.DeepEqual(got, c.want) {
+			if got := shareddocker.RuntimeService(c.inspect); !reflect.DeepEqual(got, c.want) {
 				t.Errorf("toRuntimeService = %+v, want %+v", got, c.want)
 			}
 		})
@@ -1320,8 +1321,8 @@ func TestMergeRuntime_DisagreeIsDegraded(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			want := state.RuntimeService{Status: degradedStatus, Health: "", Image: "api:1"}
-			if got := mergeRuntime(c.a, c.b); !reflect.DeepEqual(got, want) {
+			want := state.RuntimeService{Status: shareddocker.DegradedStatus(), Health: "", Image: "api:1"}
+			if got := shareddocker.MergeRuntime(c.a, c.b); !reflect.DeepEqual(got, want) {
 				t.Errorf("mergeRuntime = %+v, want %+v", got, want)
 			}
 		})
@@ -1331,7 +1332,7 @@ func TestMergeRuntime_DisagreeIsDegraded(t *testing.T) {
 func TestMergeRuntime_AgreeIsShared(t *testing.T) {
 	a := state.RuntimeService{Status: "running", Health: "healthy", Image: "api:1"}
 	b := state.RuntimeService{Status: "running", Health: "healthy", Image: "api:1"}
-	if got := mergeRuntime(a, b); !reflect.DeepEqual(got, a) {
+	if got := shareddocker.MergeRuntime(a, b); !reflect.DeepEqual(got, a) {
 		t.Errorf("mergeRuntime = %+v, want %+v", got, a)
 	}
 }

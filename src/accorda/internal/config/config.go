@@ -58,6 +58,7 @@ const (
 	TargetCompose    = "compose"
 	TargetKubernetes = "kubernetes"
 	TargetHelm       = "helm"
+	TargetImage      = "image"
 )
 
 // Project is the unified representation of one Accorda project configuration.
@@ -142,44 +143,61 @@ type ensembleMember struct {
 func (e *Ensemble) resolveMembers(members []ensembleMember) {
 	e.Projects = make([]Project, len(members))
 	for i, m := range members {
-		p := Project{
-			Name:          m.Name,
-			Version:       e.Version,
-			Environment:   m.Environment,
-			Source:        m.Source,
-			Target:        m.Target,
-			Secrets:       m.Secrets,
-			Notifications: m.Notifications,
-		}
-		// The polling cadence is global and non-overridable.
-		p.Sync.Interval = e.Sync.Interval
-		if m.Images != nil {
-			p.Images = *m.Images
-		} else {
-			p.Images = e.Images
-		}
-		if m.Reconcile != nil {
-			// Reconcile has more than one field (Drift, RemoveOrphans), so the
-			// override must merge field-by-field: a member overriding only
-			// drift must not silently drop the root's remove_orphans default
-			// (docs/DECISIONS.md #48).
-			p.Reconcile = e.Reconcile
-			if m.Reconcile.Drift != "" {
-				p.Reconcile.Drift = m.Reconcile.Drift
-			}
-			if m.Reconcile.RemoveOrphans != nil {
-				p.Reconcile.RemoveOrphans = m.Reconcile.RemoveOrphans
-			}
-		} else {
-			p.Reconcile = e.Reconcile
-		}
-		if m.Health != nil {
-			p.Health = *m.Health
-		} else {
-			p.Health = e.Health
-		}
-		e.Projects[i] = p
+		e.Projects[i] = e.resolveMember(m)
 	}
+}
+
+// resolveMember turns one raw ensemble member into a concrete Project by
+// merging the Ensemble root's global defaults into it (docs/DECISIONS.md
+// #48). The schema version and the sync interval are global and not
+// overridable, so every member inherits them verbatim; Images, Reconcile,
+// and Health fall back to the root value only when the member does not
+// override them. Reconcile, which has more than one field, is merged
+// field-by-field so a member overriding only drift retains the root
+// remove_orphans default.
+func (e *Ensemble) resolveMember(m ensembleMember) Project {
+	p := Project{
+		Name:          m.Name,
+		Version:       e.Version,
+		Environment:   m.Environment,
+		Source:        m.Source,
+		Target:        m.Target,
+		Secrets:       m.Secrets,
+		Notifications: m.Notifications,
+	}
+	// The polling cadence is global and non-overridable.
+	p.Sync.Interval = e.Sync.Interval
+	p.Images = resolveValue(m.Images, e.Images)
+	p.Reconcile = e.resolveReconcile(m.Reconcile)
+	p.Health = resolveValue(m.Health, e.Health)
+	return p
+}
+
+// resolveValue returns the member's override when set, otherwise the root
+// default. It is generic over Images and Health, both of which are value
+// types resolved by a simple nil-pointer check.
+func resolveValue[T any](override *T, root T) T {
+	if override != nil {
+		return *override
+	}
+	return root
+}
+
+// resolveReconcile merges a member's Reconcile override into the root default
+// field-by-field (docs/DECISIONS.md #48). A member overriding only drift must
+// not silently drop the root's remove_orphans default.
+func (e *Ensemble) resolveReconcile(override *Reconcile) Reconcile {
+	if override == nil {
+		return e.Reconcile
+	}
+	merged := e.Reconcile
+	if override.Drift != "" {
+		merged.Drift = override.Drift
+	}
+	if override.RemoveOrphans != nil {
+		merged.RemoveOrphans = override.RemoveOrphans
+	}
+	return merged
 }
 
 // Source describes the Git source to reconcile from (docs/ACCORDA.md §13).
@@ -233,6 +251,30 @@ type Target struct {
 	// receipts; they are merged into the deploy Compose file's environment:
 	// before `docker compose up -d` runs.
 	Services map[string]ServiceOverride `yaml:"services,omitempty"`
+	// Image is the single container image reference for a raw image target
+	// (target.type: image, docs/DECISIONS.md #49). It is the desired image the
+	// image driver reconciles; no Compose file is parsed.
+	Image string `yaml:"image,omitempty"`
+	// Env is the inline environment for a raw image target, keyed by variable
+	// name (docs/DECISIONS.md #49). It is the per-image analog of the Compose
+	// ServiceOverride.env and enters desired state because, unlike Compose
+	// env_files, it is Git-authored config rather than operator-local secret
+	// material.
+	Env map[string]string `yaml:"env,omitempty"`
+	// Ports are the published port mappings for a raw image target
+	// (docs/DECISIONS.md #49), in the Docker "host:container" short form.
+	Ports []string `yaml:"ports,omitempty"`
+}
+
+// ConfiguredPath returns the target's configured file or path, preferring
+// File over Path (docs/ACCORDA.md §8, §25). It is the single source of truth
+// for "what did the operator configure as the target artifact?" so callers do
+// not each re-implement the File-else-Path fallback.
+func (t Target) ConfiguredPath() string {
+	if t.File != "" {
+		return t.File
+	}
+	return t.Path
 }
 
 // ServiceOverride declares per-service environment inputs applied at deploy
@@ -911,6 +953,15 @@ func validateTarget(p *Project) error {
 	case TargetKubernetes, TargetHelm:
 		if p.Target.Path == "" {
 			return fmt.Errorf("config: target.path is required for %q targets", p.Target.Type)
+		}
+	case TargetImage:
+		if strings.TrimSpace(p.Target.Image) == "" {
+			return fmt.Errorf("config: target.image is required for %q targets", TargetImage)
+		}
+		for _, port := range p.Target.Ports {
+			if strings.TrimSpace(port) == "" {
+				return fmt.Errorf("config: target.ports: empty entry is not allowed")
+			}
 		}
 	default:
 		return fmt.Errorf("config: target.type %q is not supported", p.Target.Type)

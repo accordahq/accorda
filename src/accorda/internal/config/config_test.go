@@ -167,6 +167,46 @@ func TestParse_KubernetesExample25(t *testing.T) {
 	}
 }
 
+// imageTargetExample is a minimal valid raw-image project (docs/DECISIONS.md
+// #49): a single container image declared directly, without a Compose file.
+const imageTargetExample = `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:edge/fleet.git
+  branch: main
+target:
+  type: ` + TargetImage + `
+  image: registry.example.com/edge-agent:1.2.3
+  env:
+    REGION: eu-west-1
+    LOG_LEVEL: info
+  ports:
+    - "8080:8080"
+`
+
+func TestParse_ImageTarget(t *testing.T) {
+	p, err := Parse([]byte(imageTargetExample))
+	if err != nil {
+		t.Fatalf("Parse: unexpected error: %v", err)
+	}
+	if p.Target.Type != TargetImage {
+		t.Fatalf("Target.Type = %q, want %q", p.Target.Type, TargetImage)
+	}
+	if p.Target.Image != "registry.example.com/edge-agent:1.2.3" {
+		t.Errorf("Target.Image = %q, want registry.example.com/edge-agent:1.2.3", p.Target.Image)
+	}
+	if p.Target.Env["REGION"] != "eu-west-1" || p.Target.Env["LOG_LEVEL"] != "info" {
+		t.Errorf("Target.Env = %+v, want REGION and LOG_LEVEL", p.Target.Env)
+	}
+	if len(p.Target.Ports) != 1 || p.Target.Ports[0] != "8080:8080" {
+		t.Errorf("Target.Ports = %v, want [8080:8080]", p.Target.Ports)
+	}
+	if err := Validate(p); err != nil {
+		t.Fatalf("Validate: unexpected error: %v", err)
+	}
+}
+
 func TestLoad_ReadsFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, File), []byte(composeExample), 0o644); err != nil {
@@ -334,6 +374,16 @@ func TestValidate_Errors(t *testing.T) {
 			name: "unsupported target type",
 			yaml: "version: 1\nenvironment: production\nsource: {url: x}\ntarget: {type: nomad}\n",
 			want: "target.type \"nomad\" is not supported",
+		},
+		{
+			name: "image without image field",
+			yaml: "version: 1\nenvironment: production\nsource: {url: x}\ntarget: {type: " + TargetImage + "}\n",
+			want: "target.image is required for \"" + TargetImage + "\" targets",
+		},
+		{
+			name: "image with empty port entry",
+			yaml: "version: 1\nenvironment: production\nsource: {url: x}\ntarget: {type: " + TargetImage + ", image: img:1, ports: [\"\", \"8080:8080\"]}\n",
+			want: "target.ports: empty entry is not allowed",
 		},
 		{
 			name: "invalid image pull",

@@ -21,11 +21,19 @@ const (
 	doctorInfo     = "INFO"
 	doctorProject  = "Project configuration"
 	doctorSource   = "Git source configuration"
-	doctorCompose  = "Compose target and Docker"
+	doctorTarget   = "Deployment target and Docker"
 	doctorCheckout = "Managed checkout"
 )
 
 var errDoctorFailed = errors.New("one or more checks failed")
+
+// validateEnvironmentTarget is the optional capability a target exposes so
+// doctor can validate the deployment environment (Docker engine, CLI) before
+// a managed Git checkout exists. The Compose target implements it; the image
+// target validates the engine in Validate and does not need the fallback.
+type validateEnvironmentTarget interface {
+	ValidateEnvironment(ctx context.Context) error
+}
 
 // doctorResult is one local installation or configuration check. Keeping the
 // report as data lets the command print every completed check before returning
@@ -45,7 +53,7 @@ func newDoctorCmd() *cobra.Command {
 		Use:   "doctor",
 		Short: "check the local Accorda installation and configuration",
 		Long: "Check the Accorda project configuration, Git source settings,\n" +
-			"Compose target, and Docker engine connectivity without making changes.",
+			"deployment target, and Docker engine connectivity without making changes.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			results := diagnose(cmd.Context(), dir)
@@ -95,10 +103,16 @@ func diagnoseProject(ctx context.Context, dir string, p *config.Project) []docto
 	if err == nil {
 		err = tgt.Validate(ctx)
 		if err != nil && managedTargetPending(src, p.Target, err) {
-			err = tgt.ValidateEnvironment(ctx)
+			// The Compose target exposes ValidateEnvironment so doctor can
+			// check the Docker engine and Compose CLI before the managed Git
+			// checkout exists. The image target validates the engine in
+			// Validate, so it does not need this fallback.
+			if ve, ok := tgt.(validateEnvironmentTarget); ok {
+				err = ve.ValidateEnvironment(ctx)
+			}
 		}
 	}
-	results = append(results, doctorCheck(doctorCompose, err))
+	results = append(results, doctorCheck(doctorTarget, err))
 
 	// Surface the managed checkout path so operators know where to place
 	// gitignored deployment-time inputs (env_file, label_file) that Compose
@@ -120,7 +134,7 @@ func diagnoseProject(ctx context.Context, dir string, p *config.Project) []docto
 }
 
 func managedTargetPending(src *gitSource.Git, target config.Target, err error) bool {
-	if filepath.IsAbs(configuredTargetPath(target)) || !errors.Is(err, os.ErrNotExist) || src == nil {
+	if filepath.IsAbs(target.ConfiguredPath()) || !errors.Is(err, os.ErrNotExist) || src == nil {
 		return false
 	}
 	exists, checkoutErr := src.CheckoutExists()

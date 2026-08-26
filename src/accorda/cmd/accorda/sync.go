@@ -21,19 +21,19 @@ import (
 	"accorda/internal/core/state"
 	"accorda/internal/notifications/webhook"
 	"accorda/internal/sources/git"
-	"accorda/internal/targets/compose"
+	"accorda/internal/targets"
 )
 
 // newSyncCmd builds the `accorda sync` command (docs/ACCORDA.md §11). It loads
-// the project file, constructs the Git source and Compose target, and drives
-// either one reconciliation pass or the continuous --watch loop.
+// the project file, constructs the Git source and deployment target, and
+// drives either one reconciliation pass or the continuous --watch loop.
 //
 // The command is the production wiring point for the core packages that were
 // previously only exercised by tests: the Reconciler (internal/core/reconcile),
-// the Git source (internal/sources/git), and the Compose target
-// (internal/targets/compose). It threads the project's drift policy, image
-// pull policy, and health timeout into the reconciler and target
-// (docs/DECISIONS.md #18, #21, #22).
+// the Git source (internal/sources/git), and the target driver selected by
+// the project's target.type (internal/targets). It threads the project's
+// drift policy, image pull policy, and health timeout into the reconciler
+// and target (docs/DECISIONS.md #18, #21, #22).
 func newSyncCmd() *cobra.Command {
 	var (
 		dir   string
@@ -381,7 +381,7 @@ func buildWebhook(n config.Notifications, bus events.Bus) (func(), error) {
 // (docs/ACCORDA.md §49; docs/DECISIONS.md #43).
 func buildSource(p *config.Project, dir, name string) (*git.Git, error) {
 	source := p.Source
-	targetPath := configuredTargetPath(p.Target)
+	targetPath := p.Target.ConfiguredPath()
 	if filepath.IsAbs(targetPath) {
 		targetPath = ""
 	}
@@ -401,66 +401,29 @@ func buildSource(p *config.Project, dir, name string) (*git.Git, error) {
 	return git.New(source, git.WithCacheNamespace(namespace)), nil
 }
 
-// buildTarget constructs the deployment target against the Git source's
-// managed checkout. Only the Compose target is implemented; other target
-// types are recognized by the config loader but have no driver yet.
+// buildTarget constructs the deployment target for one project by
+// dispatching to the registered target builder (docs/ACCORDA.md §12). The
+// command layer does not switch on target type or import concrete drivers:
+// each driver package registers a TargetBuilder via init, and BuildTarget
+// selects it from the registry. An unimplemented target type (kubernetes,
+// helm) surfaces as a clear "not implemented" error.
 //
 // name is the operator project name in an ensemble document, or empty for a
-// single project. When non-empty, it overrides the Compose project name so two
-// ensemble members whose Compose files live in same-named directories do not
-// derive the same project name — which would make `--remove-orphans`
-// destructive across projects (docs/ACCORDA.md §49).
-func buildTarget(p *config.Project, dir string, src *git.Git, name string) (*compose.Target, error) {
-	if p.Target.Type != config.TargetCompose {
-		return nil, fmt.Errorf("target type %q is not implemented", p.Target.Type)
+// single project. It doubles as the Compose project name override and the
+// image target's service name.
+func buildTarget(p *config.Project, dir string, src *git.Git, name string) (targets.Target, error) {
+	project := *p
+	if src != nil {
+		// buildSource resolves the repository-relative target artifact path
+		// onto the Git source; carry it into the context so the builder
+		// resolves the file inside the managed checkout.
+		project.Source.Path = src.Source.Path
 	}
-	target, managed, err := resolveTargetPaths(p.Target, src)
-	if err != nil {
-		return nil, err
+	ctx := targets.TargetContext{Project: project, Dir: dir, Name: name}
+	if src != nil {
+		ctx.SourcePath = src.CheckoutPath
 	}
-	options := []compose.Option{
-		compose.WithPullPolicy(p.Images.Pull),
-		compose.WithHealthTimeout(p.Health.Timeout),
-		compose.WithEnvironment(p.Environment),
-		compose.WithServiceOverrides(p.Target.Services),
-	}
-	if name != "" {
-		options = append(options, compose.WithProjectName(name))
-	} else if managed {
-		projectDir, err := filepath.Abs(dir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve project directory: %w", err)
-		}
-		options = append(options, compose.WithProjectName(filepath.Base(filepath.Clean(projectDir))))
-	}
-	return compose.New(target, options...)
-}
-
-// resolveTargetPaths points repository-relative Compose targets at the Git
-// source's managed checkout. Absolute target paths remain explicit local
-// overrides for backwards compatibility.
-func resolveTargetPaths(target config.Target, src *git.Git) (config.Target, bool, error) {
-	configured := configuredTargetPath(target)
-	if filepath.IsAbs(configured) {
-		return target, false, nil
-	}
-	if src == nil {
-		return config.Target{}, false, errors.New("build target: Git source is nil")
-	}
-	file, err := src.CheckoutPath(src.Source.Path)
-	if err != nil {
-		return config.Target{}, false, err
-	}
-	target.File = file
-	target.Path = ""
-	return target, true, nil
-}
-
-func configuredTargetPath(target config.Target) string {
-	if target.File != "" {
-		return target.File
-	}
-	return target.Path
+	return targets.BuildTarget(ctx)
 }
 
 // receiptPath returns the path of the deployment receipt journal for the
@@ -491,21 +454,23 @@ func withDeploymentLock(ctx context.Context, dir string, target config.Target, f
 }
 
 // deploymentLockPath returns the target-scoped lock file used to serialize
-// reconciliation across CLI processes. Hashing the effective Compose project
-// identity means different Compose files that mutate the same project share a
-// lock without exposing the project name in the state directory.
+// reconciliation across CLI processes. Hashing the effective target identity
+// means different targets that mutate the same workload share a lock without
+// exposing the project/service name in the state directory. The identity is
+// target-type-specific: the Compose target uses the Compose project name,
+// and the image target uses the service name.
 func deploymentLockPath(dir string, target config.Target) string {
-	resolved := target
-	if configured := configuredTargetPath(target); !filepath.IsAbs(configured) {
-		if target.File != "" {
-			resolved.File = filepath.Join(dir, target.File)
-		} else {
-			resolved.Path = filepath.Join(dir, target.Path)
-		}
-	}
-	identity := resolved.Type + "\x00" + compose.ProjectName(resolved)
+	identity := targetIdentity(dir, target)
 	digest := sha256.Sum256([]byte(identity))
 	return filepath.Join(stateBase(), "accorda", "locks", fmt.Sprintf("%x.lock", digest))
+}
+
+// targetIdentity returns the stable, target-scoped identity used to key the
+// deployment lock, derived from the raw config.Target via the registered
+// builder so the command layer does not switch on target type
+// (docs/ACCORDA.md §47, docs/DECISIONS.md #44).
+func targetIdentity(dir string, target config.Target) string {
+	return targets.LockIdentityFromConfig(dir, target)
 }
 
 func projectStatePath(kind, dir, name, extension string) string {

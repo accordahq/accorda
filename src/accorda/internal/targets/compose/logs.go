@@ -12,10 +12,9 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/pkg/stdcopy"
 
+	shareddocker "accorda/internal/docker"
 	"accorda/internal/targets"
 )
-
-const allLogLines = "all"
 
 // Logs fetches or follows logs for every container belonging to service in
 // this Compose project (docs/ACCORDA.md §11). Docker's multiplexed stream is
@@ -46,7 +45,7 @@ func (t *Target) Logs(ctx context.Context, service string, opts targets.LogOptio
 	}
 	sort.Slice(containers, func(i, j int) bool { return containers[i].ID < containers[j].ID })
 	if opts.Tail == "" {
-		opts.Tail = allLogLines
+		opts.Tail = shareddocker.AllLogLines
 	}
 	if stdout == nil {
 		stdout = io.Discard

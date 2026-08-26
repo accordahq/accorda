@@ -26,7 +26,6 @@ import (
 	"accorda/internal/core/state"
 	"accorda/internal/secrets"
 	"accorda/internal/sources"
-	"accorda/internal/targets/compose"
 )
 
 // newDiffCmd builds the `accorda diff` command (docs/ACCORDA.md §11). It
@@ -235,8 +234,8 @@ func diffService(d, s state.Service) []diffNode {
 	fields = append(fields, diffJoined("command", d.Command, s.Command)...)
 	fields = append(fields, diffSensitiveKV("environment", d.Env, s.Env)...)
 	fields = append(fields, diffJoined("env_file", externalFileIdentities(d.EnvFiles), externalFileIdentities(s.EnvFiles))...)
-	fields = append(fields, diffJoined("ports", compose.StringPorts(d.Ports), compose.StringPorts(s.Ports))...)
-	fields = append(fields, diffJoined("volumes", compose.StringVolumes(d.Volumes), compose.StringVolumes(s.Volumes))...)
+	fields = append(fields, diffJoined("ports", state.StringPorts(d.Ports), state.StringPorts(s.Ports))...)
+	fields = append(fields, diffJoined("volumes", state.StringVolumes(d.Volumes), state.StringVolumes(s.Volumes))...)
 	fields = append(fields, diffJoined("networks", d.Networks, s.Networks)...)
 	fields = append(fields, diffKV("labels", d.Labels, s.Labels)...)
 	fields = append(fields, diffJoined("label_file", externalFileIdentities(d.LabelFiles), externalFileIdentities(s.LabelFiles))...)

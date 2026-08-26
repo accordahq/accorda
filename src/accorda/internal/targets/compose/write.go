@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"accorda/internal/core/state"
+	shareddocker "accorda/internal/docker"
 )
 
 // writeComposeServices materializes a set of Accorda services into the
@@ -49,7 +50,7 @@ func writeComposeServices(path string, services map[string]state.Service) error 
 // (docs/DECISIONS.md #12).
 func composeServices(services map[string]state.Service) map[string]map[string]any {
 	out := make(map[string]map[string]any, len(services))
-	for _, name := range sortedServiceNames(services) {
+	for _, name := range shareddocker.SortedServiceNames(services) {
 		out[name] = composeService(services[name])
 	}
 	return out
@@ -71,10 +72,10 @@ func composeService(s state.Service) map[string]any {
 		m["env_file"] = composeEnvFiles(s.EnvFiles)
 	}
 	if len(s.Ports) > 0 {
-		m["ports"] = StringPorts(s.Ports)
+		m["ports"] = state.StringPorts(s.Ports)
 	}
 	if len(s.Volumes) > 0 {
-		m["volumes"] = StringVolumes(s.Volumes)
+		m["volumes"] = state.StringVolumes(s.Volumes)
 	}
 	if len(s.Networks) > 0 {
 		m["networks"] = s.Networks
@@ -120,30 +121,6 @@ func externalFilePaths(files []state.ExternalFile) []string {
 	return out
 }
 
-// StringPorts converts a service's normalized ports to Compose short-form
-// strings. It is exported so the `accorda diff` CLI command renders ports
-// identically to the Compose writer, keeping the canonical form in one place
-// (docs/DECISIONS.md #12, #13).
-func StringPorts(ports []state.Port) []string {
-	out := make([]string, 0, len(ports))
-	for _, p := range ports {
-		out = append(out, portString(p))
-	}
-	return out
-}
-
-// StringVolumes converts a service's normalized volumes to Compose short-form
-// strings. It is exported so the `accorda diff` CLI command renders volumes
-// identically to the Compose writer, keeping the canonical form in one place
-// (docs/DECISIONS.md #12, #13).
-func StringVolumes(volumes []state.Volume) []string {
-	out := make([]string, 0, len(volumes))
-	for _, v := range volumes {
-		out = append(out, volumeString(v))
-	}
-	return out
-}
-
 // composeHealthcheck converts a normalized healthcheck into its YAML form,
 // returning nil when the healthcheck is unset (no test and not disabled).
 func composeHealthcheck(h state.Healthcheck) map[string]any {
@@ -170,45 +147,4 @@ func composeHealthcheck(h state.Healthcheck) map[string]any {
 		hc["disable"] = true
 	}
 	return hc
-}
-
-// portString renders a normalized port mapping in Compose short form
-// (docs/ACCORDA.md §8). Only the fields the loader preserves are emitted.
-func portString(p state.Port) string {
-	var b []byte
-	if p.HostIP != "" {
-		b = append(b, p.HostIP...)
-		b = append(b, ':')
-	}
-	if p.Host != "" {
-		b = append(b, p.Host...)
-	}
-	if p.Container != "" {
-		if len(b) > 0 {
-			b = append(b, ':')
-		}
-		b = append(b, p.Container...)
-	}
-	if p.Protocol != "" && p.Protocol != "tcp" {
-		b = append(b, '/')
-		b = append(b, p.Protocol...)
-	}
-	return string(b)
-}
-
-// volumeString renders a normalized volume mount in Compose short form
-// (docs/ACCORDA.md §8). An anonymous volume (no source) renders as just the
-// in-container target path.
-func volumeString(v state.Volume) string {
-	out := v.Source
-	if v.Target != "" {
-		if out != "" {
-			out += ":"
-		}
-		out += v.Target
-	}
-	if v.ReadOnly {
-		out += ":ro"
-	}
-	return out
 }

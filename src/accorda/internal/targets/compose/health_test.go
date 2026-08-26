@@ -15,6 +15,7 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/health"
 	"accorda/internal/core/state"
+	shareddocker "accorda/internal/docker"
 )
 
 func TestHealth_AllHealthy(t *testing.T) {
@@ -145,9 +146,9 @@ func TestHealth_NilDockerClient_IsError(t *testing.T) {
 func TestHealth_StartingThenHealthy_Converges(t *testing.T) {
 	// A service that is starting on the first poll and healthy on the second
 	// must converge to healthy without waiting for the full timeout.
-	old := healthPollInterval
-	healthPollInterval = time.Millisecond
-	t.Cleanup(func() { healthPollInterval = old })
+	old := shareddocker.HealthPollInterval()
+	shareddocker.SetHealthPollInterval(time.Millisecond)
+	t.Cleanup(func() { shareddocker.SetHealthPollInterval(old) })
 
 	path := writeComposeFile(t)
 	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
@@ -207,9 +208,9 @@ func (f *transitionDockerClient) ImageInspect(context.Context, string, ...client
 func TestHealth_Timeout_ReportsUnhealthy(t *testing.T) {
 	// A service stuck in "starting" past the timeout must be reported as
 	// unhealthy with a timeout message, not silently declared healthy.
-	old := healthPollInterval
-	healthPollInterval = time.Millisecond
-	t.Cleanup(func() { healthPollInterval = old })
+	old := shareddocker.HealthPollInterval()
+	shareddocker.SetHealthPollInterval(time.Millisecond)
+	t.Cleanup(func() { shareddocker.SetHealthPollInterval(old) })
 
 	path := writeComposeFile(t)
 	project := normalizeProjectName(filepath.Base(filepath.Dir(path)))
@@ -251,7 +252,7 @@ func TestHealthStatus_Mapping(t *testing.T) {
 		{"none", health.StatusUnhealthy},
 	}
 	for _, c := range cases {
-		if got := healthStatus(c.in); got != c.want {
+		if got := shareddocker.HealthStatus(c.in); got != c.want {
 			t.Errorf("healthStatus(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
@@ -302,7 +303,7 @@ func TestNew_DefaultHealthTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if tgt.healthTimeout != defaultHealthTimeout {
-		t.Errorf("healthTimeout = %v, want %v", tgt.healthTimeout, defaultHealthTimeout)
+	if tgt.healthTimeout != shareddocker.DefaultHealthTimeout {
+		t.Errorf("healthTimeout = %v, want %v", tgt.healthTimeout, shareddocker.DefaultHealthTimeout)
 	}
 }

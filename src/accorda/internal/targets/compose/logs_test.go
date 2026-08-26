@@ -12,6 +12,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/pkg/stdcopy"
 
+	shareddocker "accorda/internal/docker"
 	"accorda/internal/targets"
 )
 
@@ -107,8 +108,8 @@ func TestLogs_TTYStreamIsCopiedRaw(t *testing.T) {
 	if stdout.String() != "raw tty output\n" {
 		t.Errorf("stdout = %q, want raw tty output", stdout.String())
 	}
-	if client.calls[0].options.Tail != allLogLines {
-		t.Errorf("Tail = %q, want %q default", client.calls[0].options.Tail, allLogLines)
+	if client.calls[0].options.Tail != shareddocker.AllLogLines {
+		t.Errorf("Tail = %q, want %q default", client.calls[0].options.Tail, shareddocker.AllLogLines)
 	}
 }
 
