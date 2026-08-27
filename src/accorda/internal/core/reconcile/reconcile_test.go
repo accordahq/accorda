@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -56,16 +57,31 @@ func (f *fakeSource) Fetch(context.Context) (sources.Commit, error) {
 	}
 	return f.commit, nil
 }
-func (f *fakeSource) Desired(_ context.Context, ref *sources.Commit) (*state.DesiredState, error) {
+func (f *fakeSource) Revision(_ context.Context, ref *sources.Commit) (*sources.Revision, error) {
 	if f.desiredErr != nil {
 		return nil, f.desiredErr
 	}
+	desired := f.desired
 	if ref != nil {
 		if ds, ok := f.desiredByCommit[ref.SHA]; ok {
-			return ds, nil
+			desired = ds
 		}
 	}
-	return f.desired, nil
+	data, err := json.Marshal(desired)
+	if err != nil {
+		return nil, err
+	}
+	commit := f.commit
+	if ref != nil {
+		commit = *ref
+	}
+	repository := ""
+	if desired != nil {
+		commit.SHA = desired.Commit
+		commit.Branch = desired.Branch
+		repository = desired.Repository
+	}
+	return sources.NewRevision(commit, repository, string(data), nil, nil), nil
 }
 
 // fakeTarget is a controllable Target for tests.
@@ -94,6 +110,13 @@ type fakeTarget struct {
 }
 
 func (f *fakeTarget) Validate(context.Context) error { return f.validateErr }
+func (f *fakeTarget) Desired(_ context.Context, revision *sources.Revision) (*state.DesiredState, error) {
+	var desired state.DesiredState
+	if err := json.Unmarshal([]byte(revision.Root), &desired); err != nil {
+		return nil, err
+	}
+	return &desired, nil
+}
 func (f *fakeTarget) Current(context.Context) (*state.RuntimeState, error) {
 	if f.currentErr != nil {
 		return nil, f.currentErr
@@ -250,22 +273,20 @@ func TestReconcile_HappyPath_ReachesSynced(t *testing.T) {
 	}
 }
 
-// configDesiredTarget wraps fakeTarget and implements targets.DesiredProvider
-// so a test can verify the reconciler uses the target's config-derived
-// desired state in place of the source-parsed one (docs/DECISIONS.md #24).
+// configDesiredTarget verifies a target can derive desired services from its
+// own configuration while retaining source revision metadata.
 type configDesiredTarget struct {
 	*fakeTarget
-	desiredProvider func(*state.DesiredState) (*state.DesiredState, error)
+	desiredProvider func(*sources.Revision) (*state.DesiredState, error)
 }
 
-func (c *configDesiredTarget) Desired(_ context.Context, src *state.DesiredState) (*state.DesiredState, error) {
-	return c.desiredProvider(src)
+func (c *configDesiredTarget) Desired(_ context.Context, revision *sources.Revision) (*state.DesiredState, error) {
+	return c.desiredProvider(revision)
 }
 
-func TestReconcile_UsesTargetDesiredProvider(t *testing.T) {
-	// The source supplies commit metadata and a Compose-parsed service set;
-	// the target's DesiredProvider replaces the services with a config-derived
-	// single-service model while preserving the commit metadata.
+func TestReconcile_UsesTargetDesiredLoader(t *testing.T) {
+	// The source supplies revision metadata and the target builds a
+	// config-derived single-service model while preserving that metadata.
 	src := &fakeSource{
 		commit:  sources.Commit{SHA: "abc123", Branch: "main"},
 		desired: healthyDesired(),
@@ -281,17 +302,17 @@ func TestReconcile_UsesTargetDesiredProvider(t *testing.T) {
 				"edge-agent": {Status: "running", Image: "edge-agent:1.2.3"},
 			}},
 		},
-		desiredProvider: func(src *state.DesiredState) (*state.DesiredState, error) {
+		desiredProvider: func(revision *sources.Revision) (*state.DesiredState, error) {
 			d := configDesired.Clone()
-			d.Repository = src.Repository
-			d.Branch = src.Branch
-			d.Commit = src.Commit
+			d.Repository = revision.Repository
+			d.Branch = revision.Commit.Branch
+			d.Commit = revision.Commit.SHA
 			return &d, nil
 		},
 	}
 	// Capture the desired state Plan received so the test can assert the
 	// reconciler passed the config-derived model, not the source's.
-	wrapped := &planCapturingTarget{Target: tgt, capture: &planned, desired: tgt}
+	wrapped := &planCapturingTarget{Target: tgt, capture: &planned}
 	r := New(src, wrapped, events.NewBus())
 
 	res := r.Reconcile(context.Background())
@@ -306,7 +327,7 @@ func TestReconcile_UsesTargetDesiredProvider(t *testing.T) {
 		t.Errorf("Plan received source services %+v, want config-derived edge-agent", planned.Services)
 	}
 	if _, ok := planned.Services["api"]; ok {
-		t.Errorf("Plan received source service api, want it replaced by DesiredProvider")
+		t.Errorf("Plan received source fixture service api, want target-derived services")
 	}
 	if planned.Commit != "abc123" {
 		t.Errorf("Plan received Commit = %q, want abc123 preserved from source", planned.Commit)
@@ -316,21 +337,14 @@ func TestReconcile_UsesTargetDesiredProvider(t *testing.T) {
 // planCapturingTarget wraps a Target and captures the desired state passed to
 // Plan. It exists so a test can assert which desired state the reconciler
 // handed the target without modifying the fakeTarget's Plan implementation.
-// It forwards the optional DesiredProvider capability so the reconciler still
-// detects it through the wrapper.
 type planCapturingTarget struct {
 	targets.Target
 	capture **state.DesiredState
-	desired targets.DesiredProvider
 }
 
 func (p *planCapturingTarget) Plan(ctx context.Context, desired *state.DesiredState, deployed *state.DeployedState) (*plan.Plan, error) {
 	*p.capture = desired
 	return p.Target.Plan(ctx, desired, deployed)
-}
-
-func (p *planCapturingTarget) Desired(ctx context.Context, src *state.DesiredState) (*state.DesiredState, error) {
-	return p.desired.Desired(ctx, src)
 }
 
 func TestReconcile_FetchFailure(t *testing.T) {

@@ -6,10 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -23,9 +21,7 @@ import (
 	gossh "github.com/go-git/go-git/v6/plumbing/transport/ssh"
 
 	"accorda/internal/config"
-	"accorda/internal/core/state"
 	"accorda/internal/sources"
-	"accorda/internal/targets/compose"
 )
 
 // Compile-time interface check: Git satisfies sources.Source here so a
@@ -253,23 +249,11 @@ func (g *Git) Fetch(ctx context.Context) (sources.Commit, error) {
 	return g.headCommit(ctx, dir, g.branchFor(dir))
 }
 
-// Desired returns the desired state declared in Git at the given commit. A
-// nil ref means "use the fetched HEAD".
-//
-// The desired state is read from the Compose services file under the
-// configured source path, at the given commit. When a non-nil ref is passed,
-// the file content is read from that commit's tree so the returned services
-// match the reported SHA. When ref is nil, the content is read from the
-// checked-out HEAD of the configured branch (remote mode) or the user-owned
-// working tree (in-place mode).
-//
-// The services file is parsed using the compose-go loader
-// (github.com/compose-spec/compose-go/v2), which handles the full Compose
-// schema including interpolation, extends, and profiles. If no services
-// file is found, the returned desired state still carries the repository,
-// branch, and commit metadata so core can report the fetch outcome;
-// Services will be empty.
-func (g *Git) Desired(ctx context.Context, ref *sources.Commit) (*state.DesiredState, error) {
+// Revision opens a real filesystem view for the requested commit. The current
+// commit uses the bound or managed worktree. Historical commits are expanded
+// into a private temporary tree so target loaders can resolve relative files
+// without mutating either worktree mode.
+func (g *Git) Revision(ctx context.Context, ref *sources.Commit) (*sources.Revision, error) {
 	if err := g.ensureReady(ctx); err != nil {
 		return nil, err
 	}
@@ -277,26 +261,72 @@ func (g *Git) Desired(ctx context.Context, ref *sources.Commit) (*state.DesiredS
 	if err != nil {
 		return nil, err
 	}
-	services, err := g.parseServices(ctx, commit.SHA)
+	dir, err := g.cacheDir()
 	if err != nil {
 		return nil, err
 	}
-	repository := RedactURL(g.Source.URL)
-	if g.isInPlace() {
-		// In-place mode reports the bound worktree root as the repository
-		// identifier so it stays a stable, loggable path rather than the
-		// repo-relative compose filename.
-		if dir, err := g.cacheDir(); err == nil {
-			repository = dir
-		}
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return nil, fmt.Errorf("git source: open worktree: %w", err)
 	}
-	return &state.DesiredState{
-		Repository: repository,
-		Branch:     commit.Branch,
-		Commit:     commit.SHA,
-		CommitTime: commit.Time,
-		Services:   services,
-	}, nil
+	commitObject, err := repo.CommitObject(plumbing.NewHash(commit.SHA))
+	if err != nil {
+		_ = repo.Close()
+		return nil, fmt.Errorf("git source: read commit %s: %w", commit.SHA, err)
+	}
+	tree, err := commitObject.Tree()
+	if err != nil {
+		_ = repo.Close()
+		return nil, fmt.Errorf("git source: read tree at %s: %w", commit.SHA, err)
+	}
+	if commit.Branch == "" {
+		commit.Branch = g.branchFor(dir)
+	}
+	if commit.Time.IsZero() {
+		commit.Time = commitObject.Author.When.UTC()
+	}
+	root := dir
+	var temporaryRoot string
+	if !shaIsHead(dir, commit.SHA) {
+		temporaryRoot, err = os.MkdirTemp("", "accorda-git-revision-")
+		if err != nil {
+			_ = repo.Close()
+			return nil, fmt.Errorf("git source: create temporary revision: %w", err)
+		}
+		if err := materializeTree(ctx, tree, temporaryRoot); err != nil {
+			_ = os.RemoveAll(temporaryRoot)
+			_ = repo.Close()
+			return nil, fmt.Errorf("git source: materialize tree at %s: %w", commit.SHA, err)
+		}
+		root = temporaryRoot
+	}
+	repositoryID := RedactURL(g.Source.URL)
+	if g.isInPlace() {
+		repositoryID = dir
+	}
+	digest := func(repositoryPath string) (string, bool, error) {
+		file, err := tree.File(repositoryPath)
+		if errors.Is(err, object.ErrFileNotFound) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, fmt.Errorf("git source: read tracked file %q: %w", repositoryPath, err)
+		}
+		contents, err := file.Contents()
+		if err != nil {
+			return "", false, fmt.Errorf("git source: read tracked file %q: %w", repositoryPath, err)
+		}
+		sum := sha256.Sum256([]byte(contents))
+		return hex.EncodeToString(sum[:]), true, nil
+	}
+	release := func() error {
+		closeErr := repo.Close()
+		if temporaryRoot == "" {
+			return closeErr
+		}
+		return errors.Join(closeErr, os.RemoveAll(temporaryRoot))
+	}
+	return sources.NewRevision(commit, repositoryID, root, digest, release), nil
 }
 
 // Materialize checks out an already-fetched revision into this source's
@@ -432,11 +462,9 @@ func (g *Git) CheckoutPath(repositoryPath string) (string, error) {
 	return filepath.Join(dir, filepath.FromSlash(clean)), nil
 }
 
-// ResolvedPath returns the repository-relative path of the services file the
-// Compose target should resolve against the managed checkout. buildSource
-// (in cmd/accorda/wire.go) sets Source.Path to this resolved path before
-// construction.
-func (g *Git) ResolvedPath() string {
+// BindingPath returns the configured source path without interpreting it as
+// any target-specific artifact.
+func (g *Git) BindingPath() string {
 	if g == nil {
 		return ""
 	}
@@ -692,95 +720,17 @@ func (g *Git) branchFor(dir string) string {
 	return g.Source.Branch
 }
 
-// parseServices reads the services file under the configured source path with
-// the complete managed-worktree context required by extends, includes, and
-// relative resources. A historical SHA is checked out only for the duration
-// of parsing and the active revision is restored before return. Git-tracked
-// env_file and label_file contents contribute digests without being retained.
-//
-// In in-place mode (source.path) the user-owned worktree is never mutated:
-// when the requested SHA differs from HEAD, the services file is read from
-// that commit's tree via go-git rather than checked out.
-func (g *Git) parseServices(ctx context.Context, sha string) (map[string]state.Service, error) {
-	path, err := sources.ComposePath(g.Source.Path, "")
-	if err != nil {
-		return nil, err
-	}
-	dir, err := g.cacheDir()
-	if err != nil {
-		return nil, err
-	}
-	if sha == "" {
-		services, loadErr := compose.LoadFileWithContext(ctx, filepath.Join(dir, filepath.FromSlash(path)))
-		if errors.Is(loadErr, os.ErrNotExist) {
-			return map[string]state.Service{}, nil
-		}
-		if loadErr != nil {
-			return nil, fmt.Errorf("git source: parse %q: %w", path, loadErr)
-		}
-		return services, nil
-	}
-
-	if g.isInPlace() && !shaIsHead(dir, sha) {
-		// Read the historical revision from its tree without mutating the
-		// user-owned worktree (issue #95; docs/DECISIONS.md #51).
-		return g.parseServicesFromTree(ctx, dir, sha, path)
-	}
-	return g.parseServicesFromWorktree(ctx, dir, sha, path)
-}
-
-// parseServicesFromTree reads a specific commit into a private temporary
-// worktree so Compose can resolve includes, extends, and relative paths while
-// historical desired state is reconstructed without mutating the user-owned
-// worktree.
-func (g *Git) parseServicesFromTree(ctx context.Context, dir, sha, composePath string) (map[string]state.Service, error) {
-	r, err := git.PlainOpen(dir)
-	if err != nil {
-		return nil, fmt.Errorf("git source: open cache: %w", err)
-	}
-	defer func() { _ = r.Close() }()
-	hash := plumbing.NewHash(sha)
-	commit, err := r.CommitObject(hash)
-	if err != nil {
-		return nil, fmt.Errorf("git source: read commit %s: %w", sha, err)
-	}
-	tree, err := commit.Tree()
-	if err != nil {
-		return nil, fmt.Errorf("git source: read tree: %w", err)
-	}
-	_, err = tree.File(composePath)
-	if err != nil {
-		if errors.Is(err, object.ErrFileNotFound) {
-			return map[string]state.Service{}, nil
-		}
-		return nil, fmt.Errorf("git source: find %q at %s: %w", composePath, sha, err)
-	}
-	temporaryWorktree, err := os.MkdirTemp("", "accorda-git-tree-")
-	if err != nil {
-		return nil, fmt.Errorf("git source: create temporary worktree: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(temporaryWorktree) }()
-	if err := materializeTree(ctx, tree, temporaryWorktree); err != nil {
-		return nil, fmt.Errorf("git source: materialize tree at %s: %w", sha, err)
-	}
-	fullPath := filepath.Join(temporaryWorktree, filepath.FromSlash(composePath))
-	services, err := compose.LoadFileWithContext(ctx, fullPath)
-	if err != nil {
-		return nil, fmt.Errorf("git source: parse %q at %s: %w", composePath, sha, err)
-	}
-	if err := g.attachExternalFileDigests(ctx, r, sha, composePath, services); err != nil {
-		return nil, err
-	}
-	return services, nil
-}
-
 // materializeTree writes tracked files from tree beneath root. The private
-// tree is short-lived and exists only to give compose-go real file context for
-// historical includes and extends.
+// tree is short-lived and gives target-native loaders real filesystem context.
+// Regular files are written before symlinks so no tracked path can make a
+// later write traverse a symlink outside the private root.
 func materializeTree(ctx context.Context, tree *object.Tree, root string) error {
-	return tree.Files().ForEach(func(file *object.File) error {
+	if err := tree.Files().ForEach(func(file *object.File) error {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if file.Mode == filemode.Symlink {
+			return nil
 		}
 		repositoryPath, err := sources.CleanRepositoryPath(file.Name)
 		if err != nil {
@@ -798,18 +748,56 @@ func materializeTree(ctx context.Context, tree *object.Tree, root string) error 
 			return fmt.Errorf("write %q: %w", repositoryPath, err)
 		}
 		return nil
+	}); err != nil {
+		return err
+	}
+	return tree.Files().ForEach(func(file *object.File) error {
+		if file.Mode != filemode.Symlink {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		repositoryPath, err := sources.CleanRepositoryPath(file.Name)
+		if err != nil {
+			return err
+		}
+		contents, err := file.Contents()
+		if err != nil {
+			return fmt.Errorf("read %q: %w", repositoryPath, err)
+		}
+		if err := validateSymlink(repositoryPath, contents); err != nil {
+			return err
+		}
+		destination := filepath.Join(root, filepath.FromSlash(repositoryPath))
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			return fmt.Errorf("create directory for %q: %w", repositoryPath, err)
+		}
+		if err := os.Symlink(contents, destination); err != nil {
+			return fmt.Errorf("write %q: %w", repositoryPath, err)
+		}
+		return nil
 	})
 }
 
 func materializeTreeFile(mode filemode.FileMode, destination, contents string) error {
 	switch mode {
-	case filemode.Symlink:
-		return os.Symlink(contents, destination)
 	case filemode.Executable:
 		return os.WriteFile(destination, []byte(contents), 0o700)
 	default:
 		return os.WriteFile(destination, []byte(contents), 0o600)
 	}
+}
+
+func validateSymlink(repositoryPath, target string) error {
+	if filepath.IsAbs(target) {
+		return fmt.Errorf("git source: symlink %q points outside the revision", repositoryPath)
+	}
+	resolved := filepath.ToSlash(filepath.Clean(filepath.Join(filepath.Dir(repositoryPath), target)))
+	if resolved == ".." || strings.HasPrefix(resolved, "../") {
+		return fmt.Errorf("git source: symlink %q points outside the revision", repositoryPath)
+	}
+	return nil
 }
 
 // shaIsHead reports whether sha is the current HEAD of the repository at dir.
@@ -824,144 +812,6 @@ func shaIsHead(dir, sha string) bool {
 		return false
 	}
 	return head.Hash().String() == sha
-}
-
-func (g *Git) parseServicesFromWorktree(ctx context.Context, dir, sha, composePath string) (services map[string]state.Service, err error) {
-	r, err := git.PlainOpen(dir)
-	if err != nil {
-		return nil, fmt.Errorf("git source: open cache: %w", err)
-	}
-	defer func() { _ = r.Close() }()
-	head, err := r.Head()
-	if err != nil {
-		return nil, fmt.Errorf("git source: read HEAD: %w", err)
-	}
-	restoreSHA := head.Hash().String()
-	if sha != "" && sha != restoreSHA {
-		if err := checkoutRepositoryCommit(ctx, r, sha); err != nil {
-			return nil, err
-		}
-		defer func() {
-			restoreErr := checkoutRepositoryCommit(context.Background(), r, restoreSHA)
-			if restoreErr == nil {
-				return
-			}
-			restoreErr = fmt.Errorf("git source: restore managed checkout %s: %w", restoreSHA, restoreErr)
-			err = errors.Join(err, restoreErr)
-			services = nil
-		}()
-	}
-	fullPath := filepath.Join(dir, filepath.FromSlash(composePath))
-	services, err = compose.LoadFileWithContext(ctx, fullPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return map[string]state.Service{}, nil
-		}
-		return nil, fmt.Errorf("git source: parse %q: %w", composePath, err)
-	}
-	if err := g.attachExternalFileDigests(ctx, r, sha, composePath, services); err != nil {
-		return nil, err
-	}
-	return services, nil
-}
-
-func (g *Git) attachExternalFileDigests(ctx context.Context, r *git.Repository, sha, composePath string, services map[string]state.Service) error {
-	commit, err := r.CommitObject(plumbing.NewHash(sha))
-	if err != nil {
-		return fmt.Errorf("git source: read commit %s: %w", sha, err)
-	}
-	tree, err := commit.Tree()
-	if err != nil {
-		return fmt.Errorf("git source: read tree: %w", err)
-	}
-	base := path.Dir(composePath)
-	for name, service := range services {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		service.EnvFiles = digestExternalFiles(tree, base, service.EnvFiles)
-		service.LabelFiles = digestExternalFiles(tree, base, service.LabelFiles)
-		services[name] = service
-	}
-	return nil
-}
-
-func digestExternalFiles(tree *object.Tree, base string, files []state.ExternalFile) []state.ExternalFile {
-	out := append([]state.ExternalFile(nil), files...)
-	for i := range out {
-		if filepath.IsAbs(out[i].Path) {
-			continue
-		}
-		repositoryPath := path.Clean(path.Join(base, filepath.ToSlash(out[i].Path)))
-		if repositoryPath == ".." || strings.HasPrefix(repositoryPath, "../") {
-			continue
-		}
-		file, err := tree.File(repositoryPath)
-		if err != nil {
-			continue
-		}
-		contents, err := file.Contents()
-		if err != nil {
-			continue
-		}
-		sum := sha256.Sum256([]byte(contents))
-		out[i].Digest = hex.EncodeToString(sum[:])
-	}
-	return out
-}
-
-// readServicesFile returns the raw content of the services file. When sha is
-// non-empty, the content is read from that commit's tree via go-git; when sha
-// is empty, the file is read from the checked-out worktree.
-func (g *Git) readServicesFile(ctx context.Context, dir, sha, path string) ([]byte, error) {
-	if sha == "" {
-		full := filepath.Join(dir, path)
-		data, err := os.ReadFile(full)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("git source: read %q: %w", path, err)
-		}
-		return data, nil
-	}
-	return g.readFileAtCommit(ctx, dir, sha, path)
-}
-
-// readFileAtCommit reads a file's content from a specific commit's tree
-// using go-git, replacing the previous `git show <sha>:<path>` approach.
-func (g *Git) readFileAtCommit(_ context.Context, dir, sha, path string) ([]byte, error) {
-	r, err := git.PlainOpen(dir)
-	if err != nil {
-		return nil, fmt.Errorf("git source: open cache: %w", err)
-	}
-	defer func() { _ = r.Close() }()
-	hash := plumbing.NewHash(sha)
-	commit, err := r.CommitObject(hash)
-	if err != nil {
-		return nil, fmt.Errorf("git source: read commit %s: %w", sha, err)
-	}
-	tree, err := commit.Tree()
-	if err != nil {
-		return nil, fmt.Errorf("git source: read tree: %w", err)
-	}
-	file, err := tree.File(path)
-	if err != nil {
-		if errors.Is(err, object.ErrFileNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("git source: find %q: %w", path, err)
-	}
-	reader, err := file.Blob.Reader()
-	if err != nil {
-		return nil, fmt.Errorf("git source: open %q: %w", path, err)
-	}
-	defer func() { _ = reader.Close() }()
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("git source: read %q: %w", path, err)
-	}
-	return data, nil
 }
 
 // applyAuth derives the go-git transport auth method from Source.Auth

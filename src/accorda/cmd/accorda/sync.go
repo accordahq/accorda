@@ -11,8 +11,6 @@ import (
 
 	"accorda/internal/config"
 	"accorda/internal/core/events"
-	"accorda/internal/core/history"
-	"accorda/internal/core/locking"
 	"accorda/internal/core/reconcile"
 )
 
@@ -34,7 +32,7 @@ func newSyncCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "sync",
 		Short: "run reconciliation",
-		Long: "Run one reconciliation pass: fetch the desired state from Git,\n" +
+		Long: "Run one reconciliation pass: fetch a Git revision and load target state,\n" +
 			"plan the changes, apply them to the target, and verify health.\n" +
 			"With --watch, run immediately and then continuously at sync.interval.\n" +
 			"The project file (accorda.yaml) is read from the project directory.",
@@ -89,7 +87,9 @@ func runProjectsSync(cmd *cobra.Command, dir string, watch bool, projects []conf
 	if len(projects) == 0 {
 		return errors.New("sync: no projects configured")
 	}
-	members, cleanup, err := buildEnsembleMembers(cmd, dir, projects)
+	members, cleanup, err := buildEnsembleMembers(dir, projects, func(name string) events.Handler {
+		return projectSyncProgressWriter(cmd.OutOrStdout(), name)
+	})
 	if err != nil {
 		cleanup() // unwind any members already built before the failure
 		return err
@@ -136,53 +136,6 @@ func writeEnsembleResults(cmd *cobra.Command, results []reconcile.MemberResult) 
 		}
 	}
 	return firstErr
-}
-
-// buildEnsembleMembers constructs the reconciler members for each project,
-// wiring per-member source, target, receipt store, lock, and event bus. It
-// returns the members and a cleanup function that unsubscribes every member's
-// bus progress writer and webhook consumer; the caller must defer cleanup() so
-// the subscriptions do not outlive the reconciliation. On error, cleanup
-// unwinds any members already built so a partial build leaks nothing.
-func buildEnsembleMembers(cmd *cobra.Command, dir string, projects []config.Project) ([]reconcile.EnsembleMember, func(), error) {
-	members := make([]reconcile.EnsembleMember, 0, len(projects))
-	var unsubscribers []func()
-	cleanup := func() {
-		for _, unsub := range unsubscribers {
-			if unsub != nil {
-				unsub()
-			}
-		}
-	}
-	for i := range projects {
-		p := &projects[i]
-		src, err := buildSource(p, dir, p.Name)
-		if err != nil {
-			cleanup()
-			return nil, nil, fmt.Errorf("sync %s: %w", p.Name, err)
-		}
-		tgt, err := buildTarget(p, dir, src, p.Name)
-		if err != nil {
-			cleanup()
-			return nil, nil, fmt.Errorf("sync %s: %w", p.Name, err)
-		}
-		store := history.NewFileStore(receiptPath(dir, p.Name))
-		bus := events.NewBus()
-		unsubscribers = append(unsubscribers, bus.Subscribe(projectSyncProgressWriter(cmd.OutOrStdout(), p.Name)))
-		if wh, err := buildWebhook(p.Notifications, bus); err != nil {
-			cleanup()
-			return nil, nil, err
-		} else if wh != nil {
-			unsubscribers = append(unsubscribers, wh)
-		}
-		r := reconcile.New(src, tgt, bus).
-			WithDriftPolicy(driftPolicy(p.Reconcile.Drift)).
-			WithEnvironment(p.Environment).
-			WithReceiptStore(store).
-			WithLocker(locking.NewFileLocker(deploymentLockPath(dir, p.Target)))
-		members = append(members, reconcile.EnsembleMember{Name: p.Name, Reconciler: r})
-	}
-	return members, cleanup, nil
 }
 
 // writeMemberResult prints one ensemble member's cycle outcome, prefixed with

@@ -131,6 +131,20 @@ exactly one of `url` or `path` selects the mode; with
 `url`, `path` is an optional repo-relative compose path. Files: `internal/sources/git/git.go`,
 `internal/config/config.go` (`validateSource`), `cmd/accorda/wire.go` (`buildSource`).
 
+### 52. Targets load desired state from source-owned revision views
+
+Issue #101: `sources.Source` exposes `Validate`, `Fetch`, and `Revision`; a
+revision carries commit metadata, a constrained filesystem root, tracked-file
+digests, and callback-scoped cleanup. Current reads use the active worktree;
+historical reads materialize the generic Git tree privately, including in-place
+mode. `targets.Target.Desired` is mandatory: Compose resolves/parses its own
+artifact and image builds services from config. This supersedes #24/#32's
+`Source.Desired`/`DesiredProvider` flow and removes Git's Compose dependency.
+Remote rollback may still activate a revision through `RevisionMaterializer`;
+in-place rollback remains unsupported. Files: `internal/sources`,
+`internal/sources/git`, `internal/targets`, `internal/core/reconcile`,
+`cmd/accorda/wire.go`.
+
 ---
 
 ## Adapters — Compose target

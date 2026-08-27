@@ -243,7 +243,7 @@ func (errStore) List(context.Context) ([]history.Receipt, error) {
 // `previousFromHistory` in `wire.go`.
 func TestDeployedAtCommit_ReportsStoreError(t *testing.T) {
 	var warn bytes.Buffer
-	got := deployedAtCommit(context.Background(), &statusTestSource{}, errStore{}, &warn)
+	got := deployedAtCommit(context.Background(), &statusTestSource{}, nil, errStore{}, &warn)
 	if got != nil {
 		t.Fatalf("deployedAtCommit = %v, want nil on store error", got)
 	}

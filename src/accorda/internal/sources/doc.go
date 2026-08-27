@@ -1,5 +1,6 @@
 // Package sources adapts Git providers and generic Git servers into a common
-// source abstraction used by Accorda core.
+// source abstraction used by Accorda core. Sources fetch revisions and expose
+// releasable filesystem views; target adapters own artifact parsing.
 //
 // Generic Git is the foundation and must work with any Git server over SSH or
 // HTTPS, including on-premises servers, with no SaaS dependency. Provider

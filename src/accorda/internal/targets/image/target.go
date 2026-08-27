@@ -13,6 +13,7 @@ import (
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 	shareddocker "accorda/internal/docker"
+	"accorda/internal/sources"
 	"accorda/internal/targets"
 )
 
@@ -20,10 +21,9 @@ import (
 // targets.Target interface and its optional capabilities so a missing method
 // is caught at build time, not at runtime.
 var (
-	_ targets.Target          = (*Target)(nil)
-	_ targets.DesiredProvider = (*Target)(nil)
-	_ targets.LogTarget       = (*Target)(nil)
-	_ targets.RuntimeHealth   = (*Target)(nil)
+	_ targets.Target        = (*Target)(nil)
+	_ targets.LogTarget     = (*Target)(nil)
+	_ targets.RuntimeHealth = (*Target)(nil)
 )
 
 // containerNameLabel is the Docker label the image driver sets on the
@@ -169,7 +169,7 @@ func (t *Target) Validate(ctx context.Context) error {
 // builds a single-service DesiredState from the image, env, and ports config
 // fields; no Compose file is parsed. The source's Repository, Branch, Commit,
 // and CommitTime are preserved so receipts and history stay Git-anchored.
-func (t *Target) Desired(_ context.Context, sourceDesired *state.DesiredState) (*state.DesiredState, error) {
+func (t *Target) Desired(_ context.Context, revision *sources.Revision) (*state.DesiredState, error) {
 	if t == nil {
 		return nil, errors.New("image target: nil target")
 	}
@@ -180,11 +180,11 @@ func (t *Target) Desired(_ context.Context, sourceDesired *state.DesiredState) (
 			Ports: parsePorts(t.ports),
 		},
 	}}
-	if sourceDesired != nil {
-		desired.Repository = sourceDesired.Repository
-		desired.Branch = sourceDesired.Branch
-		desired.Commit = sourceDesired.Commit
-		desired.CommitTime = sourceDesired.CommitTime
+	if revision != nil {
+		desired.Repository = revision.Repository
+		desired.Branch = revision.Commit.Branch
+		desired.Commit = revision.Commit.SHA
+		desired.CommitTime = revision.Commit.Time
 	}
 	return desired, nil
 }

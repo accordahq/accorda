@@ -2,9 +2,11 @@ package compose
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"accorda/internal/config"
+	"accorda/internal/sources"
 	"accorda/internal/targets"
 )
 
@@ -37,7 +39,7 @@ func lockIdentityFromConfig(dir string, target config.Target) string {
 // environment, and per-service overrides, and derives the Compose project
 // name from the ensemble member name or the project-directory basename.
 func BuildFromContext(ctx targets.TargetContext) (targets.Target, error) {
-	target, managed, err := resolveComposePaths(ctx)
+	target, artifact, managed, err := resolveComposePaths(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -46,6 +48,7 @@ func BuildFromContext(ctx targets.TargetContext) (targets.Target, error) {
 		WithHealthTimeout(ctx.Project.Health.Timeout),
 		WithEnvironment(ctx.Project.Environment),
 		WithServiceOverrides(ctx.Project.Target.Services),
+		WithArtifact(artifact),
 	}
 	if ctx.Name != "" {
 		options = append(options, WithProjectName(ctx.Name))
@@ -62,20 +65,47 @@ func BuildFromContext(ctx targets.TargetContext) (targets.Target, error) {
 // resolveComposePaths points repository-relative Compose targets at the Git
 // source's managed checkout. Absolute target paths remain explicit local
 // overrides for backwards compatibility.
-func resolveComposePaths(ctx targets.TargetContext) (config.Target, bool, error) {
+func resolveComposePaths(ctx targets.TargetContext) (config.Target, string, bool, error) {
 	configured := ctx.Project.Target.ConfiguredPath()
 	if filepath.IsAbs(configured) {
-		return ctx.Project.Target, false, nil
+		return ctx.Project.Target, "", false, nil
 	}
-	if ctx.SourcePath == nil {
-		return config.Target{}, false, fmt.Errorf("compose target: Git source is nil")
+	if ctx.Worktree == nil {
+		return config.Target{}, "", false, fmt.Errorf("compose target: source worktree is nil")
 	}
-	file, err := ctx.SourcePath(ctx.Project.Source.Path)
+	artifact, err := composeArtifact(ctx, configured)
 	if err != nil {
-		return config.Target{}, false, err
+		return config.Target{}, "", false, err
+	}
+	file, err := ctx.Worktree.CheckoutPath(artifact)
+	if err != nil {
+		return config.Target{}, "", false, err
 	}
 	target := ctx.Project.Target
 	target.File = file
 	target.Path = ""
-	return target, true, nil
+	return target, artifact, true, nil
+}
+
+func composeArtifact(ctx targets.TargetContext, configured string) (string, error) {
+	binding := ctx.Worktree.BindingPath()
+	if ctx.Project.Source.URL != "" {
+		return sources.ComposePath(binding, configured)
+	}
+	info, err := os.Stat(binding)
+	if err != nil {
+		return "", fmt.Errorf("compose target: inspect source path: %w", err)
+	}
+	if info.IsDir() {
+		return sources.CleanRepositoryPath(configured)
+	}
+	root, err := ctx.Worktree.CheckoutDir()
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(root, binding)
+	if err != nil {
+		return "", fmt.Errorf("compose target: resolve source file: %w", err)
+	}
+	return sources.CleanRepositoryPath(relative)
 }

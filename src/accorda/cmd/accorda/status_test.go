@@ -198,8 +198,12 @@ func (s *statusTestSource) Fetch(context.Context) (sources.Commit, error) {
 	}
 	return s.commit, nil
 }
-func (s *statusTestSource) Desired(_ context.Context, _ *sources.Commit) (*state.DesiredState, error) {
-	return s.desired, nil
+func (s *statusTestSource) Revision(_ context.Context, ref *sources.Commit) (*sources.Revision, error) {
+	commit := s.commit
+	if ref != nil {
+		commit = *ref
+	}
+	return sources.NewRevision(commit, "", "fixture", nil, nil), nil
 }
 
 // TestCollectStatus_RedactsURLWhenDesiredFails verifies that a configured URL

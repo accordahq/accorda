@@ -3,9 +3,9 @@
 // diff shows the per-field deployed vs desired comparison the spec's §11
 // example describes. It is read-only: it never mutates the target or the
 // source. The "deployed" side is the last known-healthy deployment, read as
-// the desired state at the last healthy commit from Git (the receipt journal
+// target state at the last healthy Git revision (the receipt journal
 // records only the image/digest per service, so the full per-field definition
-// must be re-read from the source). The "desired" side is the current Git
+// must be reloaded through the target). The "desired" side is the current Git
 // HEAD. Only services and fields that differ are printed, in a YAML-like
 // tree, with per-field deployed/desired values.
 package main
@@ -26,6 +26,7 @@ import (
 	"accorda/internal/core/state"
 	"accorda/internal/secrets"
 	"accorda/internal/sources"
+	"accorda/internal/targets"
 )
 
 // newDiffCmd builds the `accorda diff` command (docs/ACCORDA.md §11). It
@@ -65,9 +66,9 @@ type diffNode struct {
 	children []diffNode
 }
 
-// runDiff loads the project, reads the desired state from Git at HEAD and the
+// runDiff loads the project, reads target desired state at Git HEAD and the
 // deployed state from the last healthy deployment, and prints the per-field
-// diff to the command's output. The deployed side is re-read from the source
+// diff to the command's output. The deployed side is reloaded by the target
 // at the deployed commit so the full service definition is available for
 // per-field comparison (the receipt journal stores only image/digest).
 func runDiff(cmd *cobra.Command, dir string) error {
@@ -92,6 +93,10 @@ func runDiffOne(cmd *cobra.Command, dir string, p *config.Project) error {
 	if err != nil {
 		return err
 	}
+	tgt, err := buildTarget(p, dir, src, p.Name)
+	if err != nil {
+		return err
+	}
 	ctx := context.Background()
 
 	// Re-reading the deployed commit from the managed worktree temporarily
@@ -105,13 +110,13 @@ func runDiffOne(cmd *cobra.Command, dir string, p *config.Project) error {
 		if err != nil {
 			return fmt.Errorf("fetch desired state: %w", err)
 		}
-		desired, err := src.Desired(ctx, &commit)
+		desired, err := desiredAt(ctx, src, tgt, &commit)
 		if err != nil {
 			return fmt.Errorf("read desired state: %w", err)
 		}
 
 		store := history.NewFileStore(receiptPath(dir, p.Name))
-		deployed := deployedAtCommit(ctx, src, store, cmd.ErrOrStderr())
+		deployed := deployedAtCommit(ctx, src, tgt, store, cmd.ErrOrStderr())
 
 		if p.Name != "" {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
@@ -122,14 +127,14 @@ func runDiffOne(cmd *cobra.Command, dir string, p *config.Project) error {
 }
 
 // deployedAtCommit returns the full desired state at the last healthy
-// deployment's commit, reconstructed from the source. It returns nil when
+// deployment's commit, reconstructed from a source revision by the target. It returns nil when
 // history has no healthy deployment or the source cannot be read at that
 // commit, so the caller degrades to "all desired is new". A store read error
 // is reported to warn so an operator can distinguish "no prior healthy
 // deployment" from "history could not be read", mirroring `accorda sync`'s
 // previousFromHistory. It is shared by `accorda diff` and `accorda plan` so
 // both commands use the same full-model deployed baseline.
-func deployedAtCommit(ctx context.Context, src sources.Source, store history.Store, warn io.Writer) *state.DesiredState {
+func deployedAtCommit(ctx context.Context, src sources.Source, target targets.Target, store history.Store, warn io.Writer) *state.DesiredState {
 	rc, err := lastHealthyReceipt(store)
 	if err != nil {
 		if warn != nil {
@@ -140,14 +145,14 @@ func deployedAtCommit(ctx context.Context, src sources.Source, store history.Sto
 	if rc == nil {
 		return nil
 	}
-	if d, derr := src.Desired(ctx, &sources.Commit{SHA: rc.Commit}); derr == nil && d != nil {
+	if d, derr := desiredAt(ctx, src, target, &sources.Commit{SHA: rc.Commit}); derr == nil && d != nil {
 		return d
 	}
 	return nil
 }
 
 // deployedStateFromDesired converts a full desired state (re-read from the
-// source at the deployed commit) into the DeployedState baseline a target's
+// target at the deployed commit) into the DeployedState baseline a target's
 // Plan expects. It returns nil when the desired state is nil, so a caller
 // with no prior healthy deployment passes a nil baseline and the plan treats
 // every desired service as new.

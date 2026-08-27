@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,11 +32,8 @@ import (
 	"accorda/internal/targets"
 )
 
-// buildSource constructs the source for one project, dispatching on how the
-// git source is configured (docs/ACCORDA.md §13). It resolves the
-// repository-relative Compose artifact shared by the source and Compose
-// target: a source path naming a directory is combined with the target
-// filename; an explicit source YAML path wins.
+// buildSource constructs the source for one project without interpreting any
+// target artifact path (docs/ACCORDA.md §13).
 //
 // The source has two modes (issue #95, docs/DECISIONS.md #51):
 //
@@ -49,38 +47,30 @@ import (
 //     mutates it.
 func buildSource(p *config.Project, dir, name string) (*git.Git, error) {
 	source := p.Source
-	targetPath := p.Target.ConfiguredPath()
-	if filepath.IsAbs(targetPath) {
-		targetPath = ""
-	}
 
 	if source.URL == "" {
-		// In-place mode: the configured path is a local worktree (or a Compose
-		// file within one). The worktree root is the path, or its parent when
-		// the path names a Compose file; the repository-relative compose path
-		// is the file's basename (for the file form) or the target file (for
-		// the directory form).
 		localPath, err := expandHomePath(source.Path)
 		if err != nil {
 			return nil, err
 		}
-		root, composePath, err := localSourcePaths(localPath, targetPath)
+		absolutePath, err := filepath.Abs(localPath)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("resolve local source path: %w", err)
 		}
-		absRoot, err := filepath.Abs(root)
+		info, err := os.Stat(absolutePath)
 		if err != nil {
-			return nil, fmt.Errorf("resolve local worktree path: %w", err)
+			return nil, fmt.Errorf("inspect local source path: %w", err)
 		}
-		source.Path = composePath
-		return git.New(source, git.WithCacheDir(absRoot)), nil
+		root := absolutePath
+		if !info.IsDir() {
+			root, err = git.FindWorktreeRoot(filepath.Dir(absolutePath))
+			if err != nil {
+				return nil, err
+			}
+		}
+		source.Path = absolutePath
+		return git.New(source, git.WithCacheDir(root)), nil
 	}
-
-	composePath, err := sources.ComposePath(source.Path, targetPath)
-	if err != nil {
-		return nil, err
-	}
-	source.Path = composePath
 	projectDir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project directory: %w", err)
@@ -90,33 +80,6 @@ func buildSource(p *config.Project, dir, name string) (*git.Git, error) {
 		namespace = filepath.Join(namespace, name)
 	}
 	return git.New(source, git.WithCacheNamespace(namespace)), nil
-}
-
-// localSourcePaths resolves the local worktree root and repository-relative
-// Compose path. An explicit file may be nested anywhere in the worktree, so
-// its immediate parent cannot be assumed to be the repository root.
-func localSourcePaths(localPath, targetPath string) (string, string, error) {
-	if !sources.IsComposeFile(localPath) {
-		composePath, err := localComposePath(localPath, targetPath)
-		return localPath, composePath, err
-	}
-	absFile, err := filepath.Abs(localPath)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve local Compose path: %w", err)
-	}
-	root, err := git.FindWorktreeRoot(filepath.Dir(absFile))
-	if err != nil {
-		return "", "", err
-	}
-	relativePath, err := filepath.Rel(root, absFile)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve local Compose path relative to worktree: %w", err)
-	}
-	composePath, err := sources.CleanRepositoryPath(relativePath)
-	if err != nil {
-		return "", "", err
-	}
-	return root, composePath, nil
 }
 
 // expandHomePath resolves the shell-style home shorthand accepted by the
@@ -137,22 +100,6 @@ func expandHomePath(path string) (string, error) {
 	return filepath.Join(home, path[2:]), nil
 }
 
-// localComposePath derives the repository-relative services file path for the
-// in-place source mode. path may name a worktree directory or an explicit
-// Compose file within it; targetPath supplies the configured target filename
-// for the directory form.
-func localComposePath(path, targetPath string) (string, error) {
-	path = strings.TrimSpace(path)
-	targetPath = strings.TrimSpace(targetPath)
-	if sources.IsComposeFile(path) {
-		return sources.CleanRepositoryPath(filepath.Base(path))
-	}
-	if targetPath == "" {
-		targetPath = config.DefaultComposeFile
-	}
-	return sources.CleanRepositoryPath(targetPath)
-}
-
 // buildTarget constructs the deployment target for one project by
 // dispatching to the registered target builder (docs/ACCORDA.md §12). The
 // command layer does not switch on target type or import concrete drivers:
@@ -163,19 +110,66 @@ func localComposePath(path, targetPath string) (string, error) {
 // name is the operator project name in an ensemble document, or empty for a
 // single project. It doubles as the Compose project name override and the
 // image target's service name.
-func buildTarget(p *config.Project, dir string, src *git.Git, name string) (targets.Target, error) {
-	project := *p
-	if src != nil {
-		// buildSource resolves the repository-relative target artifact path;
-		// carry it into the context so the builder resolves the file inside
-		// the source's worktree (managed checkout or in-place worktree).
-		project.Source.Path = src.ResolvedPath()
-	}
-	ctx := targets.TargetContext{Project: project, Dir: dir, Name: name}
-	if src != nil {
-		ctx.SourcePath = src.CheckoutPath
-	}
+func buildTarget(p *config.Project, dir string, worktree sources.Worktree, name string) (targets.Target, error) {
+	ctx := targets.TargetContext{Project: *p, Dir: dir, Name: name, Worktree: worktree}
 	return targets.BuildTarget(ctx)
+}
+
+// desiredAt opens a source revision, delegates target-specific artifact
+// loading to the target, and releases any private historical materialization.
+func desiredAt(ctx context.Context, src sources.Source, target targets.Target, ref *sources.Commit) (_ *state.DesiredState, err error) {
+	revision, err := src.Revision(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, revision.Close()) }()
+	return target.Desired(ctx, revision)
+}
+
+// buildEnsembleMembers constructs the per-project source, target, receipts,
+// lock, bus, and reconciler wiring. CLI orchestration supplies only the
+// progress renderer factory.
+func buildEnsembleMembers(dir string, projects []config.Project, progress func(string) events.Handler) ([]reconcile.EnsembleMember, func(), error) {
+	members := make([]reconcile.EnsembleMember, 0, len(projects))
+	var unsubscribers []func()
+	cleanup := func() {
+		for _, unsub := range unsubscribers {
+			if unsub != nil {
+				unsub()
+			}
+		}
+	}
+	for i := range projects {
+		p := &projects[i]
+		src, err := buildSource(p, dir, p.Name)
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("sync %s: %w", p.Name, err)
+		}
+		tgt, err := buildTarget(p, dir, src, p.Name)
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("sync %s: %w", p.Name, err)
+		}
+		store := history.NewFileStore(receiptPath(dir, p.Name))
+		bus := events.NewBus()
+		if progress != nil {
+			unsubscribers = append(unsubscribers, bus.Subscribe(progress(p.Name)))
+		}
+		if wh, err := buildWebhook(p.Notifications, bus); err != nil {
+			cleanup()
+			return nil, nil, err
+		} else if wh != nil {
+			unsubscribers = append(unsubscribers, wh)
+		}
+		r := reconcile.New(src, tgt, bus).
+			WithDriftPolicy(driftPolicy(p.Reconcile.Drift)).
+			WithEnvironment(p.Environment).
+			WithReceiptStore(store).
+			WithLocker(locking.NewFileLocker(deploymentLockPath(dir, p.Target)))
+		members = append(members, reconcile.EnsembleMember{Name: p.Name, Reconciler: r})
+	}
+	return members, cleanup, nil
 }
 
 // withDeploymentLock acquires the target-scoped deployment lock for the

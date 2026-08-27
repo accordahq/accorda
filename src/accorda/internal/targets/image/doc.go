@@ -13,16 +13,16 @@
 // model (docs/DECISIONS.md #24).
 //
 // The driver implements the targets.Target interface
-// (Validate, Current, Plan, Apply, Health) and the optional
-// targets.DesiredProvider and targets.LogTarget capabilities. It shares the
+// (Desired, Validate, Current, Plan, Apply, Health) and the optional
+// targets.LogTarget capability. It shares the
 // Docker engine client seam, runtime-state mapping, image digest resolution,
 // health mapping, and image pull policy with the Compose driver through the
 // internal/docker package so the Docker SDK dependency stays confined to the
 // adapters and the two drivers do not diverge (docs/ACCORDA.md §12,
 // docs/DECISIONS.md #3).
 //
-// Desired state is config-driven: the reconcile loop calls DesiredProvider to
-// obtain a one-service DesiredState anchored to the Git commit the source
+// Desired state is config-driven: Desired builds a one-service DesiredState
+// anchored to the Git commit carried by the source revision
 // fetched, so receipts and history stay Git-anchored while the service model
 // comes from accorda.yaml. Apply runs the single container with `docker run`
 // through a runner seam so the Docker CLI stays confined to this adapter,

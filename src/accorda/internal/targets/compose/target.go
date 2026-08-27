@@ -14,6 +14,7 @@ import (
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 	shareddocker "accorda/internal/docker"
+	"accorda/internal/sources"
 	"accorda/internal/targets"
 )
 
@@ -55,6 +56,9 @@ type Target struct {
 	// file is the Compose file path resolved from config.Target (File, or
 	// Path when File is empty).
 	file string
+	// artifact is the repository-relative Compose file loaded from each
+	// source revision. It is empty for an absolute operator-local override.
+	artifact string
 	// project is the Compose project name used to filter containers by the
 	// com.docker.compose.project label. It is normalized to match the label
 	// Compose v2 applies.
@@ -142,6 +146,12 @@ func WithServiceOverrides(overrides map[string]config.ServiceOverride) Option {
 	return func(t *Target) { t.serviceOverrides = overrides }
 }
 
+// WithArtifact sets the repository-relative Compose file used for desired-
+// state loading. file remains the stable current-worktree deployment path.
+func WithArtifact(artifact string) Option {
+	return func(t *Target) { t.artifact = artifact }
+}
+
 // New constructs a Compose Target from an Accorda project's target
 // configuration. It does not touch the Docker engine or the filesystem;
 // Validate performs those checks.
@@ -177,6 +187,17 @@ func New(cfg config.Target, opts ...Option) (*Target, error) {
 	return t, nil
 }
 
+// File returns the resolved on-disk Compose file path the target deploys
+// from. It is the absolute path the builder resolved against the source
+// worktree (or the operator-local override). Tests and cleanup helpers use it
+// to address the same `docker compose -f` file the reconciler manages.
+func (t *Target) File() string {
+	if t == nil {
+		return ""
+	}
+	return t.file
+}
+
 // ProjectName returns the default Compose project name New assigns for cfg.
 // Compose identifies a project by the normalized directory containing its
 // Compose file, independent of the file's name.
@@ -209,6 +230,39 @@ func (t *Target) Validate(ctx context.Context) error {
 		return err
 	}
 	return t.ValidateEnvironment(ctx)
+}
+
+// Desired loads and normalizes the Compose declaration owned by this target
+// from the supplied source revision.
+func (t *Target) Desired(ctx context.Context, revision *sources.Revision) (*state.DesiredState, error) {
+	if t == nil {
+		return nil, errors.New("compose target: nil target")
+	}
+	if revision == nil {
+		return nil, errors.New("compose target: source revision is nil")
+	}
+	file := t.file
+	if t.artifact != "" {
+		var err error
+		file, err = revision.Path(t.artifact)
+		if err != nil {
+			return nil, fmt.Errorf("compose target: resolve artifact: %w", err)
+		}
+	}
+	services, err := LoadFileWithContext(ctx, file)
+	if err != nil {
+		return nil, err
+	}
+	if err := attachExternalFileDigests(ctx, revision, t.artifact, services); err != nil {
+		return nil, err
+	}
+	return &state.DesiredState{
+		Repository: revision.Repository,
+		Branch:     revision.Commit.Branch,
+		Commit:     revision.Commit.SHA,
+		CommitTime: revision.Commit.Time,
+		Services:   services,
+	}, nil
 }
 
 // ValidateEnvironment checks the Docker engine and Compose CLI without

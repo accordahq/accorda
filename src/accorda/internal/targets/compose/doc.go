@@ -9,8 +9,10 @@
 // schema including interpolation, extends, and profiles.
 //
 // The driver is exposed as Target, which implements the targets.Target
-// interface (docs/ACCORDA.md §12). The Validate phase loads the Compose file
-// and pings the Docker engine; the Current phase reads the runtime state of
+// interface (docs/ACCORDA.md §12). Desired locates the configured Compose
+// artifact inside a source revision, loads it with full relative-file context,
+// and normalizes it into state.Service values. The Validate phase loads the
+// active Compose file and pings the Docker engine; Current reads runtime state
 // the project's containers via the Docker engine API and maps it back to
 // Accorda service names using the Compose labels, returning a
 // state.RuntimeState (docs/ACCORDA.md §5.3). The Plan phase computes the

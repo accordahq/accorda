@@ -179,11 +179,11 @@ func collectStatus(ctx context.Context, proj *config.Project, src sources.Source
 	}
 	info.Runtime = healthLabel(hc)
 
-	// The desired state from Git supplies the redacted repository and the
+	// The desired state loaded by the target supplies repository metadata and the
 	// service table's declared images. It is best-effort: on failure the
 	// runtime table is still printed and the repository stays redacted from
 	// the configured URL.
-	desired := desiredOrNil(src.Desired(ctx, nil))
+	desired := desiredOrNil(desiredAt(ctx, src, tgt, nil))
 	applyDesiredMeta(&info, desired)
 	info.services = buildRows(desired, runtime, hc)
 	return info

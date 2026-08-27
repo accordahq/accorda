@@ -8,6 +8,7 @@ import (
 	"accorda/internal/core/health"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
+	"accorda/internal/sources"
 )
 
 // ApplyError reports a partial target application. Completed contains every
@@ -48,6 +49,7 @@ func (e *ApplyError) Unwrap() error {
 //
 // The methods follow the reconciliation lifecycle from §6:
 //
+//   - Desired locates and normalizes this target's declaration in a source revision.
 //   - Validate checks that the target is configured and reachable enough to
 //     reconcile, without making changes.
 //   - Current returns the runtime state actually running on the target now.
@@ -60,6 +62,9 @@ func (e *ApplyError) Unwrap() error {
 // All methods take a context so callers can cancel long-running operations.
 // Implementations must be safe for concurrent use by the reconcile loop.
 type Target interface {
+	// Desired loads and normalizes the target-specific declaration from the
+	// supplied source revision.
+	Desired(ctx context.Context, revision *sources.Revision) (*state.DesiredState, error)
 	// Validate checks the target configuration and connectivity. It must
 	// not mutate the target.
 	Validate(ctx context.Context) error
@@ -102,7 +107,10 @@ type Stub struct{}
 // NewStub returns a no-op Target.
 func NewStub() *Stub { return &Stub{} }
 
-func (Stub) Validate(context.Context) error                       { return ErrNotImplemented }
+func (Stub) Validate(context.Context) error { return ErrNotImplemented }
+func (Stub) Desired(context.Context, *sources.Revision) (*state.DesiredState, error) {
+	return nil, ErrNotImplemented
+}
 func (Stub) Current(context.Context) (*state.RuntimeState, error) { return nil, ErrNotImplemented }
 func (Stub) Plan(context.Context, *state.DesiredState, *state.DeployedState) (*plan.Plan, error) {
 	return nil, ErrNotImplemented

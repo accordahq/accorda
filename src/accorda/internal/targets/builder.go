@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"accorda/internal/config"
+	"accorda/internal/sources"
 )
 
 // TargetContext carries the shared context a target builder needs to
@@ -23,11 +24,9 @@ type TargetContext struct {
 	// empty for a standalone project. It doubles as the Compose project name
 	// override and the image target's service name.
 	Name string
-	// SourcePath resolves a repository-relative target artifact (for example
-	// a Compose file) against the Git source's managed checkout. It returns
-	// the absolute path inside the checkout. Drivers that do not consume a
-	// file from the checkout (for example the image target) ignore it.
-	SourcePath func(repositoryPath string) (string, error)
+	// Worktree exposes the current source checkout through a small, provider-
+	// neutral path interface. File-backed targets use it for deployment paths.
+	Worktree sources.Worktree
 	// Managed reports whether the target's primary artifact is resolved
 	// inside the Git source's managed checkout (true) or is an absolute
 	// operator-local override (false). Compose uses it to decide whether to

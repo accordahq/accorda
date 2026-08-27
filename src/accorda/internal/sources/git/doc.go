@@ -15,9 +15,9 @@
 //     per-user cache, checks out the configured branch, and returns HEAD.
 //   - In-place mode (source.path, no url) binds directly to a user-owned local
 //     git worktree without cloning. Fetch reads the worktree's current HEAD;
-//     the adapter never mutates the worktree. Historical desired state (used
-//     by diff, plan, and rollback baselines) is read from the commit's tree
-//     via go-git, so the operator's checkout is never rewritten. In-place
+//     the adapter never mutates the worktree. Historical revision views (used
+//     by diff, plan, and rollback baselines) are materialized privately from
+//     the commit tree, so the operator's checkout is never rewritten. In-place
 //     Materialize (rollback checkout) is unsupported because it would rewrite
 //     the user-owned worktree.
 //
@@ -36,13 +36,12 @@
 //   - In-place mode never uses auth.
 //
 // Fetch scope: Fetch updates only refs/remotes/origin/<configured branch>.
-// Reading desired state at a commit on a different branch requires that ref
+// Opening a revision at a commit on a different branch requires that ref
 // to have been fetched separately; the adapter does not fetch all remotes on
 // every sync by design, to keep fetches cheap and scoped to the configured
 // branch.
 //
-// CheckoutPath resolves repository-relative target artifacts inside the same
-// worktree (managed checkout or bound worktree) that Fetch updates. It
-// rejects absolute paths and traversal so adapters can consume fetched files
-// without exposing arbitrary host paths.
+// Revision exposes commit metadata, a constrained filesystem root, tracked
+// file digests, and cleanup for historical materializations. CheckoutPath
+// resolves the stable active-worktree path used for deployment.
 package git
