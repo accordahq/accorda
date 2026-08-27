@@ -166,7 +166,7 @@ func (g *Git) Validate(_ context.Context) error {
 	if strings.TrimSpace(g.Source.URL) == "" {
 		return errors.New("git source: url is required")
 	}
-	if strings.TrimSpace(g.Source.Branch) == "" {
+	if g.configuredBranch() == "" {
 		return errors.New("git source: branch is required")
 	}
 	g.applyAuth()
@@ -242,11 +242,12 @@ func (g *Git) Fetch(ctx context.Context) (sources.Commit, error) {
 				return sources.Commit{}, err
 			}
 		}
-		if err := g.checkout(ctx, dir, g.Source.Branch); err != nil {
+		branch := g.configuredBranch()
+		if err := g.checkout(ctx, dir, branch); err != nil {
 			return sources.Commit{}, err
 		}
 	}
-	return g.headCommit(ctx, dir, g.branchFor(dir))
+	return g.headCommit(ctx, dir, g.branchFor())
 }
 
 // Revision opens a real filesystem view for the requested commit. The current
@@ -280,7 +281,7 @@ func (g *Git) Revision(ctx context.Context, ref *sources.Commit) (*sources.Revis
 		return nil, fmt.Errorf("git source: read tree at %s: %w", commit.SHA, err)
 	}
 	if commit.Branch == "" {
-		commit.Branch = g.branchFor(dir)
+		commit.Branch = g.branchFor()
 	}
 	if commit.Time.IsZero() {
 		commit.Time = commitObject.Author.When.UTC()
@@ -539,10 +540,11 @@ func (g *Git) clone(ctx context.Context, dir string) error {
 	if err := ensurePrivateCacheParent(filepath.Dir(dir)); err != nil {
 		return err
 	}
+	branch := g.configuredBranch()
 	cloneOpts := &git.CloneOptions{
 		URL:           g.Source.URL,
 		RemoteName:    "origin",
-		ReferenceName: plumbing.NewBranchReferenceName(g.Source.Branch),
+		ReferenceName: plumbing.NewBranchReferenceName(branch),
 		SingleBranch:  true,
 		NoCheckout:    true,
 	}
@@ -588,16 +590,17 @@ func (g *Git) fetch(ctx context.Context, dir string) error {
 	if err != nil {
 		return fmt.Errorf("git source: origin remote: %w", err)
 	}
+	branch := g.configuredBranch()
 	fetchOpts := &git.FetchOptions{
 		RefSpecs: []gitconfig.RefSpec{
-			gitconfig.RefSpec("+refs/heads/" + g.Source.Branch + ":refs/remotes/origin/" + g.Source.Branch),
+			gitconfig.RefSpec("+refs/heads/" + branch + ":refs/remotes/origin/" + branch),
 		},
 	}
 	if err := g.applyClientOptions(&fetchOpts.ClientOptions); err != nil {
 		return err
 	}
 	if err := remote.FetchContext(ctx, fetchOpts); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return fmt.Errorf("git source: fetch %q: %w", g.Source.Branch, err)
+		return fmt.Errorf("git source: fetch %q: %w", branch, err)
 	}
 	return nil
 }
@@ -707,17 +710,28 @@ func (g *Git) resolveCommit(ctx context.Context, ref *sources.Commit) (sources.C
 			}
 		}
 	}
-	return g.headCommit(ctx, dir, g.branchFor(dir))
+	return g.headCommit(ctx, dir, g.branchFor())
 }
 
-// branchFor returns the branch name used when reading HEAD from dir. It is
-// the configured branch in remote mode, or empty in in-place mode so
-// headCommit derives the branch from the HEAD reference.
-func (g *Git) branchFor(dir string) string {
+// configuredBranch returns the trimmed configured branch name, or the empty
+// string when unset. It is the single accessor for the branch so validation,
+// git operations, and commit reporting read one canonical value instead of
+// reaching into Source.Branch directly.
+func (g *Git) configuredBranch() string {
+	if g == nil {
+		return ""
+	}
+	return strings.TrimSpace(g.Source.Branch)
+}
+
+// branchFor returns the branch name used when reading HEAD. It is the
+// configured branch in remote mode, or empty in in-place mode so headCommit
+// derives the branch from the HEAD reference.
+func (g *Git) branchFor() string {
 	if g.isInPlace() {
 		return ""
 	}
-	return g.Source.Branch
+	return g.configuredBranch()
 }
 
 // materializeTree writes tracked files from tree beneath root. The private
