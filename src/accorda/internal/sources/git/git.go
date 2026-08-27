@@ -17,6 +17,7 @@ import (
 	gitconfig "github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
 	gossh "github.com/go-git/go-git/v6/plumbing/transport/ssh"
@@ -708,9 +709,10 @@ func (g *Git) parseServices(ctx context.Context, sha string) (map[string]state.S
 	return g.parseServicesFromWorktree(ctx, dir, sha, path)
 }
 
-// parseServicesFromTree reads the services file from a specific commit's tree
-// so historical desired state (used by diff, plan, and rollback baselines) can
-// be reconstructed without mutating the working tree.
+// parseServicesFromTree reads a specific commit into a private temporary
+// worktree so Compose can resolve includes, extends, and relative paths while
+// historical desired state is reconstructed without mutating the user-owned
+// worktree.
 func (g *Git) parseServicesFromTree(ctx context.Context, dir, sha, composePath string) (map[string]state.Service, error) {
 	r, err := git.PlainOpen(dir)
 	if err != nil {
@@ -726,23 +728,23 @@ func (g *Git) parseServicesFromTree(ctx context.Context, dir, sha, composePath s
 	if err != nil {
 		return nil, fmt.Errorf("git source: read tree: %w", err)
 	}
-	file, err := tree.File(composePath)
+	_, err = tree.File(composePath)
 	if err != nil {
 		if errors.Is(err, object.ErrFileNotFound) {
 			return map[string]state.Service{}, nil
 		}
 		return nil, fmt.Errorf("git source: find %q at %s: %w", composePath, sha, err)
 	}
-	reader, err := file.Blob.Reader()
+	temporaryWorktree, err := os.MkdirTemp("", "accorda-git-tree-")
 	if err != nil {
-		return nil, fmt.Errorf("git source: open %q at %s: %w", composePath, sha, err)
+		return nil, fmt.Errorf("git source: create temporary worktree: %w", err)
 	}
-	defer func() { _ = reader.Close() }()
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("git source: read %q at %s: %w", composePath, sha, err)
+	defer func() { _ = os.RemoveAll(temporaryWorktree) }()
+	if err := materializeTree(ctx, tree, temporaryWorktree); err != nil {
+		return nil, fmt.Errorf("git source: materialize tree at %s: %w", sha, err)
 	}
-	services, err := compose.ParseWithContext(ctx, data)
+	fullPath := filepath.Join(temporaryWorktree, filepath.FromSlash(composePath))
+	services, err := compose.LoadFileWithContext(ctx, fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("git source: parse %q at %s: %w", composePath, sha, err)
 	}
@@ -750,6 +752,44 @@ func (g *Git) parseServicesFromTree(ctx context.Context, dir, sha, composePath s
 		return nil, err
 	}
 	return services, nil
+}
+
+// materializeTree writes tracked files from tree beneath root. The private
+// tree is short-lived and exists only to give compose-go real file context for
+// historical includes and extends.
+func materializeTree(ctx context.Context, tree *object.Tree, root string) error {
+	return tree.Files().ForEach(func(file *object.File) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		repositoryPath, err := sources.CleanRepositoryPath(file.Name)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(root, filepath.FromSlash(repositoryPath))
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			return fmt.Errorf("create directory for %q: %w", repositoryPath, err)
+		}
+		contents, err := file.Contents()
+		if err != nil {
+			return fmt.Errorf("read %q: %w", repositoryPath, err)
+		}
+		if err := materializeTreeFile(file.Mode, destination, contents); err != nil {
+			return fmt.Errorf("write %q: %w", repositoryPath, err)
+		}
+		return nil
+	})
+}
+
+func materializeTreeFile(mode filemode.FileMode, destination, contents string) error {
+	switch mode {
+	case filemode.Symlink:
+		return os.Symlink(contents, destination)
+	case filemode.Executable:
+		return os.WriteFile(destination, []byte(contents), 0o700)
+	default:
+		return os.WriteFile(destination, []byte(contents), 0o600)
+	}
 }
 
 // shaIsHead reports whether sha is the current HEAD of the repository at dir.

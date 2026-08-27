@@ -814,6 +814,8 @@ func applyDefaults(p *Project) {
 		p.Source.Type = "git"
 	}
 	if p.Source.Branch == "" {
+		// In-place sources derive the effective branch from worktree HEAD; this
+		// remote-mode default remains in normalized config but is ignored.
 		p.Source.Branch = "main"
 	}
 	if p.Images.Pull == "" {

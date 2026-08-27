@@ -123,8 +123,9 @@ checks out the configured branch, as before. In-place mode (`source.path`, no
 reads the worktree's current `HEAD` and never mutates it. Both modes share one
 worktree-read core, so the commit-anchored fast path, receipts, `diff`/`plan`/
 `history`/`inspect`, and rollback work unchanged. Historical desired state (used by
-`diff`, `plan`, and rollback baselines) is read from the commit's tree via go-git
-without checking it out, so the operator's checkout is never rewritten; in-place
+`diff`, `plan`, and rollback baselines) is privately materialized from the commit's
+tree via go-git so Compose resolves tracked `extends`/`include` files without
+rewriting the operator's checkout; in-place
 `Materialize` (rollback checkout) is unsupported because it would rewrite the
 user-owned worktree. Config: exactly one of `url` or `path` selects the mode; with
 `url`, `path` is an optional repo-relative compose path. Files: `internal/sources/git/git.go`,

@@ -60,13 +60,17 @@ func buildSource(p *config.Project, dir, name string) (*git.Git, error) {
 		// the path names a Compose file; the repository-relative compose path
 		// is the file's basename (for the file form) or the target file (for
 		// the directory form).
-		root := source.Path
-		composePath, err := localComposePath(source.Path, targetPath)
+		localPath, err := expandHomePath(source.Path)
 		if err != nil {
 			return nil, err
 		}
-		if sources.IsComposeFile(source.Path) {
-			root = filepath.Dir(source.Path)
+		root := localPath
+		composePath, err := localComposePath(localPath, targetPath)
+		if err != nil {
+			return nil, err
+		}
+		if sources.IsComposeFile(localPath) {
+			root = filepath.Dir(localPath)
 		}
 		absRoot, err := filepath.Abs(root)
 		if err != nil {
@@ -90,6 +94,24 @@ func buildSource(p *config.Project, dir, name string) (*git.Git, error) {
 		namespace = filepath.Join(namespace, name)
 	}
 	return git.New(source, git.WithCacheNamespace(namespace)), nil
+}
+
+// expandHomePath resolves the shell-style home shorthand accepted by the
+// documented in-place source configuration. Environment variables and
+// ~other-user forms are intentionally left untouched.
+func expandHomePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, `~\`) {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home directory: %w", err)
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, path[2:]), nil
 }
 
 // localComposePath derives the repository-relative services file path for the

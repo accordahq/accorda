@@ -374,3 +374,59 @@ func TestGitSource_InPlaceDesiredAtOlderCommit(t *testing.T) {
 		t.Fatalf("worktree does not reflect HEAD v2: %s", data)
 	}
 }
+
+func TestGitSource_InPlaceHistoricalComposeReferences(t *testing.T) {
+	testutil.RequireGit(t)
+	origin := t.TempDir()
+	runGitCommand(t, origin, "init", "--initial-branch=main")
+	runGitCommand(t, origin, "config", "user.email", "accorda@example.test")
+	runGitCommand(t, origin, "config", "user.name", "Accorda Test")
+	deploy := filepath.Join(origin, "deploy")
+	if err := os.MkdirAll(deploy, 0o755); err != nil {
+		t.Fatalf("mkdir deploy: %v", err)
+	}
+	writeIntegrationFile(t, filepath.Join(deploy, "base.yaml"), `services:
+  base:
+    image: api:1
+`)
+	writeIntegrationFile(t, filepath.Join(deploy, "included.yaml"), `services:
+  worker:
+    image: worker:1
+`)
+	writeIntegrationFile(t, filepath.Join(deploy, "compose.yaml"), `include:
+  - included.yaml
+services:
+  api:
+    extends:
+      file: base.yaml
+      service: base
+`)
+	runGitCommand(t, origin, "add", ".")
+	runGitCommand(t, origin, "commit", "-m", "first")
+	oldSHA := runGitCommand(t, origin, "rev-parse", "HEAD")
+	writeIntegrationFile(t, filepath.Join(deploy, "base.yaml"), `services:
+  base:
+    image: api:2
+`)
+	writeIntegrationFile(t, filepath.Join(deploy, "included.yaml"), `services:
+  worker:
+    image: worker:2
+`)
+	runGitCommand(t, origin, "add", ".")
+	runGitCommand(t, origin, "commit", "-m", "second")
+
+	worktree := testutil.MakeLocalWorktree(t, "file://"+origin, "main")
+	g := New(config.Source{Type: "git", Path: "deploy/compose.yaml"}, WithCacheDir(worktree))
+	desired, err := g.Desired(context.Background(), &sources.Commit{SHA: oldSHA, Branch: "main"})
+	if err != nil {
+		t.Fatalf("Desired at older commit: %v", err)
+	}
+	if got := desired.Services["api"].Image; got != "api:1" {
+		t.Errorf("extended image = %q, want api:1", got)
+	}
+	if got := desired.Services["worker"].Image; got != "worker:1" {
+		t.Errorf("included image = %q, want worker:1", got)
+	}
+	assertIntegrationFile(t, filepath.Join(worktree, "deploy", "base.yaml"), "services:\n  base:\n    image: api:2\n")
+	assertIntegrationFile(t, filepath.Join(worktree, "deploy", "included.yaml"), "services:\n  worker:\n    image: worker:2\n")
+}

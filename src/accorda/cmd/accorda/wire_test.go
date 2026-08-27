@@ -110,6 +110,58 @@ func TestBuildSourceResolvesComposeFileInManagedCheckout(t *testing.T) {
 	}
 }
 
+func TestBuildSourceResolvesInPlaceWorktree(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cases := []struct {
+		name       string
+		sourcePath string
+		targetFile string
+		wantRoot   string
+		wantPath   string
+	}{
+		{
+			name:       "directory",
+			sourcePath: filepath.Join(home, "worktree"),
+			targetFile: filepath.Join("deploy", config.DefaultComposeFile),
+			wantRoot:   filepath.Join(home, "worktree"),
+			wantPath:   "deploy/" + config.DefaultComposeFile,
+		},
+		{
+			name:       "explicit file",
+			sourcePath: filepath.Join(home, "worktree", "docker-compose.yml"),
+			targetFile: config.DefaultComposeFile,
+			wantRoot:   filepath.Join(home, "worktree"),
+			wantPath:   "docker-compose.yml",
+		},
+		{
+			name:       "home shorthand",
+			sourcePath: "~/worktree",
+			targetFile: config.DefaultComposeFile,
+			wantRoot:   filepath.Join(home, "worktree"),
+			wantPath:   config.DefaultComposeFile,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &config.Project{
+				Source: config.Source{Type: "git", Path: tc.sourcePath},
+				Target: config.Target{Type: config.TargetCompose, File: tc.targetFile},
+			}
+			src, err := buildSource(p, ".", "")
+			if err != nil {
+				t.Fatalf("buildSource: %v", err)
+			}
+			if src.CacheDir != tc.wantRoot {
+				t.Errorf("worktree root = %q, want %q", src.CacheDir, tc.wantRoot)
+			}
+			if src.Source.Path != tc.wantPath {
+				t.Errorf("source path = %q, want %q", src.Source.Path, tc.wantPath)
+			}
+		})
+	}
+}
+
 func TestBuildSourceIgnoresAbsoluteTargetPath(t *testing.T) {
 	p := &config.Project{
 		Source: config.Source{URL: "https://example.com/acme/repo.git"},
