@@ -157,9 +157,14 @@ The core abstractions defined in `docs/ACCORDA.md` §12 are implemented so that 
 
 The generic Git source adapter (`internal/sources/git`, `docs/ACCORDA.md` §13) implements `sources.Source` and works against any Git server over SSH or HTTPS, including on-premises servers, with zero SaaS dependency and no GitHub-specific calls. It uses the [go-git](https://github.com/go-git/go-git) library for Git operations (clone, fetch, checkout, reading files at commits), so the system `git` CLI is not required at runtime. Auth is handled via go-git transport methods: SSH key auth, HTTPS token auth, or ambient (SSH agent / unauthenticated HTTPS).
 
-`git.New(config.Source, opts...)` constructs a source configured from `accorda.yaml`. `Validate` checks the source configuration without cloning, including reading and parsing an explicitly configured SSH key. `Fetch` clones into a private per-user cache keyed by the credential-free repository identity and operator project directory on first use, verifies a cached repository's `origin` before every reuse, then fetches and checks out the configured branch. The project namespace keeps production and staging checkouts independent even when they use different branches of the same repository. `Desired` reads the Compose-style services file under the configured `source.path` and returns a `state.DesiredState` carrying the repository, branch, commit, and declared services. `CheckoutPath` safely resolves repository-relative artifacts inside that same managed worktree so target adapters consume the exact fetched revision.
+The adapter has two modes, selected by which field is configured:
 
-Authentication follows §15 and is configured explicitly via `source.auth` in `accorda.yaml` (or `git.WithAuth` in code):
+- **Remote mode** (`source.url`) clones or fetches the repository into a private per-user cache keyed by the credential-free repository identity and operator project directory. This is the default.
+- **In-place mode** (`source.path`, no `url`) binds directly to a user-owned local git worktree without cloning. `Fetch` only reads its current `HEAD`; the adapter never mutates the worktree. This yields a real, stable `HEAD` SHA at zero cost, so the reconcile loop's commit-anchored fast path, receipts, `diff`/`plan`/`history`/`inspect`, and rollback all work unchanged. Historical desired state (`diff`, `plan`, rollback baselines) is read from the commit's tree via go-git without checking it out, so the operator's checkout is never rewritten. In-place rollback (`Materialize`) is unsupported because it would rewrite the user-owned worktree; the historical desired state is still reconstructed from the commit's tree.
+
+`git.New(config.Source, opts...)` constructs a source configured from `accorda.yaml`. `Validate` checks the source configuration without cloning, including reading and parsing an explicitly configured SSH key. In remote mode `Fetch` clones into the private cache on first use, verifies a cached repository's `origin` before every reuse, then fetches and checks out the configured branch. The project namespace keeps production and staging checkouts independent even when they use different branches of the same repository. In in-place mode `Fetch` reads `HEAD` from the bound worktree. `Desired` reads the Compose-style services file under the configured `source.path` and returns a `state.DesiredState` carrying the repository, branch, commit, and declared services. `CheckoutPath` safely resolves repository-relative artifacts inside that same worktree so target adapters consume the exact fetched revision.
+
+Authentication follows §15 and is configured explicitly via `source.auth` in `accorda.yaml` (or `git.WithAuth` in code); in-place mode never uses auth:
 
 ```yaml
 source:
@@ -180,6 +185,14 @@ source:
     type: https
     token: ghp_personal_or_installation_token
     username: x-access-token   # optional; defaults to "oauth2"
+```
+
+In-place mode points at a local worktree:
+
+```yaml
+source:
+  type: git
+  path: ~/Work/Docker        # a git worktree; reconciled in place, no clone
 ```
 
 - `auth.type: ssh` reads and parses the configured key for go-git's SSH transport. An unreadable, invalid, encrypted, or unsupported key fails validation rather than falling back to the ambient SSH agent. Key material is never logged.

@@ -149,10 +149,22 @@ func WithAuth(a config.Auth) Option {
 }
 
 // Validate checks the source configuration. It does not clone or fetch
-// (docs/ACCORDA.md §13, §6 fetch phase, §15 auth).
+// (docs/ACCORDA.md §13, §6 fetch phase, §15 auth). In remote mode it
+// requires a URL and branch; in in-place mode it requires the bound worktree
+// to be a readable Git repository and never uses auth.
 func (g *Git) Validate(_ context.Context) error {
 	if g == nil {
 		return errors.New("git source: nil source")
+	}
+	if g.isInPlace() {
+		dir, err := g.cacheDir()
+		if err != nil {
+			return err
+		}
+		if _, err := git.PlainOpen(dir); err != nil {
+			return fmt.Errorf("git source: open worktree %q: %w", dir, err)
+		}
+		return nil
 	}
 	if strings.TrimSpace(g.Source.URL) == "" {
 		return errors.New("git source: url is required")
@@ -162,6 +174,14 @@ func (g *Git) Validate(_ context.Context) error {
 	}
 	g.applyAuth()
 	return g.validateAuth()
+}
+
+// isInPlace reports whether the source reconciles in place from a user-owned
+// worktree (source.path set, no URL) rather than from a remote cloned into
+// the cache (source.url). A source with neither configured is invalid and is
+// treated as remote so Validate reports the missing URL.
+func (g *Git) isInPlace() bool {
+	return g != nil && g.Source.URL == "" && g.Source.Path != ""
 }
 
 // validateAuth checks the auth configuration without touching secrets. It
@@ -193,9 +213,10 @@ func (g *Git) validateAuth() error {
 // Fetch ensures the latest state of the configured branch is available
 // locally and returns the commit it points to.
 //
-// If the cache directory does not contain a repository yet, Fetch clones it.
-// Otherwise it fetches and checks out the configured branch. The returned
-// Commit carries the SHA, branch, and authored time of HEAD.
+// In remote mode (source.url) it clones into the cache if absent, otherwise
+// fetches and checks out the configured branch. In in-place mode (source.path)
+// it never mutates the user-owned worktree and simply reads its current HEAD.
+// The returned Commit carries the SHA, branch, and authored time of HEAD.
 func (g *Git) Fetch(ctx context.Context) (sources.Commit, error) {
 	if err := g.ensureReady(ctx); err != nil {
 		return sources.Commit{}, err
@@ -204,29 +225,31 @@ func (g *Git) Fetch(ctx context.Context) (sources.Commit, error) {
 	if err != nil {
 		return sources.Commit{}, err
 	}
-	if err := secureCacheDir(dir); err != nil {
-		return sources.Commit{}, err
-	}
-	exists, err := repoExists(dir)
-	if err != nil {
-		return sources.Commit{}, fmt.Errorf("git source: inspect cache: %w", err)
-	}
-	if !exists {
-		if err := g.clone(ctx, dir); err != nil {
+	if !g.isInPlace() {
+		if err := secureCacheDir(dir); err != nil {
 			return sources.Commit{}, err
 		}
-	} else {
-		if err := g.verifyOrigin(dir); err != nil {
-			return sources.Commit{}, err
+		exists, err := repoExists(dir)
+		if err != nil {
+			return sources.Commit{}, fmt.Errorf("git source: inspect cache: %w", err)
 		}
-		if err := g.fetch(ctx, dir); err != nil {
+		if !exists {
+			if err := g.clone(ctx, dir); err != nil {
+				return sources.Commit{}, err
+			}
+		} else {
+			if err := g.verifyOrigin(dir); err != nil {
+				return sources.Commit{}, err
+			}
+			if err := g.fetch(ctx, dir); err != nil {
+				return sources.Commit{}, err
+			}
+		}
+		if err := g.checkout(ctx, dir, g.Source.Branch); err != nil {
 			return sources.Commit{}, err
 		}
 	}
-	if err := g.checkout(ctx, dir, g.Source.Branch); err != nil {
-		return sources.Commit{}, err
-	}
-	return g.headCommit(ctx, dir, g.Source.Branch)
+	return g.headCommit(ctx, dir, g.branchFor(dir))
 }
 
 // Desired returns the desired state declared in Git at the given commit. A
@@ -236,7 +259,8 @@ func (g *Git) Fetch(ctx context.Context) (sources.Commit, error) {
 // configured source path, at the given commit. When a non-nil ref is passed,
 // the file content is read from that commit's tree so the returned services
 // match the reported SHA. When ref is nil, the content is read from the
-// checked-out HEAD of the configured branch.
+// checked-out HEAD of the configured branch (remote mode) or the user-owned
+// working tree (in-place mode).
 //
 // The services file is parsed using the compose-go loader
 // (github.com/compose-spec/compose-go/v2), which handles the full Compose
@@ -256,8 +280,17 @@ func (g *Git) Desired(ctx context.Context, ref *sources.Commit) (*state.DesiredS
 	if err != nil {
 		return nil, err
 	}
+	repository := RedactURL(g.Source.URL)
+	if g.isInPlace() {
+		// In-place mode reports the bound worktree root as the repository
+		// identifier so it stays a stable, loggable path rather than the
+		// repo-relative compose filename.
+		if dir, err := g.cacheDir(); err == nil {
+			repository = dir
+		}
+	}
 	return &state.DesiredState{
-		Repository: RedactURL(g.Source.URL),
+		Repository: repository,
 		Branch:     commit.Branch,
 		Commit:     commit.SHA,
 		CommitTime: commit.Time,
@@ -268,9 +301,18 @@ func (g *Git) Desired(ctx context.Context, ref *sources.Commit) (*state.DesiredS
 // Materialize checks out an already-fetched revision into this source's
 // isolated managed worktree. Rollback uses it after reading historical
 // desired state so Compose sees the referenced files from the same commit.
+//
+// In in-place mode (source.path) Materialize is unsupported: it would rewrite
+// the user-owned worktree, which the adapter never mutates
+// (docs/DECISIONS.md #51). The historical desired state is still reconstructed
+// from the commit's tree via Desired; only the Compose target's on-disk
+// materialization for rollback is unavailable.
 func (g *Git) Materialize(ctx context.Context, ref *sources.Commit) error {
 	if err := g.ensureReady(ctx); err != nil {
 		return err
+	}
+	if g.isInPlace() {
+		return errors.New("git source: in-place materialization is not supported (would rewrite the user-owned worktree)")
 	}
 	commit, err := g.resolveCommit(ctx, ref)
 	if err != nil {
@@ -358,7 +400,7 @@ func (g *Git) CheckoutPath(repositoryPath string) (string, error) {
 	if g == nil {
 		return "", errors.New("git source: nil source")
 	}
-	clean, err := cleanRepositoryPath(repositoryPath)
+	clean, err := sources.CleanRepositoryPath(repositoryPath)
 	if err != nil {
 		return "", err
 	}
@@ -367,6 +409,17 @@ func (g *Git) CheckoutPath(repositoryPath string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, filepath.FromSlash(clean)), nil
+}
+
+// ResolvedPath returns the repository-relative path of the services file the
+// Compose target should resolve against the managed checkout. buildSource
+// (in cmd/accorda/wire.go) sets Source.Path to this resolved path before
+// construction.
+func (g *Git) ResolvedPath() string {
+	if g == nil {
+		return ""
+	}
+	return g.Source.Path
 }
 
 func defaultCacheBase() (string, error) {
@@ -565,9 +618,23 @@ func (g *Git) headCommit(_ context.Context, dir, branch string) (sources.Commit,
 	}
 	return sources.Commit{
 		SHA:    commit.Hash.String(),
-		Branch: branch,
+		Branch: branchFor(branch, head),
 		Time:   commit.Author.When.UTC(),
 	}, nil
+}
+
+// branchFor returns the branch name reported for HEAD. When the configured
+// branch is empty (in-place mode), it derives the branch from the HEAD
+// reference's short name so the reported branch reflects the worktree's
+// actual checkout.
+func branchFor(configured string, head *plumbing.Reference) string {
+	if configured != "" {
+		return configured
+	}
+	if name := head.Name().Short(); name != "" && name != "HEAD" {
+		return name
+	}
+	return ""
 }
 
 // resolveCommit returns the commit to read desired state from, defaulting to
@@ -580,16 +647,28 @@ func (g *Git) resolveCommit(ctx context.Context, ref *sources.Commit) (sources.C
 	if err != nil {
 		return sources.Commit{}, err
 	}
-	if exists, err := repoExists(dir); err != nil || !exists {
-		if err != nil {
-			return sources.Commit{}, fmt.Errorf("git source: inspect cache: %w", err)
-		}
-		// Cache is empty; fetch first so HEAD is meaningful.
-		if _, err := g.Fetch(ctx); err != nil {
-			return sources.Commit{}, err
+	if !g.isInPlace() {
+		if exists, err := repoExists(dir); err != nil || !exists {
+			if err != nil {
+				return sources.Commit{}, fmt.Errorf("git source: inspect cache: %w", err)
+			}
+			// Cache is empty; fetch first so HEAD is meaningful.
+			if _, err := g.Fetch(ctx); err != nil {
+				return sources.Commit{}, err
+			}
 		}
 	}
-	return g.headCommit(ctx, dir, g.Source.Branch)
+	return g.headCommit(ctx, dir, g.branchFor(dir))
+}
+
+// branchFor returns the branch name used when reading HEAD from dir. It is
+// the configured branch in remote mode, or empty in in-place mode so
+// headCommit derives the branch from the HEAD reference.
+func (g *Git) branchFor(dir string) string {
+	if g.isInPlace() {
+		return ""
+	}
+	return g.Source.Branch
 }
 
 // parseServices reads the services file under the configured source path with
@@ -597,8 +676,12 @@ func (g *Git) resolveCommit(ctx context.Context, ref *sources.Commit) (sources.C
 // relative resources. A historical SHA is checked out only for the duration
 // of parsing and the active revision is restored before return. Git-tracked
 // env_file and label_file contents contribute digests without being retained.
+//
+// In in-place mode (source.path) the user-owned worktree is never mutated:
+// when the requested SHA differs from HEAD, the services file is read from
+// that commit's tree via go-git rather than checked out.
 func (g *Git) parseServices(ctx context.Context, sha string) (map[string]state.Service, error) {
-	path, err := ComposePath(g.Source.Path, "")
+	path, err := sources.ComposePath(g.Source.Path, "")
 	if err != nil {
 		return nil, err
 	}
@@ -617,7 +700,70 @@ func (g *Git) parseServices(ctx context.Context, sha string) (map[string]state.S
 		return services, nil
 	}
 
+	if g.isInPlace() && !shaIsHead(dir, sha) {
+		// Read the historical revision from its tree without mutating the
+		// user-owned worktree (issue #95; docs/DECISIONS.md #51).
+		return g.parseServicesFromTree(ctx, dir, sha, path)
+	}
 	return g.parseServicesFromWorktree(ctx, dir, sha, path)
+}
+
+// parseServicesFromTree reads the services file from a specific commit's tree
+// so historical desired state (used by diff, plan, and rollback baselines) can
+// be reconstructed without mutating the working tree.
+func (g *Git) parseServicesFromTree(ctx context.Context, dir, sha, composePath string) (map[string]state.Service, error) {
+	r, err := git.PlainOpen(dir)
+	if err != nil {
+		return nil, fmt.Errorf("git source: open cache: %w", err)
+	}
+	defer func() { _ = r.Close() }()
+	hash := plumbing.NewHash(sha)
+	commit, err := r.CommitObject(hash)
+	if err != nil {
+		return nil, fmt.Errorf("git source: read commit %s: %w", sha, err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("git source: read tree: %w", err)
+	}
+	file, err := tree.File(composePath)
+	if err != nil {
+		if errors.Is(err, object.ErrFileNotFound) {
+			return map[string]state.Service{}, nil
+		}
+		return nil, fmt.Errorf("git source: find %q at %s: %w", composePath, sha, err)
+	}
+	reader, err := file.Blob.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("git source: open %q at %s: %w", composePath, sha, err)
+	}
+	defer func() { _ = reader.Close() }()
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("git source: read %q at %s: %w", composePath, sha, err)
+	}
+	services, err := compose.ParseWithContext(ctx, data)
+	if err != nil {
+		return nil, fmt.Errorf("git source: parse %q at %s: %w", composePath, sha, err)
+	}
+	if err := g.attachExternalFileDigests(ctx, r, sha, composePath, services); err != nil {
+		return nil, err
+	}
+	return services, nil
+}
+
+// shaIsHead reports whether sha is the current HEAD of the repository at dir.
+func shaIsHead(dir, sha string) bool {
+	r, err := git.PlainOpen(dir)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = r.Close() }()
+	head, err := r.Head()
+	if err != nil {
+		return false
+	}
+	return head.Hash().String() == sha
 }
 
 func (g *Git) parseServicesFromWorktree(ctx context.Context, dir, sha, composePath string) (services map[string]state.Service, err error) {
@@ -858,50 +1004,6 @@ func repoExists(dir string) (bool, error) {
 		return false, errors.New("cache .git path must be a directory, not a symlink or file")
 	}
 	return true, nil
-}
-
-// ComposePath resolves the Compose file within a Git repository. sourcePath
-// may name either a Compose file or a directory; targetPath supplies the
-// configured target filename for the directory form. Empty values default to
-// compose.yaml. The returned path always uses repository-style separators.
-func ComposePath(sourcePath, targetPath string) (string, error) {
-	sourcePath = strings.TrimSpace(sourcePath)
-	targetPath = strings.TrimSpace(targetPath)
-	if sourcePath == "" {
-		if targetPath == "" {
-			targetPath = config.DefaultComposeFile
-		}
-		return cleanRepositoryPath(targetPath)
-	}
-	if isComposeFile(sourcePath) {
-		return cleanRepositoryPath(sourcePath)
-	}
-	if targetPath == "" {
-		targetPath = config.DefaultComposeFile
-	}
-	return cleanRepositoryPath(path.Join(filepath.ToSlash(sourcePath), filepath.ToSlash(targetPath)))
-}
-
-// isComposeFile reports whether path looks like a compose file name.
-func isComposeFile(filePath string) bool {
-	base := strings.ToLower(filepath.Base(filePath))
-	switch base {
-	case config.DefaultComposeFile, "compose.yml", "docker-compose.yaml", "docker-compose.yml":
-		return true
-	default:
-		ext := strings.ToLower(filepath.Ext(base))
-		return ext == ".yaml" || ext == ".yml"
-	}
-}
-
-func cleanRepositoryPath(repositoryPath string) (string, error) {
-	normalized := filepath.ToSlash(strings.TrimSpace(repositoryPath))
-	clean := path.Clean(normalized)
-	if clean == "." || path.IsAbs(clean) || filepath.IsAbs(repositoryPath) ||
-		clean == ".." || strings.HasPrefix(clean, "../") {
-		return "", fmt.Errorf("git source: repository path %q must stay within the checkout", repositoryPath)
-	}
-	return clean, nil
 }
 
 // repoDirName hashes a canonical, credential-free repository identity so

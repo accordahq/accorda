@@ -263,3 +263,114 @@ func TestGitSource_ValidateErrors(t *testing.T) {
 		t.Fatal("expected error for missing branch")
 	}
 }
+
+// TestGitSource_InPlace binds the git source directly to a user-owned worktree
+// (source.path, no URL) and verifies Fetch/Desired read the current HEAD in
+// place without cloning. It mirrors TestGitSource_CloneFetchCheckoutAndHead
+// but against a worktree that already exists on disk (issue #95).
+func TestGitSource_InPlace(t *testing.T) {
+	testutil.RequireGit(t)
+	url, wantSHA, wantBranch, wantTime := testutil.MakeOriginRepo(t)
+
+	// Clone the origin into a local worktree we own, then bind in place to it.
+	worktree := testutil.MakeLocalWorktree(t, url, wantBranch)
+
+	// In-place mode: path names the worktree, no URL. The compose file resolves
+	// to the repo-relative default inside it. buildSource would set Source.Path
+	// to the repo-relative compose path and carry the worktree root via
+	// WithCacheDir; mirror that here.
+	src := config.Source{Type: "git", Path: testutil.ComposeFile}
+	g := New(src, WithCacheDir(worktree))
+
+	ctx := context.Background()
+	if err := g.Validate(ctx); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	commit, err := g.Fetch(ctx)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if commit.SHA != wantSHA {
+		t.Errorf("Fetch SHA = %q, want %q", commit.SHA, wantSHA)
+	}
+	if commit.Branch != wantBranch {
+		t.Errorf("Fetch Branch = %q, want %q", commit.Branch, wantBranch)
+	}
+	if !commit.Time.Equal(wantTime) {
+		t.Errorf("Fetch Time = %v, want %v", commit.Time, wantTime)
+	}
+
+	// Desired reads the compose file from the working tree at HEAD.
+	ds, err := g.Desired(ctx, nil)
+	if err != nil {
+		t.Fatalf("Desired: %v", err)
+	}
+	if ds.Commit != wantSHA {
+		t.Errorf("Desired Commit = %q, want %q", ds.Commit, wantSHA)
+	}
+	if ds.Services["api"].Image != "ghcr.io/acme/api:1.9" {
+		t.Errorf("Desired api.Image = %q, want ghcr.io/acme/api:1.9", ds.Services["api"].Image)
+	}
+	if ds.Repository != worktree {
+		t.Errorf("Desired Repository = %q, want worktree %q", ds.Repository, worktree)
+	}
+
+	// Materialize is unsupported in in-place mode (would rewrite the worktree).
+	if err := g.Materialize(ctx, &sources.Commit{SHA: wantSHA}); err == nil {
+		t.Fatal("Materialize in-place should fail, got nil")
+	}
+
+	// CheckoutPath resolves against the bound worktree root.
+	got, err := g.CheckoutPath(testutil.ComposeFile)
+	if err != nil {
+		t.Fatalf("CheckoutPath: %v", err)
+	}
+	if want := filepath.Join(worktree, testutil.ComposeFile); got != want {
+		t.Errorf("CheckoutPath = %q, want %q", got, want)
+	}
+}
+
+// TestGitSource_InPlaceDesiredAtOlderCommit verifies that an explicit older
+// SHA is read from the commit's tree without mutating the user-owned worktree
+// (issue #95). The repository has two commits with different services; after
+// binding at HEAD=v2, requesting the older commit must return v1 services and
+// the working tree must remain at v2.
+func TestGitSource_InPlaceDesiredAtOlderCommit(t *testing.T) {
+	testutil.RequireGit(t)
+	url, wantBranch, old, head := testutil.MakeOriginRepoWithHistory(t)
+
+	worktree := testutil.MakeLocalWorktree(t, url, wantBranch)
+
+	src := config.Source{Type: "git", Path: testutil.ComposeFile}
+	g := New(src, WithCacheDir(worktree))
+
+	ctx := context.Background()
+	if _, err := g.Fetch(ctx); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	ref := &sources.Commit{SHA: old.SHA, Branch: old.Branch, Time: old.Time}
+	ds, err := g.Desired(ctx, ref)
+	if err != nil {
+		t.Fatalf("Desired at older commit: %v", err)
+	}
+	if ds.Commit != old.SHA {
+		t.Errorf("Desired Commit = %q, want older %q", ds.Commit, old.SHA)
+	}
+	if got, want := ds.Services["api"].Image, "ghcr.io/acme/api:1.8"; got != want {
+		t.Errorf("Desired api.Image at older commit = %q, want %q", got, want)
+	}
+
+	// The working tree must still reflect HEAD (v2): the older read must not
+	// have checked out the historical revision.
+	data, err := os.ReadFile(filepath.Join(worktree, testutil.ComposeFile))
+	if err != nil {
+		t.Fatalf("read worktree compose: %v", err)
+	}
+	if strings.Contains(string(data), "ghcr.io/acme/api:1.8") {
+		t.Fatalf("worktree was mutated to the older revision: %s", data)
+	}
+	if !strings.Contains(string(data), head.SHA[:7]) && !strings.Contains(string(data), "ghcr.io/acme/api:1.9") {
+		t.Fatalf("worktree does not reflect HEAD v2: %s", data)
+	}
+}

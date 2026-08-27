@@ -47,6 +47,17 @@ const (
 	DriftDisabled = "disabled"
 )
 
+// Valid source types (docs/ACCORDA.md §13). Git is the only source type; it
+// has two modes selected by which field is configured:
+//
+//   - url reconciles from a remote Git repository cloned into the private
+//     cache (internal/sources/git, remote mode).
+//   - path reconciles in place from a user-owned local git worktree without
+//     cloning (internal/sources/git, in-place mode).
+const (
+	SourceGit = "git"
+)
+
 // Valid Git source auth types (docs/ACCORDA.md §13, §15).
 const (
 	AuthSSH   = "ssh"
@@ -898,22 +909,29 @@ func validateSchemaVersion(version int) error {
 	return nil
 }
 
-// validateSource checks the Git source fields and delegates auth to
-// validateSourceAuth.
+// validateSource checks the source fields and delegates auth to
+// validateSourceAuth. A git source has two modes selected by whether a URL is
+// configured: url reconciles from a remote repository cloned into the cache
+// (path is then optional and points at a compose file or directory within the
+// repo); with no url, path reconciles in place from a local worktree. Exactly
+// one source of repository content must be available: url or (in local mode)
+// path.
 func validateSource(p *Project) error {
-	if p.Source.Type == "" {
-		return errors.New("config: source.type is required")
+	if p.Source.Type != SourceGit {
+		return fmt.Errorf("config: source.type %q is not supported (want %q)", p.Source.Type, SourceGit)
 	}
-	if p.Source.Type != "git" {
-		return fmt.Errorf("config: source.type %q is not supported (want %q)", p.Source.Type, "git")
+	if p.Source.URL != "" {
+		// Remote mode: path is optional (a repo-relative compose path).
+		if strings.TrimSpace(p.Source.Branch) == "" {
+			return errors.New("config: source.branch is required")
+		}
+		return validateSourceAuth(p)
 	}
-	if p.Source.URL == "" {
-		return errors.New("config: source.url is required")
+	// In-place mode: no URL, so a local worktree path is required.
+	if strings.TrimSpace(p.Source.Path) == "" {
+		return errors.New("config: source.url or source.path is required")
 	}
-	if strings.TrimSpace(p.Source.Branch) == "" {
-		return errors.New("config: source.branch is required")
-	}
-	return validateSourceAuth(p)
+	return nil
 }
 
 // validateSourceAuth checks the source auth configuration

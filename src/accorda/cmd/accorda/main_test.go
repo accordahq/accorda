@@ -213,7 +213,7 @@ func TestRun_Init_MissingRepo(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected error for missing --repo, got nil")
 	}
-	if !strings.Contains(e.Error(), "source.url is required") {
+	if !strings.Contains(e.Error(), "repo is required") {
 		t.Fatalf("unexpected error %v", e)
 	}
 }
