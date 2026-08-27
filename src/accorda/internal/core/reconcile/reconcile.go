@@ -390,7 +390,7 @@ func (r *Reconciler) hydratePrevious(ctx context.Context, desired *state.Desired
 	if r.previous.Commit != desired.Commit {
 		var err error
 		previousDesired, err = r.loadDesired(ctx, &sources.Commit{SHA: r.previous.Commit})
-		if err != nil {
+		if err != nil && previousDesired == nil {
 			return fmt.Errorf("reconcile: read previous desired state at %s: %w", r.previous.Commit, err)
 		}
 		if previousDesired == nil {
@@ -445,9 +445,15 @@ func (r *Reconciler) fetch(ctx context.Context, res *Result) (sources.Commit, bo
 func (r *Reconciler) validate(ctx context.Context, res *Result, commit sources.Commit) (*state.DesiredState, bool) {
 	r.transition(ctx, PhaseFetching, PhaseValidating, commit.SHA, "", nil)
 	desired, err := r.loadDesired(ctx, &commit)
-	if err != nil {
+	if err != nil && desired == nil {
 		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
 		return nil, false
+	}
+	if err != nil {
+		r.emit(ctx, events.EventStateTransition, StateTransition{
+			From: PhaseValidating, To: PhaseValidating,
+			Commit: commit.SHA, Err: fmt.Errorf("revision cleanup: %w", err),
+		})
 	}
 	if err := desired.Validate(); err != nil {
 		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
@@ -465,15 +471,15 @@ func (r *Reconciler) loadDesired(ctx context.Context, commit *sources.Commit) (_
 	if err != nil {
 		return nil, err
 	}
-	defer func() { err = errors.Join(err, revision.Close()) }()
-	desired, err := r.target.Desired(ctx, revision)
-	if err != nil {
-		return nil, err
+	desired, derr := r.target.Desired(ctx, revision)
+	cerr := revision.Close()
+	if derr != nil {
+		return nil, errors.Join(derr, cerr)
 	}
 	if desired == nil {
-		return nil, errors.New("reconcile: target desired state is nil")
+		return nil, errors.Join(errors.New("reconcile: target desired state is nil"), cerr)
 	}
-	return desired, nil
+	return desired, cerr
 }
 
 // checkDrift handles a polling cycle whose Git HEAD is unchanged. It reads
@@ -868,7 +874,7 @@ func (r *Reconciler) resolvePrevDesired(ctx context.Context, failed *state.Desir
 	if r.source == nil {
 		return prevDesired
 	}
-	if ds, err := r.loadDesired(ctx, &sources.Commit{SHA: r.previous.Commit}); err == nil && ds != nil && len(ds.Services) > 0 {
+	if ds, _ := r.loadDesired(ctx, &sources.Commit{SHA: r.previous.Commit}); ds != nil && len(ds.Services) > 0 {
 		return ds
 	}
 	return prevDesired

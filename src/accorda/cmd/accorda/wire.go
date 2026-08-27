@@ -117,13 +117,21 @@ func buildTarget(p *config.Project, dir string, worktree sources.Worktree, name 
 
 // desiredAt opens a source revision, delegates target-specific artifact
 // loading to the target, and releases any private historical materialization.
+// A cleanup failure (e.g. removing a private historical tree) is returned as
+// a non-fatal warning joined to the error only when the read itself failed;
+// when the read succeeds, a cleanup error is logged but does not discard the
+// successfully loaded desired state.
 func desiredAt(ctx context.Context, src sources.Source, target targets.Target, ref *sources.Commit) (_ *state.DesiredState, err error) {
 	revision, err := src.Revision(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { err = errors.Join(err, revision.Close()) }()
-	return target.Desired(ctx, revision)
+	desired, derr := target.Desired(ctx, revision)
+	cerr := revision.Close()
+	if derr != nil {
+		return nil, errors.Join(derr, cerr)
+	}
+	return desired, cerr
 }
 
 // buildEnsembleMembers constructs the per-project source, target, receipts,

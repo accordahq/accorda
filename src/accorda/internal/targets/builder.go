@@ -27,11 +27,6 @@ type TargetContext struct {
 	// Worktree exposes the current source checkout through a small, provider-
 	// neutral path interface. File-backed targets use it for deployment paths.
 	Worktree sources.Worktree
-	// Managed reports whether the target's primary artifact is resolved
-	// inside the Git source's managed checkout (true) or is an absolute
-	// operator-local override (false). Compose uses it to decide whether to
-	// derive a project name from the project directory.
-	Managed bool
 }
 
 // TargetBuilder constructs a concrete Target from a TargetContext. Each

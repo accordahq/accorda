@@ -87,9 +87,12 @@ func runPlanOne(cmd *cobra.Command, dir string, p *config.Project) error {
 		if err != nil {
 			return fmt.Errorf("fetch desired state: %w", err)
 		}
-		desired, err := desiredAt(ctx, src, tgt, &commit)
-		if err != nil {
-			return fmt.Errorf("read desired state: %w", err)
+		desired, derr := desiredAt(ctx, src, tgt, &commit)
+		if derr != nil && desired == nil {
+			return fmt.Errorf("read desired state: %w", derr)
+		}
+		if derr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: revision cleanup: %v\n", derr)
 		}
 
 		// The plan is computed against the last known-healthy deployment as the

@@ -183,7 +183,8 @@ func collectStatus(ctx context.Context, proj *config.Project, src sources.Source
 	// service table's declared images. It is best-effort: on failure the
 	// runtime table is still printed and the repository stays redacted from
 	// the configured URL.
-	desired := desiredOrNil(desiredAt(ctx, src, tgt, nil))
+	desired, _ := desiredAt(ctx, src, tgt, nil)
+	desired = desiredOrNil(desired)
 	applyDesiredMeta(&info, desired)
 	info.services = buildRows(desired, runtime, hc)
 	return info
@@ -259,10 +260,11 @@ func runtimeLabel(tgt targets.Target) string {
 	return "unreachable"
 }
 
-// desiredOrNil returns the desired state or nil on error so downstream
-// formatting treats a failed read as absent.
-func desiredOrNil(desired *state.DesiredState, err error) *state.DesiredState {
-	if err != nil || desired == nil {
+// desiredOrNil returns the desired state or nil so downstream formatting
+// treats a failed read as absent. A cleanup-only error is ignored so the
+// successfully loaded desired state is still reported.
+func desiredOrNil(desired *state.DesiredState) *state.DesiredState {
+	if desired == nil {
 		return nil
 	}
 	return desired
