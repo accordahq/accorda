@@ -240,7 +240,7 @@ func (errStore) List(context.Context) ([]history.Receipt, error) {
 // TestDeployedAtCommit_ReportsStoreError verifies that a history read error is
 // surfaced to the warning writer (so an operator can distinguish "no prior
 // healthy deployment" from "history could not be read"), mirroring
-// `accorda sync`'s previousFromHistory.
+// `previousFromHistory` in `wire.go`.
 func TestDeployedAtCommit_ReportsStoreError(t *testing.T) {
 	var warn bytes.Buffer
 	got := deployedAtCommit(context.Background(), &statusTestSource{}, errStore{}, &warn)

@@ -8,6 +8,19 @@
 // package depends on go-git (github.com/go-git/go-git/v6) and the shared
 // sources.Source contract.
 //
+// The adapter has two modes selected by which field is configured
+// (docs/DECISIONS.md #51):
+//
+//   - Remote mode (source.url) clones or fetches the repository into a private
+//     per-user cache, checks out the configured branch, and returns HEAD.
+//   - In-place mode (source.path, no url) binds directly to a user-owned local
+//     git worktree without cloning. Fetch reads the worktree's current HEAD;
+//     the adapter never mutates the worktree. Historical desired state (used
+//     by diff, plan, and rollback baselines) is read from the commit's tree
+//     via go-git, so the operator's checkout is never rewritten. In-place
+//     Materialize (rollback checkout) is unsupported because it would rewrite
+//     the user-owned worktree.
+//
 // The implementation uses the go-git library rather than shelling out to the
 // system `git` CLI, so `git` is not required at runtime. Authentication is
 // handled via go-git transport methods, matching §15:
@@ -20,6 +33,7 @@
 //     error output (§18, §56).
 //   - An empty auth.type means "use the ambient environment": go-git uses
 //     SSH agent for ssh:// URLs and unauthenticated HTTPS for https:// URLs.
+//   - In-place mode never uses auth.
 //
 // Fetch scope: Fetch updates only refs/remotes/origin/<configured branch>.
 // Reading desired state at a commit on a different branch requires that ref
@@ -28,7 +42,7 @@
 // branch.
 //
 // CheckoutPath resolves repository-relative target artifacts inside the same
-// private managed worktree that Fetch updates. It rejects absolute paths and
-// traversal so adapters can consume fetched files without exposing arbitrary
-// host paths.
+// worktree (managed checkout or bound worktree) that Fetch updates. It
+// rejects absolute paths and traversal so adapters can consume fetched files
+// without exposing arbitrary host paths.
 package git

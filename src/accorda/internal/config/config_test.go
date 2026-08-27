@@ -348,7 +348,7 @@ func TestValidate_Errors(t *testing.T) {
 		{
 			name: "missing source url",
 			yaml: "version: 1\nenvironment: production\n" + composeTargetFixture,
-			want: "source.url is required",
+			want: "source.url or source.path is required",
 		},
 		{
 			name: "unsupported source type",
@@ -1198,7 +1198,7 @@ projects:
 	if err == nil {
 		t.Fatal("ParseDocument succeeded, want member source.url validation error")
 	}
-	if !strings.Contains(err.Error(), "source.url is required") {
+	if !strings.Contains(err.Error(), "source.url or source.path is required") {
 		t.Fatalf("ParseDocument error = %v, want member source.url validation", err)
 	}
 }

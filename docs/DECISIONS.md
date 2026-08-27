@@ -114,6 +114,23 @@ fetches, checks out, and reads files at commits via the API; auth is
 clone/fetch and never logged. `redactURL` strips userinfo before any URL surfaces;
 errors name fields, never values. Tests assert no token leak.
 
+### 51. Git source has remote and in-place modes selected by `url` vs `path`
+
+Issue #95: the git source (`internal/sources/git`) has two modes rather than two
+adapters. Remote mode (`source.url`) clones/fetches into the private cache and
+checks out the configured branch, as before. In-place mode (`source.path`, no
+`url`) binds directly to a user-owned local git worktree without cloning; `Fetch`
+reads the worktree's current `HEAD` and never mutates it. Both modes share one
+worktree-read core, so the commit-anchored fast path, receipts, and `diff`/`plan`/
+`history`/`inspect` work unchanged. Historical desired state (used by `diff`,
+`plan`, and rollback-baseline reads) is privately materialized from the commit's
+tree via go-git so Compose resolves tracked `extends`/`include` files without
+rewriting the operator's checkout. Applying an automatic in-place rollback is
+unsupported because `Materialize` would rewrite the user-owned worktree. Config:
+exactly one of `url` or `path` selects the mode; with
+`url`, `path` is an optional repo-relative compose path. Files: `internal/sources/git/git.go`,
+`internal/config/config.go` (`validateSource`), `cmd/accorda/wire.go` (`buildSource`).
+
 ---
 
 ## Adapters — Compose target
@@ -243,7 +260,8 @@ config-derived model (preserving source identifying fields); non-implementing
 targets keep source-driven behavior. Shared Docker operations moved to
 `internal/docker` (client/log seams, runtime mapping, digest resolution, health
 mapping, pull policy) consumed by both Docker targets; Compose-label logic stays
-in `targets/compose`. `buildTarget` dispatches by type; `status`/`doctor` use
+in `targets/compose`. `buildTarget` (in `cmd/accorda/wire.go`) dispatches by type;
+`status`/`doctor` use
 `docker.HealthFromRuntime` and a `validateEnvironmentTarget` capability. Apply
 runs `docker run -d` via a `Runner` seam, removing an existing container first.
 `target.pull` is not added (the global `images.pull` covers it). `env` enters
@@ -307,7 +325,8 @@ so the on-disk artifact reflects the restored services before `up`. Rollback
 restores the **full** previous model by reading desired state at the previous
 commit from the source (falling back to image-only receipt services if unreadable —
 the §20 "where safely possible" qualifier). `sync` supplies the previous deployment
-via `previousFromHistory(store)` (most recent `OutcomeHealthy`); with no prior
+via `previousFromHistory(store)` (in `cmd/accorda/wire.go`, most recent
+`OutcomeHealthy`); with no prior
 healthy deployment the failure stands.
 
 ### 30. Reconciliation uses durable checkpoints and target-scoped locks
@@ -363,7 +382,7 @@ one service and exposes `--tail` and `--follow`/`-f`.
 Issue #27 (§11): `newSyncCmd` loads the project, builds the Git source and Compose
 target (threading `WithPullPolicy`, `WithHealthTimeout`), and drives one
 `reconcile.New(...).WithDriftPolicy(...)` cycle, printing the terminal phase and
-the `state.Comparison`. A `driftPolicy` helper maps config to `DriftPolicy`
+the `state.Comparison`. A `driftPolicy` helper (in `cmd/accorda/wire.go`) maps config to `DriftPolicy`
 (unknown → report). Only Compose is wired; other target types error. `sync` is
 removed from the stubs. One pass, not the §11 loop (loop + history persistence are
 future work).
@@ -372,7 +391,7 @@ future work).
 
 Issue #25 (§11): `status.go` composes existing seams without mutation: `Fetch`+
 `Desired` for HEAD/branch/repo (degrading to "unavailable"), `git.RedactURL` so
-credentials never echo, `lastHealthyReceipt(store)` for deployed commit/time,
+credentials never echo, `lastHealthyReceipt(store)` (in `cmd/accorda/wire.go`) for deployed commit/time,
 `Target.Current` + `compose.HealthFromRuntime` for runtime/health. The sync label
 (`SYNCED`/`OUT_OF_SYNC`/`UNKNOWN`) is derived from HEAD vs deployed commit before
 any target read; the runtime label from per-service health. Output is a sorted
@@ -381,7 +400,7 @@ tabular report matching §11.
 ### 36. `accorda diff` and `accorda plan` are read-only CLI projections
 
 Issue #26 (§11): both build the "deployed" side as the desired state re-read from
-Git at the last healthy deployment's commit (`lastHealthyReceipt` +
+Git at the last healthy deployment's commit (`lastHealthyReceipt` (in `cmd/accorda/wire.go`) +
 `deployedAtCommit`), since receipts store only image/digest. `diff` prints only
 differing services/fields as `deployed:`/`desired:` pairs (YAML-like, sorted,
 daemon-free). `plan` fetches desired, constructs the target, and calls `Target.Plan`
@@ -392,7 +411,8 @@ with the same full-model baseline, printing `plan.Plan.String()`. Neither mutate
 
 Issue #52 (§25, §31): `Plan.Environment` must be the project environment, not the
 Git-desired repository stand-in (§5.1 lists no env for desired state). The Compose
-target gains `WithEnvironment`, `buildTarget` supplies `proj.Environment`, and
+target gains `WithEnvironment`, `buildTarget` (in `cmd/accorda/wire.go`) supplies
+`proj.Environment`, and
 `Target.Plan` uses the stored value. The reconciler doesn't overwrite it (the plan
 owns its environment identity). Config validation already requires a non-empty
 environment. Empty `Plan.Environment` is reachable only via direct target
@@ -406,12 +426,12 @@ sorted changed services), newest first, header always printed. `inspect [commit]
 prints per-service previous digest (from the most recent healthy receipt before
 the inspected one), deployed digest, recreated flag, and health result; unchanged
 services print `unchanged`. Both load the project only to validate and resolve
-`receiptPath`. An unknown commit or an empty journal is an error.
+`receiptPath` (in `cmd/accorda/wire.go`). An unknown commit or an empty journal is an error.
 
 ### 39. `accorda doctor` reuses lifecycle validation without mutation
 
 `doctor` loads and validates `accorda.yaml`, validates the Git source without
-fetching, constructs the target via the shared `buildTarget`, and calls `Validate`
+fetching, constructs the target via the shared `buildTarget` (in `cmd/accorda/wire.go`), and calls `Validate`
 (for Compose: parses the file, pings the engine, runs `docker compose version`).
 Results print in dependency order with `PASS`/`FAIL`; any failure exits nonzero. A
 project-load failure stops dependent checks. It never fetches Git or mutates the
@@ -459,10 +479,11 @@ case-insensitively colliding names. `loadProjects` normalizes either shape and
 loops members with `p.Name` (the `""` sentinel only for a genuine single-project
 doc). `reconcile.Ensemble` fans cycles to member `Reconciler`s concurrently (one
 goroutine each), a slow member not blocking others. Each member owns its
-source/target/bus/receipts/lock; `buildSource` appends the member name to the cache
-namespace; `buildTarget` sets the Compose project name to the member name (so
-same-named dirs don't collide on `--remove-orphans`); `receiptPath` scopes by
-member name. All CLI commands iterate members and prefix output with the name.
+source/target/bus/receipts/lock; `buildSource` (in `cmd/accorda/wire.go`) appends
+the member name to the cache namespace; `buildTarget` sets the Compose project name
+to the member name (so same-named dirs don't collide on `--remove-orphans`);
+`receiptPath` scopes by member name. All CLI commands iterate members and prefix
+output with the name.
 
 ### 43. Ensemble globals are shared at the document root
 

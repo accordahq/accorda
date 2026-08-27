@@ -26,6 +26,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -215,6 +216,9 @@ func newInitCmd() *cobra.Command {
 // and add source.auth.token. In that case the file is written with ambient
 // auth (no auth section) so it remains valid and loadable.
 func initProject(dir, env, repo, branch, file, authType, authKey string) (string, error) {
+	if strings.TrimSpace(repo) == "" {
+		return "", errors.New("repo is required (in-place local sources are configured by hand, not by init)")
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -233,6 +237,8 @@ func initProject(dir, env, repo, branch, file, authType, authKey string) (string
 			File: file,
 		},
 	}
+	// In remote mode, source.path points at the compose file within the repo
+	// so Accorda knows where to look in the cloned checkout.
 	if !filepath.IsAbs(file) {
 		proj.Source.Path = file
 	}

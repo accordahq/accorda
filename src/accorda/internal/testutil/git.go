@@ -120,3 +120,18 @@ func commitTime(t *testing.T, dir, ref string) time.Time {
 	}
 	return when.UTC()
 }
+
+// MakeLocalWorktree clones a local origin (file:// URL) into a user-owned
+// worktree on disk so an in-place source adapter can bind to it. It uses the
+// system `git` CLI rather than go-git so tests never import the Git transport
+// library directly. The returned path is the worktree root.
+func MakeLocalWorktree(t *testing.T, url, branch string) string {
+	t.Helper()
+	parent := t.TempDir()
+	worktree := filepath.Join(parent, "worktree")
+	cmd := exec.Command("git", "clone", "--single-branch", "--branch", branch, url, worktree)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone %s: %v: %s", url, err, out)
+	}
+	return worktree
+}
