@@ -121,13 +121,13 @@ adapters. Remote mode (`source.url`) clones/fetches into the private cache and
 checks out the configured branch, as before. In-place mode (`source.path`, no
 `url`) binds directly to a user-owned local git worktree without cloning; `Fetch`
 reads the worktree's current `HEAD` and never mutates it. Both modes share one
-worktree-read core, so the commit-anchored fast path, receipts, `diff`/`plan`/
-`history`/`inspect`, and rollback work unchanged. Historical desired state (used by
-`diff`, `plan`, and rollback baselines) is privately materialized from the commit's
+worktree-read core, so the commit-anchored fast path, receipts, and `diff`/`plan`/
+`history`/`inspect` work unchanged. Historical desired state (used by `diff`,
+`plan`, and rollback-baseline reads) is privately materialized from the commit's
 tree via go-git so Compose resolves tracked `extends`/`include` files without
-rewriting the operator's checkout; in-place
-`Materialize` (rollback checkout) is unsupported because it would rewrite the
-user-owned worktree. Config: exactly one of `url` or `path` selects the mode; with
+rewriting the operator's checkout. Applying an automatic in-place rollback is
+unsupported because `Materialize` would rewrite the user-owned worktree. Config:
+exactly one of `url` or `path` selects the mode; with
 `url`, `path` is an optional repo-relative compose path. Files: `internal/sources/git/git.go`,
 `internal/config/config.go` (`validateSource`), `cmd/accorda/wire.go` (`buildSource`).
 

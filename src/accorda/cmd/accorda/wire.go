@@ -64,13 +64,9 @@ func buildSource(p *config.Project, dir, name string) (*git.Git, error) {
 		if err != nil {
 			return nil, err
 		}
-		root := localPath
-		composePath, err := localComposePath(localPath, targetPath)
+		root, composePath, err := localSourcePaths(localPath, targetPath)
 		if err != nil {
 			return nil, err
-		}
-		if sources.IsComposeFile(localPath) {
-			root = filepath.Dir(localPath)
 		}
 		absRoot, err := filepath.Abs(root)
 		if err != nil {
@@ -94,6 +90,33 @@ func buildSource(p *config.Project, dir, name string) (*git.Git, error) {
 		namespace = filepath.Join(namespace, name)
 	}
 	return git.New(source, git.WithCacheNamespace(namespace)), nil
+}
+
+// localSourcePaths resolves the local worktree root and repository-relative
+// Compose path. An explicit file may be nested anywhere in the worktree, so
+// its immediate parent cannot be assumed to be the repository root.
+func localSourcePaths(localPath, targetPath string) (string, string, error) {
+	if !sources.IsComposeFile(localPath) {
+		composePath, err := localComposePath(localPath, targetPath)
+		return localPath, composePath, err
+	}
+	absFile, err := filepath.Abs(localPath)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve local Compose path: %w", err)
+	}
+	root, err := git.FindWorktreeRoot(filepath.Dir(absFile))
+	if err != nil {
+		return "", "", err
+	}
+	relativePath, err := filepath.Rel(root, absFile)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve local Compose path relative to worktree: %w", err)
+	}
+	composePath, err := sources.CleanRepositoryPath(relativePath)
+	if err != nil {
+		return "", "", err
+	}
+	return root, composePath, nil
 }
 
 // expandHomePath resolves the shell-style home shorthand accepted by the

@@ -391,6 +391,26 @@ func (g *Git) CheckoutDir() (string, error) {
 	return g.cacheDir()
 }
 
+// FindWorktreeRoot returns the root of the Git worktree containing path.
+// DetectDotGit supports artifacts nested below the root as well as linked
+// worktrees whose .git entry is a file.
+func FindWorktreeRoot(path string) (string, error) {
+	repository, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{DetectDotGit: true})
+	if err != nil {
+		return "", fmt.Errorf("git source: find worktree containing %q: %w", path, err)
+	}
+	defer func() { _ = repository.Close() }()
+	worktree, err := repository.Worktree()
+	if err != nil {
+		return "", fmt.Errorf("git source: open worktree containing %q: %w", path, err)
+	}
+	root, err := filepath.Abs(worktree.Filesystem().Root())
+	if err != nil {
+		return "", fmt.Errorf("git source: resolve worktree containing %q: %w", path, err)
+	}
+	return root, nil
+}
+
 // CheckoutPath returns an absolute path inside this source's managed Git
 // worktree. The worktree does not need to exist yet: Fetch creates it before
 // the reconcile loop validates or applies the target.

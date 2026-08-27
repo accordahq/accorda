@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	gogit "github.com/go-git/go-git/v6"
 
 	"accorda/internal/config"
 	"accorda/internal/core/events"
@@ -113,6 +116,13 @@ func TestBuildSourceResolvesComposeFileInManagedCheckout(t *testing.T) {
 func TestBuildSourceResolvesInPlaceWorktree(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	repositoryRoot := filepath.Join(home, "repository")
+	if _, err := gogit.PlainInit(repositoryRoot, false); err != nil {
+		t.Fatalf("init repository: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repositoryRoot, "deploy"), 0o755); err != nil {
+		t.Fatalf("mkdir deploy: %v", err)
+	}
 	cases := []struct {
 		name       string
 		sourcePath string
@@ -128,11 +138,18 @@ func TestBuildSourceResolvesInPlaceWorktree(t *testing.T) {
 			wantPath:   "deploy/" + config.DefaultComposeFile,
 		},
 		{
-			name:       "explicit file",
-			sourcePath: filepath.Join(home, "worktree", "docker-compose.yml"),
+			name:       "root explicit file",
+			sourcePath: filepath.Join(repositoryRoot, "docker-compose.yml"),
 			targetFile: config.DefaultComposeFile,
-			wantRoot:   filepath.Join(home, "worktree"),
+			wantRoot:   repositoryRoot,
 			wantPath:   "docker-compose.yml",
+		},
+		{
+			name:       "nested explicit file",
+			sourcePath: filepath.Join(repositoryRoot, "deploy", config.DefaultComposeFile),
+			targetFile: "ignored.yaml",
+			wantRoot:   repositoryRoot,
+			wantPath:   "deploy/" + config.DefaultComposeFile,
 		},
 		{
 			name:       "home shorthand",
