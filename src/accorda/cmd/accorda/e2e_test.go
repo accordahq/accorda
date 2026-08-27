@@ -131,7 +131,7 @@ func managedComposeFile(t *testing.T, dir string) string {
 	if err != nil {
 		t.Fatalf("load project: %v", err)
 	}
-	src, err := buildSource(proj, dir, proj.Name)
+	src, err := buildSource(proj, dir)
 	if err != nil {
 		t.Fatalf("build source: %v", err)
 	}
@@ -660,7 +660,7 @@ func cleanupEnsembleProject(t *testing.T, dir string) {
 	t.Cleanup(func() {
 		for i := range projects {
 			p := &projects[i]
-			src, err := buildSource(p, dir, p.Name)
+			src, err := buildSource(p, dir)
 			if err != nil {
 				continue
 			}

@@ -35,5 +35,5 @@ func BuildFromContext(ctx targets.TargetContext) (targets.Target, error) {
 		WithHealthTimeout(ctx.Project.Health.Timeout),
 		WithEnvironment(ctx.Project.Environment),
 	}
-	return New(ctx.Project.Target, serviceName, options...)
+	return New(ctx.Target, serviceName, options...)
 }

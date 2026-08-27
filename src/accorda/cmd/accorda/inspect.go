@@ -85,17 +85,19 @@ func runInspect(cmd *cobra.Command, dir, commit string) error {
 	return nil
 }
 
-// runInspectOne inspects the deployment history for a single project.
+// runInspectOne inspects the deployment history for a single project's targets.
 func runInspectOne(cmd *cobra.Command, dir, commit string, p *config.Project) error {
-	store := history.NewFileStore(receiptPath(dir, p.Name))
-	services, err := collectInspect(context.Background(), store, commit)
-	if err != nil {
-		return err
+	targets := p.NormalizedTargets()
+	multiTarget := len(targets) > 1
+	for i := range targets {
+		store := history.NewFileStore(targetReceiptPath(dir, p.Name, targets[i], multiTarget))
+		services, err := collectInspect(context.Background(), store, commit)
+		if err != nil {
+			return err
+		}
+		writeTargetHeader(cmd.OutOrStdout(), p.Name, targets[i], multiTarget)
+		writeInspect(cmd.OutOrStdout(), services)
 	}
-	if p.Name != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
-	}
-	writeInspect(cmd.OutOrStdout(), services)
 	return nil
 }
 

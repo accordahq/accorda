@@ -145,6 +145,38 @@ in-place rollback remains unsupported. Files: `internal/sources`,
 `internal/sources/git`, `internal/targets`, `internal/core/reconcile`,
 `cmd/accorda/wire.go`.
 
+### 53. A project reconciles multiple targets from one source
+
+Issue #103: one project can declare several targets (`targets:` list) that
+reconcile from a single `source`. `config.Project.Targets` (plural) replaces the
+singular `Target`; the legacy `target:` scalar is promoted into a one-element
+list by `ApplyDefaults` (`NormalizedTargets` is the single read path). `ValidateTargets`
+requires at least one target and unique target identity per project. `Targets` is a
+plain `[]Target` slice decoded by the strict loader, so unknown fields in a
+`targets:` entry are rejected like every other section.
+
+Core: `internal/core/reconcile` adds `Project`, a runner that fans one source out
+to several targets sequentially (so the shared managed checkout is never mutated
+concurrently, unlike the concurrent `Ensemble`), each target keeping its own
+receipt store and target-scoped lock. `EnsembleMember` now accepts a `CycleRunner`
+(a single target or a `Project`) so single- and multi-target members fan out
+uniformly. `Reconciler.WithTarget` labels its `StateTransition` events so output
+stays attributable. The `targets.TargetContext` carries the specific `Target`
+being built; `BuildTarget` falls back to `Project.Target` when it is empty.
+
+Wire/CLI: `buildEnsembleMembers`/`buildTargetReconciler` build one target per
+declared entry. `targetReceiptPath` keeps the single-target path byte-identical
+and scopes each target's journal by its identity in a multi-target project.
+`diff`, `plan`, `status`, `history`, `inspect`, `logs`, and `doctor` iterate the
+project's targets and prefix per-target output with the target identity when the
+project has more than one. Rollback operates per target independently. This
+builds on #52's prerequisite boundary (sources return revisions, targets own
+desired-state loading) and #42/#49's ensemble (independent projects) without
+sharing state between targets. Files: `internal/config`, `internal/targets`,
+`internal/core/reconcile` (`project.go`, `ensemble.go`), `cmd/accorda` (`wire.go`,
+`sync.go`, `diff.go`, `plan.go`, `status.go`, `history.go`, `inspect.go`,
+`logs.go`, `doctor.go`).
+
 ---
 
 ## Adapters — Compose target

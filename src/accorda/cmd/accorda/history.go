@@ -73,19 +73,22 @@ func runHistory(cmd *cobra.Command, dir string) error {
 	return nil
 }
 
-// runHistoryOne prints the deployment history for a single project. Loading
-// the project validates it and resolves the receipt journal path keyed by the
-// project directory and name (receiptPath).
+// runHistoryOne prints the deployment history for a single project's targets.
+// Loading the project validates it and resolves each target's receipt journal
+// path keyed by the project directory and name (receiptPath); in a multi-target
+// project each target keeps its own journal so its history is scoped to it.
 func runHistoryOne(cmd *cobra.Command, dir string, p *config.Project) error {
-	store := history.NewFileStore(receiptPath(dir, p.Name))
-	rows, err := collectHistory(context.Background(), store)
-	if err != nil {
-		return err
+	targets := p.NormalizedTargets()
+	multiTarget := len(targets) > 1
+	for i := range targets {
+		store := history.NewFileStore(targetReceiptPath(dir, p.Name, targets[i], multiTarget))
+		rows, err := collectHistory(context.Background(), store)
+		if err != nil {
+			return err
+		}
+		writeTargetHeader(cmd.OutOrStdout(), p.Name, targets[i], multiTarget)
+		writeHistory(cmd.OutOrStdout(), rows)
 	}
-	if p.Name != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
-	}
-	writeHistory(cmd.OutOrStdout(), rows)
 	return nil
 }
 

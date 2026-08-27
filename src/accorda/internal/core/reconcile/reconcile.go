@@ -77,6 +77,10 @@ type StateTransition struct {
 	Commit string
 	// DeploymentID is the deployment identifier, when assigned.
 	DeploymentID string
+	// Target is the deployment target this transition belongs to, when the
+	// reconciler was built for a specific target in a multi-target project
+	// (issue #103). It is empty for a single-target project.
+	Target string
 	// Err is the failure cause when transitioning to PhaseFailed.
 	Err error
 }
@@ -137,6 +141,12 @@ type Reconciler struct {
 	source sources.Source
 	target targets.Target
 	bus    events.Bus
+	// targetID is the operator-facing target identity (type + configured
+	// path/image) this reconciler drives. It is set via WithTarget in a
+	// multi-target project and is empty for a single-target project; it is
+	// used to attribute state-transition and deployment events to the
+	// specific target (issue #103, docs/DECISIONS.md #53).
+	targetID string
 	// previous is the last successfully deployed state, used for rollback
 	// when a deployment fails (docs/ACCORDA.md §20). It may be nil when
 	// there is no prior deployment.
@@ -189,6 +199,16 @@ type Reconciler struct {
 // on bus. bus may be nil, in which case events are dropped.
 func New(src sources.Source, tgt targets.Target, bus events.Bus) *Reconciler {
 	return &Reconciler{source: src, target: tgt, bus: bus, driftPolicy: DriftReport}
+}
+
+// WithTarget sets the operator-facing target identity this reconciler drives,
+// so state-transition and deployment events attribute their output to the
+// specific target in a multi-target project (issue #103,
+// docs/DECISIONS.md #53). It is optional: a single-target project may omit it
+// and events carry an empty Target.
+func (r *Reconciler) WithTarget(targetID string) *Reconciler {
+	r.targetID = targetID
+	return r
 }
 
 // WithEnvironment sets the target environment recorded in deployment receipts
@@ -953,6 +973,7 @@ func (r *Reconciler) transition(ctx context.Context, from, to Phase, commit, dep
 		To:           to,
 		Commit:       commit,
 		DeploymentID: depID,
+		Target:       r.targetID,
 		Err:          err,
 	})
 }

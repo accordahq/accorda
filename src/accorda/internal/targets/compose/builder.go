@@ -47,7 +47,7 @@ func BuildFromContext(ctx targets.TargetContext) (targets.Target, error) {
 		WithPullPolicy(ctx.Project.Images.Pull),
 		WithHealthTimeout(ctx.Project.Health.Timeout),
 		WithEnvironment(ctx.Project.Environment),
-		WithServiceOverrides(ctx.Project.Target.Services),
+		WithServiceOverrides(ctx.Target.Services),
 		WithArtifact(artifact),
 	}
 	if ctx.Name != "" {
@@ -66,9 +66,9 @@ func BuildFromContext(ctx targets.TargetContext) (targets.Target, error) {
 // source's managed checkout. Absolute target paths remain explicit local
 // overrides for backwards compatibility.
 func resolveComposePaths(ctx targets.TargetContext) (config.Target, string, bool, error) {
-	configured := ctx.Project.Target.ConfiguredPath()
+	configured := ctx.Target.ConfiguredPath()
 	if filepath.IsAbs(configured) {
-		return ctx.Project.Target, "", false, nil
+		return ctx.Target, "", false, nil
 	}
 	if ctx.Worktree == nil {
 		return config.Target{}, "", false, fmt.Errorf("compose target: source worktree is nil")
@@ -81,7 +81,7 @@ func resolveComposePaths(ctx targets.TargetContext) (config.Target, string, bool
 	if err != nil {
 		return config.Target{}, "", false, err
 	}
-	target := ctx.Project.Target
+	target := ctx.Target
 	target.File = file
 	target.Path = ""
 	return target, artifact, true, nil

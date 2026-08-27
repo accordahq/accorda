@@ -50,6 +50,13 @@
 // member keeps its own lock and receipt store, so independent workloads
 // reconcile concurrently and a failure in one does not block the others.
 //
+// Project extends the same lifecycle to several targets of ONE project that
+// reconcile from a single source revision (issue #103, docs/DECISIONS.md #53).
+// Unlike the Ensemble, the Project's targets share a source, so it runs them
+// sequentially rather than concurrently to avoid racing the shared managed
+// checkout. Each target keeps its own receipt store and deployment lock, and
+// Reconciler.WithTarget labels its events so output stays attributable.
+//
 // Rollback restores the last known-healthy deployment when a deploy or
 // health-verification phase fails (docs/ACCORDA.md §20). The previous
 // deployment is supplied via WithPrevious; the full previous service model is

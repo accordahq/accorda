@@ -146,7 +146,9 @@ func TestWithPlaintextFile_RejectsUnsafeInputs(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("withPlaintextFile() error = %v, want containing %q", err, tt.want)
 			}
-			if err != nil && strings.Contains(err.Error(), plaintextFixture) {
+			// err is guaranteed non-nil here (the Fatalf above exits when it is
+			// nil), so the plaintext-leak check needs no nil guard.
+			if strings.Contains(err.Error(), plaintextFixture) {
 				t.Fatalf("withPlaintextFile() error leaked plaintext: %v", err)
 			}
 		})

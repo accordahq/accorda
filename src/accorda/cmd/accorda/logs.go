@@ -53,19 +53,26 @@ func runLogs(cmd *cobra.Command, dir, service string, opts targets.LogOptions) e
 	return nil
 }
 
-// runLogsOne fetches logs for a single project's service.
+// runLogsOne fetches logs for a single project's service across its targets.
 func runLogsOne(cmd *cobra.Command, dir, service string, opts targets.LogOptions, p *config.Project) error {
-	src, err := buildSource(p, dir, p.Name)
+	src, err := buildSource(p, dir)
 	if err != nil {
 		return err
 	}
-	tgt, err := buildTarget(p, dir, src, p.Name)
-	if err != nil {
-		return err
+	tgts := p.NormalizedTargets()
+	for i := range tgts {
+		tgtCfg := tgts[i]
+		tgt, err := buildTargetConfig(p, tgtCfg, dir, src, p.Name)
+		if err != nil {
+			return err
+		}
+		logTarget, ok := tgt.(targets.LogTarget)
+		if !ok {
+			return fmt.Errorf("logs %s: target type %q does not support logs", p.Name, tgtCfg.Type)
+		}
+		if err := logTarget.Logs(cmd.Context(), service, opts, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+			return err
+		}
 	}
-	logTarget, ok := tgt.(targets.LogTarget)
-	if !ok {
-		return fmt.Errorf("logs %s: target type %q does not support logs", p.Name, p.Target.Type)
-	}
-	return logTarget.Logs(cmd.Context(), service, opts, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	return nil
 }

@@ -140,6 +140,40 @@ The `version` and `sync` settings are global and not overridable per project —
 one agent runs on one schema and one polling cadence — while `images`,
 `reconcile`, and `health` act as defaults that any member may override.
 
+### Multiple targets per project
+
+A single project can reconcile several deployment targets from its one source
+by declaring a `targets:` list (issue #103, docs/DECISIONS.md #53). Each target
+locates and parses its own artifact from the same Git revision, and keeps its
+own receipt journal and deployment lock, so two Compose files (or future
+Compose + Kubernetes combinations) deploy together from one fetch. The legacy
+single `target:` scalar remains valid and is equivalent to a one-element
+`targets:` list:
+
+```yaml
+version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+  branch: main
+targets:
+  - type: compose
+    file: docker-compose.yml
+  - type: compose
+    file: qa/docker-compose.yml
+```
+
+One `accorda sync` cycle fetches one source revision and reconciles every
+declared target. Targets within a project run sequentially (they share the
+source's managed checkout, so concurrent mutation is avoided); independent
+projects still run concurrently. Target identities must be unique within a
+project so their journals and locks do not collide. Every command (`diff`,
+`plan`, `status`, `history`, `inspect`, `logs`, `doctor`) addresses each target
+and prefixes its output with the target identity when a project has more than
+one. Rollback operates per target, so a failed target restores independently
+without affecting its siblings.
+
 ## Core interfaces
 
 The core abstractions defined in `docs/ACCORDA.md` §12 are implemented so that Accorda core never depends on a specific Git host or deployment target:

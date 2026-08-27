@@ -55,7 +55,8 @@ func TestResolveComposePaths(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := targets.TargetContext{
-				Project:  config.Project{Target: tc.target, Source: config.Source{URL: "https://example.com/repo.git", Path: tc.sourcePath}},
+				Project:  config.Project{Source: config.Source{URL: "https://example.com/repo.git", Path: tc.sourcePath}},
+				Target:   tc.target,
 				Worktree: testWorktree{root: base, binding: tc.sourcePath},
 			}
 			got, artifact, managed, err := resolveComposePaths(ctx)
@@ -99,8 +100,8 @@ func TestComposeArtifactInPlaceBinding(t *testing.T) {
 			ctx := targets.TargetContext{
 				Project: config.Project{
 					Source: config.Source{Path: tc.binding},
-					Target: config.Target{Type: config.TargetCompose, File: tc.configured},
 				},
+				Target:   config.Target{Type: config.TargetCompose, File: tc.configured},
 				Worktree: testWorktree{root: root, binding: tc.binding},
 			}
 			got, err := composeArtifact(ctx, tc.configured)

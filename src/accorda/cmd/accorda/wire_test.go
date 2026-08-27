@@ -55,7 +55,7 @@ func TestBuildTarget_Compose(t *testing.T) {
 		Images: config.Images{Pull: config.PullAlways},
 		Health: config.Health{Timeout: 0},
 	}
-	src, err := buildSource(p, ".", "")
+	src, err := buildSource(p, ".")
 	if err != nil {
 		t.Fatalf("buildSource error = %v", err)
 	}
@@ -72,7 +72,7 @@ func TestBuildTarget_Unsupported(t *testing.T) {
 	p := &config.Project{
 		Target: config.Target{Type: config.TargetKubernetes, Path: "manifests"},
 	}
-	src, err := buildSource(p, ".", "")
+	src, err := buildSource(p, ".")
 	if err != nil {
 		t.Fatalf("buildSource error = %v", err)
 	}
@@ -101,7 +101,7 @@ func TestBuildSourcePreservesTargetIndependentRemotePath(t *testing.T) {
 				Source: config.Source{URL: "https://example.com/acme/repo.git", Path: tc.sourcePath},
 				Target: config.Target{Type: config.TargetCompose, File: tc.targetFile},
 			}
-			src, err := buildSource(p, ".", "")
+			src, err := buildSource(p, ".")
 			if err != nil {
 				t.Fatalf("buildSource: %v", err)
 			}
@@ -173,7 +173,7 @@ func TestBuildSourceResolvesInPlaceWorktree(t *testing.T) {
 				Source: config.Source{Type: "git", Path: tc.sourcePath},
 				Target: config.Target{Type: config.TargetCompose, File: tc.targetFile},
 			}
-			src, err := buildSource(p, ".", "")
+			src, err := buildSource(p, ".")
 			if err != nil {
 				t.Fatalf("buildSource: %v", err)
 			}
@@ -192,7 +192,7 @@ func TestBuildSourceIgnoresAbsoluteTargetPath(t *testing.T) {
 		Source: config.Source{URL: "https://example.com/acme/repo.git"},
 		Target: config.Target{Type: config.TargetCompose, File: filepath.Join(t.TempDir(), config.DefaultComposeFile)},
 	}
-	src, err := buildSource(p, ".", "")
+	src, err := buildSource(p, ".")
 	if err != nil {
 		t.Fatalf("buildSource: %v", err)
 	}
@@ -206,11 +206,11 @@ func TestBuildSourceIsolatesManagedCheckoutByProject(t *testing.T) {
 		Source: config.Source{URL: "https://example.com/acme/repo.git", Branch: "main"},
 		Target: config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile},
 	}
-	first, err := buildSource(p, filepath.Join(t.TempDir(), "production"), "")
+	first, err := buildSource(p, filepath.Join(t.TempDir(), "production"))
 	if err != nil {
 		t.Fatalf("build first source: %v", err)
 	}
-	second, err := buildSource(p, filepath.Join(t.TempDir(), "staging"), "")
+	second, err := buildSource(p, filepath.Join(t.TempDir(), "staging"))
 	if err != nil {
 		t.Fatalf("build second source: %v", err)
 	}
@@ -236,11 +236,13 @@ func TestBuildSourceIsolatesEnsembleMembersByName(t *testing.T) {
 	// must get isolated managed checkouts even though they share a repo URL,
 	// otherwise two branches of one repository would race on the same worktree
 	// (docs/ACCORDA.md §49, docs/DECISIONS.md #22).
-	api, err := buildSource(p, "shared-dir", "api")
+	p.Name = "api"
+	api, err := buildSource(p, "shared-dir")
 	if err != nil {
 		t.Fatalf("build api source: %v", err)
 	}
-	worker, err := buildSource(p, "shared-dir", "worker")
+	p.Name = "worker"
+	worker, err := buildSource(p, "shared-dir")
 	if err != nil {
 		t.Fatalf("build worker source: %v", err)
 	}
@@ -470,5 +472,90 @@ func TestPreviousFromHistory_StoreError_WarnsAndNoPrevious(t *testing.T) {
 	}
 	if !strings.Contains(warn.String(), "could not read deployment history") {
 		t.Errorf("warning = %q, want it to mention the history read failure", warn.String())
+	}
+}
+
+// TestTargetReceiptPath_SingleTargetPreservesLegacyPath verifies that a
+// single-target project keeps the byte-identical legacy receipt path, so
+// existing journals and state layout are preserved (issue #103).
+func TestTargetReceiptPath_SingleTargetPreservesLegacyPath(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", base)
+	dir := t.TempDir()
+	single := config.Target{Type: config.TargetCompose, File: config.DefaultComposeFile}
+	if got := targetReceiptPath(dir, "", single, false); got != receiptPath(dir, "") {
+		t.Errorf("single-target receipt path = %q, want legacy %q", got, receiptPath(dir, ""))
+	}
+}
+
+// TestTargetReceiptPath_MultiTargetScopesByTarget verifies that two targets in
+// one project get distinct receipt journals, so their history does not
+// collide (issue #103).
+func TestTargetReceiptPath_MultiTargetScopesByTarget(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", base)
+	dir := t.TempDir()
+	a := targetReceiptPath(dir, "", config.Target{Type: config.TargetCompose, File: "docker-compose.yml"}, true)
+	b := targetReceiptPath(dir, "", config.Target{Type: config.TargetCompose, File: "qa/docker-compose.yml"}, true)
+	if a == b {
+		t.Fatalf("two targets share receipt journal %q", a)
+	}
+}
+
+// TestTargetLabel verifies the human-readable target identity used to prefix
+// per-target output in a multi-target project (issue #103).
+func TestTargetLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		tgt  config.Target
+		want string
+	}{
+		{"compose file", config.Target{Type: config.TargetCompose, File: "docker-compose.yml"}, "compose:docker-compose.yml"},
+		{"image", config.Target{Type: config.TargetImage, Image: "registry/x:1"}, "image:registry/x:1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := targetLabel(tc.tgt); got != tc.want {
+				t.Errorf("targetLabel = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildEnsembleMembers_MultiTargetProject verifies a project with several
+// targets produces one Ensemble member whose runner reconciles all targets,
+// and that each target gets its own receipt store (issue #103).
+func TestBuildEnsembleMembers_MultiTargetProject(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", base)
+	dir := t.TempDir()
+	projects := []config.Project{{
+		Name:        "aura",
+		Version:     config.SchemaVersion,
+		Environment: "production",
+		Source:      config.Source{Type: "git", URL: "https://example.com/repo.git", Branch: "main"},
+		Targets: config.Targets{
+			{Type: config.TargetCompose, File: "docker-compose.yml"},
+			{Type: config.TargetCompose, File: "qa/docker-compose.yml"},
+		},
+	}}
+	members, cleanup, err := buildEnsembleMembers(dir, projects, nil)
+	if err != nil {
+		t.Fatalf("buildEnsembleMembers: %v", err)
+	}
+	defer cleanup()
+	if len(members) != 1 {
+		t.Fatalf("member count = %d, want 1", len(members))
+	}
+	project, ok := members[0].Runner.(*reconcile.Project)
+	if !ok {
+		t.Fatalf("member runner = %T, want *reconcile.Project", members[0].Runner)
+	}
+	results := project.Reconcile(context.Background())
+	// Building targets for remote compose files requires no Docker daemon, but
+	// the reconciler fetch will fail on the fake remote; we only assert the
+	// fan-out produced one result per target.
+	if len(results) != 2 {
+		t.Fatalf("project result count = %d, want 2", len(results))
 	}
 }

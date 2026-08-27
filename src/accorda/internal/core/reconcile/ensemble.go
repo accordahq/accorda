@@ -18,24 +18,50 @@ import (
 	"time"
 )
 
-// EnsembleMember is one Reconciler of an Ensemble together with its operator
-// name (docs/ACCORDA.md §49). The name distinguishes workloads in aggregated
-// output and state paths; it is not used for reconciliation semantics, which
-// the underlying Reconciler owns entirely.
+// EnsembleMember is one reconciliation unit of an Ensemble together with its
+// operator name (docs/ACCORDA.md §49). The name distinguishes workloads in
+// aggregated output and state paths; it is not used for reconciliation
+// semantics, which the underlying Reconciler/Project owns entirely.
+//
+// A member is either a single-target Reconciler or a multi-target Runner
+// (issue #103, docs/DECISIONS.md #53). Exactly one of the two must be set;
+// the Ensemble fans each member out concurrently.
 type EnsembleMember struct {
 	// Name is the operator-chosen project name (api, worker, ...). It must be
 	// unique within the Ensemble.
 	Name string
-	// Reconciler drives the lifecycle for this member's source and target.
+	// Reconciler drives the lifecycle for this member's single source and
+	// target. Mutually exclusive with Runner.
 	Reconciler *Reconciler
+	// Runner drives a multi-target unit (a Project, or a SingleTarget wrapper
+	// of a Reconciler) for this member. Mutually exclusive with Reconciler.
+	Runner CycleRunner
+}
+
+// unit returns the CycleRunner for this member, wrapping the Reconciler when
+// only it is set. It is valid to call only after NewEnsemble validated the
+// member.
+func (m EnsembleMember) unit() CycleRunner {
+	if m.Runner != nil {
+		return m.Runner
+	}
+	return NewSingleTarget(m.Name, m.Reconciler)
+}
+
+// CycleRunner returns the member's CycleRunner, wrapping the single
+// Reconciler when only it is set. It is the exported form of unit so callers
+// that build a member directly (without NewEnsemble) can drive it uniformly.
+func (m EnsembleMember) CycleRunner() CycleRunner {
+	return m.unit()
 }
 
 // NewEnsemble returns an Ensemble that runs the given members concurrently.
-// It requires at least one member; a nil Reconciler in a member is rejected so
-// a partially-built Ensemble is never silently half-run. Name uniqueness is
-// checked case-insensitively to match config.ValidateEnsemble and Compose
-// project-name normalization, so the two validators enforce the same contract
-// rather than diverging (docs/ACCORDA.md §49).
+// It requires at least one member; a member must set exactly one of
+// Reconciler or Runner so a partially-built Ensemble is never silently
+// half-run. Name uniqueness is checked case-insensitively to match
+// config.ValidateEnsemble and Compose project-name normalization, so the two
+// validators enforce the same contract rather than diverging (docs/ACCORDA.md
+// §49).
 func NewEnsemble(members []EnsembleMember) (*Ensemble, error) {
 	if len(members) == 0 {
 		return nil, errors.New("reconcile: ensemble requires at least one member")
@@ -45,8 +71,8 @@ func NewEnsemble(members []EnsembleMember) (*Ensemble, error) {
 		if m.Name == "" {
 			return nil, errors.New("reconcile: ensemble member name is required")
 		}
-		if m.Reconciler == nil {
-			return nil, fmt.Errorf("reconcile: ensemble member %q has a nil reconciler", m.Name)
+		if (m.Reconciler == nil) == (m.Runner == nil) {
+			return nil, fmt.Errorf("reconcile: ensemble member %q must set exactly one of Reconciler or Runner", m.Name)
 		}
 		key := strings.ToLower(m.Name)
 		if _, dup := seen[key]; dup {
@@ -88,14 +114,19 @@ func (e *Ensemble) Reconcile(ctx context.Context) []MemberResult {
 // reconcile performs the fan-out without acquiring the ensemble mutex; it is
 // called by Reconcile and by Run's per-tick loop.
 func (e *Ensemble) reconcile(ctx context.Context) []MemberResult {
-	results := make([]MemberResult, len(e.members))
+	results := make([]MemberResult, 0, len(e.members))
+	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for i, m := range e.members {
+	for _, m := range e.members {
 		wg.Add(1)
-		go func(idx int, member EnsembleMember) {
+		go func(member EnsembleMember) {
 			defer wg.Done()
-			results[idx] = MemberResult{Name: member.Name, Result: member.Reconciler.Reconcile(ctx)}
-		}(i, m)
+			unit := member.unit()
+			unitResults := unit.Reconcile(ctx)
+			mu.Lock()
+			results = append(results, unitResults...)
+			mu.Unlock()
+		}(m)
 	}
 	wg.Wait()
 	return results

@@ -18,12 +18,12 @@ type fakeSyncReconciler struct {
 	runErr error
 }
 
-func (f *fakeSyncReconciler) Reconcile(context.Context) *reconcile.Result {
-	return f.result
+func (f *fakeSyncReconciler) Reconcile(context.Context) []reconcile.MemberResult {
+	return []reconcile.MemberResult{{Name: "", Result: f.result}}
 }
 
-func (f *fakeSyncReconciler) Run(_ context.Context, _ time.Duration, handle reconcile.ResultHandler) error {
-	handle(f.result)
+func (f *fakeSyncReconciler) Run(_ context.Context, _ time.Duration, handle func([]reconcile.MemberResult)) error {
+	handle([]reconcile.MemberResult{{Name: "", Result: f.result}})
 	return f.runErr
 }
 
