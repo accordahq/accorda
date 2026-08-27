@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -8,14 +9,22 @@ import (
 	"accorda/internal/targets"
 )
 
+type testWorktree struct {
+	root    string
+	binding string
+}
+
+func (w testWorktree) CheckoutDir() (string, error) { return w.root, nil }
+func (w testWorktree) CheckoutPath(repositoryPath string) (string, error) {
+	return filepath.Join(w.root, filepath.FromSlash(repositoryPath)), nil
+}
+func (w testWorktree) BindingPath() string { return w.binding }
+
 func TestResolveComposePaths(t *testing.T) {
 	base := t.TempDir()
 	managed := filepath.Join(base, config.DefaultComposeFile)
 	absolute := filepath.Join(t.TempDir(), config.DefaultComposeFile)
 	nested := filepath.Join("deploy", config.DefaultComposeFile)
-	sourcePath := func(repositoryPath string) (string, error) {
-		return filepath.Join(base, repositoryPath), nil
-	}
 	cases := []struct {
 		name       string
 		target     config.Target
@@ -46,10 +55,10 @@ func TestResolveComposePaths(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := targets.TargetContext{
-				Project:    config.Project{Target: tc.target, Source: config.Source{Path: tc.sourcePath}},
-				SourcePath: sourcePath,
+				Project:  config.Project{Target: tc.target, Source: config.Source{URL: "https://example.com/repo.git", Path: tc.sourcePath}},
+				Worktree: testWorktree{root: base, binding: tc.sourcePath},
 			}
-			got, managed, err := resolveComposePaths(ctx)
+			got, artifact, managed, err := resolveComposePaths(ctx)
 			if err != nil {
 				t.Fatalf("resolveComposePaths(): %v", err)
 			}
@@ -58,6 +67,48 @@ func TestResolveComposePaths(t *testing.T) {
 			}
 			if managed != tc.managed {
 				t.Fatalf("resolveComposePaths() managed = %t, want %t", managed, tc.managed)
+			}
+			if artifact != tc.sourcePath && tc.managed {
+				t.Fatalf("resolveComposePaths() artifact = %q, want %q", artifact, tc.sourcePath)
+			}
+		})
+	}
+}
+
+func TestComposeArtifactInPlaceBinding(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "deploy")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	file := filepath.Join(nested, config.DefaultComposeFile)
+	if err := os.WriteFile(file, []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatalf("write compose: %v", err)
+	}
+	cases := []struct {
+		name       string
+		binding    string
+		configured string
+		want       string
+	}{
+		{name: "worktree", binding: root, configured: "deploy/compose.yaml", want: "deploy/compose.yaml"},
+		{name: "explicit file", binding: file, configured: "ignored.yaml", want: "deploy/compose.yaml"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := targets.TargetContext{
+				Project: config.Project{
+					Source: config.Source{Path: tc.binding},
+					Target: config.Target{Type: config.TargetCompose, File: tc.configured},
+				},
+				Worktree: testWorktree{root: root, binding: tc.binding},
+			}
+			got, err := composeArtifact(ctx, tc.configured)
+			if err != nil {
+				t.Fatalf("composeArtifact: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("composeArtifact = %q, want %q", got, tc.want)
 			}
 		})
 	}

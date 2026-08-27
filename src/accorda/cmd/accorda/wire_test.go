@@ -85,16 +85,15 @@ func TestBuildTarget_Unsupported(t *testing.T) {
 	}
 }
 
-func TestBuildSourceResolvesComposeFileInManagedCheckout(t *testing.T) {
+func TestBuildSourcePreservesTargetIndependentRemotePath(t *testing.T) {
 	cases := []struct {
 		name       string
 		sourcePath string
 		targetFile string
-		want       string
 	}{
-		{name: "root Aura file", targetFile: "docker-compose.yml", want: "docker-compose.yml"},
-		{name: "source directory", sourcePath: "services/api", targetFile: "compose.yaml", want: "services/api/compose.yaml"},
-		{name: "explicit source file wins", sourcePath: "deploy/prod.yml", targetFile: "compose.yaml", want: "deploy/prod.yml"},
+		{name: "root file", targetFile: "docker-compose.yml"},
+		{name: "source directory", sourcePath: "services/api", targetFile: "compose.yaml"},
+		{name: "explicit source file", sourcePath: "deploy/prod.yml", targetFile: "compose.yaml"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -106,8 +105,8 @@ func TestBuildSourceResolvesComposeFileInManagedCheckout(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildSource: %v", err)
 			}
-			if src.Source.Path != tc.want {
-				t.Errorf("source path = %q, want %q", src.Source.Path, tc.want)
+			if src.Source.Path != tc.sourcePath {
+				t.Errorf("source path = %q, want unchanged %q", src.Source.Path, tc.sourcePath)
 			}
 		})
 	}
@@ -123,40 +122,49 @@ func TestBuildSourceResolvesInPlaceWorktree(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repositoryRoot, "deploy"), 0o755); err != nil {
 		t.Fatalf("mkdir deploy: %v", err)
 	}
+	worktreeRoot := filepath.Join(home, "worktree")
+	if _, err := gogit.PlainInit(worktreeRoot, false); err != nil {
+		t.Fatalf("init worktree repository: %v", err)
+	}
+	for _, file := range []string{filepath.Join(repositoryRoot, "docker-compose.yml"), filepath.Join(repositoryRoot, "deploy", config.DefaultComposeFile)} {
+		if err := os.WriteFile(file, []byte("services: {}\n"), 0o600); err != nil {
+			t.Fatalf("write source file: %v", err)
+		}
+	}
 	cases := []struct {
-		name       string
-		sourcePath string
-		targetFile string
-		wantRoot   string
-		wantPath   string
+		name        string
+		sourcePath  string
+		targetFile  string
+		wantRoot    string
+		wantBinding string
 	}{
 		{
-			name:       "directory",
-			sourcePath: filepath.Join(home, "worktree"),
-			targetFile: filepath.Join("deploy", config.DefaultComposeFile),
-			wantRoot:   filepath.Join(home, "worktree"),
-			wantPath:   "deploy/" + config.DefaultComposeFile,
+			name:        "directory",
+			sourcePath:  filepath.Join(home, "worktree"),
+			targetFile:  filepath.Join("deploy", config.DefaultComposeFile),
+			wantRoot:    filepath.Join(home, "worktree"),
+			wantBinding: worktreeRoot,
 		},
 		{
-			name:       "root explicit file",
-			sourcePath: filepath.Join(repositoryRoot, "docker-compose.yml"),
-			targetFile: config.DefaultComposeFile,
-			wantRoot:   repositoryRoot,
-			wantPath:   "docker-compose.yml",
+			name:        "root explicit file",
+			sourcePath:  filepath.Join(repositoryRoot, "docker-compose.yml"),
+			targetFile:  config.DefaultComposeFile,
+			wantRoot:    repositoryRoot,
+			wantBinding: filepath.Join(repositoryRoot, "docker-compose.yml"),
 		},
 		{
-			name:       "nested explicit file",
-			sourcePath: filepath.Join(repositoryRoot, "deploy", config.DefaultComposeFile),
-			targetFile: "ignored.yaml",
-			wantRoot:   repositoryRoot,
-			wantPath:   "deploy/" + config.DefaultComposeFile,
+			name:        "nested explicit file",
+			sourcePath:  filepath.Join(repositoryRoot, "deploy", config.DefaultComposeFile),
+			targetFile:  "ignored.yaml",
+			wantRoot:    repositoryRoot,
+			wantBinding: filepath.Join(repositoryRoot, "deploy", config.DefaultComposeFile),
 		},
 		{
-			name:       "home shorthand",
-			sourcePath: "~/worktree",
-			targetFile: config.DefaultComposeFile,
-			wantRoot:   filepath.Join(home, "worktree"),
-			wantPath:   config.DefaultComposeFile,
+			name:        "home shorthand",
+			sourcePath:  "~/worktree",
+			targetFile:  config.DefaultComposeFile,
+			wantRoot:    filepath.Join(home, "worktree"),
+			wantBinding: worktreeRoot,
 		},
 	}
 	for _, tc := range cases {
@@ -172,8 +180,8 @@ func TestBuildSourceResolvesInPlaceWorktree(t *testing.T) {
 			if src.CacheDir != tc.wantRoot {
 				t.Errorf("worktree root = %q, want %q", src.CacheDir, tc.wantRoot)
 			}
-			if src.Source.Path != tc.wantPath {
-				t.Errorf("source path = %q, want %q", src.Source.Path, tc.wantPath)
+			if src.Source.Path != tc.wantBinding {
+				t.Errorf("source binding = %q, want %q", src.Source.Path, tc.wantBinding)
 			}
 		})
 	}
@@ -188,8 +196,8 @@ func TestBuildSourceIgnoresAbsoluteTargetPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSource: %v", err)
 	}
-	if src.Source.Path != config.DefaultComposeFile {
-		t.Errorf("source path = %q, want %q", src.Source.Path, config.DefaultComposeFile)
+	if src.Source.Path != "" {
+		t.Errorf("source path = %q, want unchanged empty path", src.Source.Path)
 	}
 }
 

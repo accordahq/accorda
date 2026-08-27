@@ -20,6 +20,7 @@ import (
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
 	shareddocker "accorda/internal/docker"
+	"accorda/internal/sources"
 	"accorda/internal/targets"
 )
 
@@ -115,6 +116,46 @@ func newTarget(t *testing.T, path string, cli dockerClient) *Target {
 		t.Fatalf("New: %v", err)
 	}
 	return tgt
+}
+
+func TestDesiredLoadsComposeArtifactFromRevision(t *testing.T) {
+	root := t.TempDir()
+	deploy := filepath.Join(root, "deploy")
+	if err := os.MkdirAll(deploy, 0o700); err != nil {
+		t.Fatalf("mkdir deploy: %v", err)
+	}
+	composeFile := filepath.Join(deploy, config.DefaultComposeFile)
+	if err := os.WriteFile(composeFile, []byte("services:\n  api:\n    image: api:2\n    env_file: [service.env]\n"), 0o600); err != nil {
+		t.Fatalf("write compose: %v", err)
+	}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: composeFile},
+		WithArtifact("deploy/compose.yaml"), WithDockerClient(&fakeDockerClient{}), WithRunner(&fakeRunner{}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	revision := sources.NewRevision(
+		sources.Commit{SHA: "abc123", Branch: "main"}, "https://example.com/repo.git", root,
+		func(path string) (string, bool, error) {
+			if path == "deploy/service.env" {
+				return "tracked-digest", true, nil
+			}
+			return "", false, nil
+		}, nil,
+	)
+	desired, err := tgt.Desired(t.Context(), revision)
+	if err != nil {
+		t.Fatalf("Desired: %v", err)
+	}
+	if desired.Commit != "abc123" || desired.Repository != "https://example.com/repo.git" {
+		t.Errorf("metadata = %+v, want revision metadata", desired)
+	}
+	service := desired.Services["api"]
+	if service.Image != "api:2" {
+		t.Errorf("api image = %q, want api:2", service.Image)
+	}
+	if len(service.EnvFiles) != 1 || service.EnvFiles[0].Digest != "tracked-digest" {
+		t.Errorf("api env files = %+v, want tracked digest", service.EnvFiles)
+	}
 }
 
 // summary builds a container.Summary with the given service label, tagged

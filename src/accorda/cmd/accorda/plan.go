@@ -2,7 +2,7 @@
 //
 // plan shows exactly what Accorda intends to do without performing the
 // deployment. It is read-only with respect to the target and source: it
-// fetches the desired state from Git and computes the deployment plan, but
+// fetches a Git revision, asks the target to load desired state, and computes the deployment plan, but
 // never applies it. The output is the per-service action summary produced by
 // plan.Plan.String, prefixed with the intended plan header from §11, so an
 // operator can review the intended actions before running `accorda sync`.
@@ -24,7 +24,7 @@ import (
 
 // newPlanCmd builds the `accorda plan` command (docs/ACCORDA.md §11). It
 // shows the intended actions Accorda would take to reconcile the desired
-// state from Git with the target's current state, without applying them. The
+// state from the target revision with the target's current state, without applying them. The
 // command is read-only: it never mutates the target or source.
 func newPlanCmd() *cobra.Command {
 	var dir string
@@ -32,7 +32,7 @@ func newPlanCmd() *cobra.Command {
 		Use:   "plan",
 		Short: "show intended actions without deploying",
 		Long: "Show the intended deployment plan without performing it\n" +
-			"(docs/ACCORDA.md §11): fetch the desired state from Git, compare it\n" +
+			"(docs/ACCORDA.md §11): fetch the Git revision, load target state, and compare it\n" +
 			"with the target's current state, and print the per-service actions\n" +
 			"Accorda would take to reconcile the desired state. plan is read-only\n" +
 			"and does not change the target or source.",
@@ -87,14 +87,17 @@ func runPlanOne(cmd *cobra.Command, dir string, p *config.Project) error {
 		if err != nil {
 			return fmt.Errorf("fetch desired state: %w", err)
 		}
-		desired, err := src.Desired(ctx, &commit)
-		if err != nil {
-			return fmt.Errorf("read desired state: %w", err)
+		desired, derr := desiredAt(ctx, src, tgt, &commit)
+		if derr != nil && desired == nil {
+			return fmt.Errorf("read desired state: %w", derr)
+		}
+		if derr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: revision cleanup: %v\n", derr)
 		}
 
 		// The plan is computed against the last known-healthy deployment as the
 		// deployed baseline (docs/ACCORDA.md §20). The baseline is the full
-		// service model re-read from the source at the deployed commit (the
+		// service model reloaded by the target at the deployed commit (the
 		// receipt journal stores only image/digest), so `accorda plan` and
 		// `accorda diff` agree on the deployed side and a converged service is
 		// not over-reported as CHANGED. The reconcile loop independently hydrates
@@ -103,7 +106,7 @@ func runPlanOne(cmd *cobra.Command, dir string, p *config.Project) error {
 		// healthy deployment, the baseline is nil and the plan treats every
 		// desired service as new.
 		store := history.NewFileStore(receiptPath(dir, p.Name))
-		deployed := deployedStateFromDesired(deployedAtCommit(ctx, src, store, cmd.ErrOrStderr()))
+		deployed := deployedStateFromDesired(deployedAtCommit(ctx, src, tgt, store, cmd.ErrOrStderr()))
 		pn, err := tgt.Plan(ctx, desired, deployed)
 		if err != nil {
 			return err

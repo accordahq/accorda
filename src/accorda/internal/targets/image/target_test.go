@@ -18,6 +18,7 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
+	"accorda/internal/sources"
 	"accorda/internal/targets"
 )
 
@@ -130,7 +131,6 @@ func newTarget(t *testing.T, cli *fakeDockerClient, runner *fakeRunner) *Target 
 
 func TestCompileTime_TargetImplementsInterface(t *testing.T) {
 	var _ targets.Target = (*Target)(nil)
-	var _ targets.DesiredProvider = (*Target)(nil)
 	var _ targets.LogTarget = (*Target)(nil)
 }
 
@@ -193,12 +193,8 @@ func TestDesired_BuildsSingleServiceFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	sourceDesired := &state.DesiredState{
-		Repository: "acme/infra",
-		Branch:     "main",
-		Commit:     "abc123",
-	}
-	got, err := tgt.Desired(context.Background(), sourceDesired)
+	revision := sources.NewRevision(sources.Commit{SHA: "abc123", Branch: "main"}, "acme/infra", t.TempDir(), nil, nil)
+	got, err := tgt.Desired(context.Background(), revision)
 	if err != nil {
 		t.Fatalf("Desired: %v", err)
 	}

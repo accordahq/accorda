@@ -379,8 +379,8 @@ func deployedFromReceipts(receipts []history.Receipt) *state.DeployedState {
 // hydratePrevious replaces an image-only receipt baseline with the complete
 // service model declared at the deployed commit. When the current and deployed
 // commits match, the already validated desired state is the exact baseline and
-// no second source read is needed. For different commits, Source.Desired reads
-// the historical revision. Failing closed prevents a partial baseline from
+// no second source read is needed. For different commits, the source opens a
+// historical revision and the target reloads it. Failing closed prevents a partial baseline from
 // causing an unnecessary full recreation.
 func (r *Reconciler) hydratePrevious(ctx context.Context, desired *state.DesiredState) error {
 	if !r.previousNeedsHydration || r.previous == nil {
@@ -389,8 +389,8 @@ func (r *Reconciler) hydratePrevious(ctx context.Context, desired *state.Desired
 	previousDesired := desired
 	if r.previous.Commit != desired.Commit {
 		var err error
-		previousDesired, err = r.source.Desired(ctx, &sources.Commit{SHA: r.previous.Commit})
-		if err != nil {
+		previousDesired, err = r.loadDesired(ctx, &sources.Commit{SHA: r.previous.Commit})
+		if err != nil && previousDesired == nil {
 			return fmt.Errorf("reconcile: read previous desired state at %s: %w", r.previous.Commit, err)
 		}
 		if previousDesired == nil {
@@ -440,22 +440,20 @@ func (r *Reconciler) fetch(ctx context.Context, res *Result) (sources.Commit, bo
 	return commit, true
 }
 
-// validate loads and validates desired state for a new commit.
+// validate asks the target to load and normalize desired state from the
+// source-owned revision view, then validates both model and target runtime.
 func (r *Reconciler) validate(ctx context.Context, res *Result, commit sources.Commit) (*state.DesiredState, bool) {
 	r.transition(ctx, PhaseFetching, PhaseValidating, commit.SHA, "", nil)
-	desired, err := r.source.Desired(ctx, &commit)
-	if err != nil {
+	desired, err := r.loadDesired(ctx, &commit)
+	if err != nil && desired == nil {
 		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
 		return nil, false
 	}
-	// A target whose desired state is derived from its own config (for
-	// example a raw image target) replaces the source-parsed services with
-	// its config-derived model while keeping the source's commit metadata
-	// (docs/DECISIONS.md #24). The source is still fetched so receipts and
-	// history stay anchored to a Git revision.
-	desired, ok := r.resolveDesired(ctx, res, desired, commit)
-	if !ok {
-		return nil, false
+	if err != nil {
+		r.emit(ctx, events.EventStateTransition, StateTransition{
+			From: PhaseValidating, To: PhaseValidating,
+			Commit: commit.SHA, Err: fmt.Errorf("revision cleanup: %w", err),
+		})
 	}
 	if err := desired.Validate(); err != nil {
 		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
@@ -468,26 +466,20 @@ func (r *Reconciler) validate(ctx context.Context, res *Result, commit sources.C
 	return desired, true
 }
 
-// resolveDesired returns the desired state the reconciler should plan and
-// deploy. When the target implements targets.DesiredProvider, the target's
-// config-derived desired state replaces the source-parsed services; otherwise
-// the source's desired state is used unchanged (docs/DECISIONS.md #24).
-func (r *Reconciler) resolveDesired(ctx context.Context, res *Result, desired *state.DesiredState, commit sources.Commit) (*state.DesiredState, bool) {
-	provider, ok := r.target.(targets.DesiredProvider)
-	if !ok {
-		return desired, true
-	}
-	resolved, err := provider.Desired(ctx, desired)
+func (r *Reconciler) loadDesired(ctx context.Context, commit *sources.Commit) (_ *state.DesiredState, err error) {
+	revision, err := r.source.Revision(ctx, commit)
 	if err != nil {
-		r.fail(ctx, res, PhaseValidating, commit.SHA, "", err)
-		return nil, false
+		return nil, err
 	}
-	if resolved == nil {
-		r.fail(ctx, res, PhaseValidating, commit.SHA, "",
-			errors.New("reconcile: target desired state is nil"))
-		return nil, false
+	desired, derr := r.target.Desired(ctx, revision)
+	cerr := revision.Close()
+	if derr != nil {
+		return nil, errors.Join(derr, cerr)
 	}
-	return resolved, true
+	if desired == nil {
+		return nil, errors.Join(errors.New("reconcile: target desired state is nil"), cerr)
+	}
+	return desired, cerr
 }
 
 // checkDrift handles a polling cycle whose Git HEAD is unchanged. It reads
@@ -882,7 +874,7 @@ func (r *Reconciler) resolvePrevDesired(ctx context.Context, failed *state.Desir
 	if r.source == nil {
 		return prevDesired
 	}
-	if ds, err := r.source.Desired(ctx, &sources.Commit{SHA: r.previous.Commit}); err == nil && ds != nil && len(ds.Services) > 0 {
+	if ds, _ := r.loadDesired(ctx, &sources.Commit{SHA: r.previous.Commit}); ds != nil && len(ds.Services) > 0 {
 		return ds
 	}
 	return prevDesired

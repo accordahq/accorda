@@ -53,8 +53,8 @@
 // Rollback restores the last known-healthy deployment when a deploy or
 // health-verification phase fails (docs/ACCORDA.md §20). The previous
 // deployment is supplied via WithPrevious; the full previous service model is
-// restored by reading the desired state at the previous commit from the
-// source, falling back to the recorded image-only services when the source
+// restored by opening the previous source revision and asking the target to
+// load it, falling back to the recorded image-only services when the revision
 // cannot be read. A target that additionally implements the desiredApplier
 // capability (for example the Compose target, which materializes the desired
 // services into the on-disk Compose file) is restored by applying the

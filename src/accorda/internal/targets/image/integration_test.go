@@ -18,6 +18,7 @@ import (
 	"accorda/internal/core/health"
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
+	"accorda/internal/sources"
 	"accorda/internal/targets"
 	"accorda/internal/testutil"
 )
@@ -62,7 +63,7 @@ func TestIntegration_Lifecycle(t *testing.T) {
 		t.Fatalf("Validate: %v", err)
 	}
 
-	desired, err := tgt.Desired(ctx, &state.DesiredState{Commit: "abc123"})
+	desired, err := tgt.Desired(ctx, sources.NewRevision(sources.Commit{SHA: "abc123"}, "", t.TempDir(), nil, nil))
 	if err != nil {
 		t.Fatalf("Desired: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestIntegration_Logs(t *testing.T) {
 	t.Cleanup(func() { _ = tgt.runner.Run(context.Background(), "rm", "-f", name) })
 
 	ctx := context.Background()
-	desired, _ := tgt.Desired(ctx, &state.DesiredState{Commit: "abc123"})
+	desired, _ := tgt.Desired(ctx, sources.NewRevision(sources.Commit{SHA: "abc123"}, "", t.TempDir(), nil, nil))
 	p, _ := tgt.Plan(ctx, desired, nil)
 	if err := tgt.Apply(ctx, p); err != nil {
 		t.Fatalf("Apply: %v", err)

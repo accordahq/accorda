@@ -135,11 +135,15 @@ func managedComposeFile(t *testing.T, dir string) string {
 	if err != nil {
 		t.Fatalf("build source: %v", err)
 	}
-	file, err := src.CheckoutPath(src.Source.Path)
+	tgt, err := buildTarget(proj, dir, src, proj.Name)
 	if err != nil {
-		t.Fatalf("managed Compose path: %v", err)
+		t.Fatalf("build target: %v", err)
 	}
-	return file
+	ct, ok := tgt.(*compose.Target)
+	if !ok {
+		t.Fatalf("build target: expected *compose.Target, got %T", tgt)
+	}
+	return ct.File()
 }
 
 // TestE2E_Sync_ConvergesToSynced drives the full reconciliation lifecycle
@@ -420,7 +424,7 @@ const changedImageCompose = `services:
 // TestE2E_Plan_AfterSync drives `accorda plan` after a successful sync and
 // verifies it prints the plan header and a per-service UNCHANGED summary for
 // the converged deployment, without applying anything (docs/ACCORDA.md §11).
-// The deployed baseline is the full service model re-read from the source at
+// The deployed baseline is the full service model reloaded from the source revision at
 // the deployed commit, so a converged service reports UNCHANGED rather than
 // being over-reported as CHANGED.
 func TestE2E_Plan_AfterSync(t *testing.T) {
@@ -660,10 +664,15 @@ func cleanupEnsembleProject(t *testing.T, dir string) {
 			if err != nil {
 				continue
 			}
-			file, err := src.CheckoutPath(src.Source.Path)
+			tgt, err := buildTarget(p, dir, src, p.Name)
 			if err != nil {
 				continue
 			}
+			ct, ok := tgt.(*compose.Target)
+			if !ok {
+				continue
+			}
+			file := ct.File()
 			project := compose.ProjectName(config.Target{File: file})
 			cmd := exec.Command("docker", "compose", "-f", file, "-p", project, "down", "--remove-orphans")
 			_ = cmd.Run()

@@ -56,28 +56,14 @@ func TestGitSource_CloneFetchCheckoutAndHead(t *testing.T) {
 		t.Errorf("cache not a git repo after second Fetch: %v", err)
 	}
 
-	// Desired returns the services declared at HEAD.
-	ds, err := g.Desired(ctx, nil)
-	if err != nil {
-		t.Fatalf("Desired: %v", err)
+	revision, contents := revisionContents(t, g, nil, testutil.ComposeFile)
+	if revision.Commit.SHA != wantSHA || revision.Commit.Branch != wantBranch {
+		t.Errorf("Revision commit = %+v, want %s on %s", revision.Commit, wantSHA, wantBranch)
 	}
-	if ds.Commit != wantSHA {
-		t.Errorf("Desired Commit = %q, want %q", ds.Commit, wantSHA)
-	}
-	if ds.Branch != wantBranch {
-		t.Errorf("Desired Branch = %q, want %q", ds.Branch, wantBranch)
-	}
-	if ds.Services["api"].Image != "ghcr.io/acme/api:1.9" {
-		t.Errorf("Desired api.Image = %q, want ghcr.io/acme/api:1.9", ds.Services["api"].Image)
-	}
-	if ds.Services["api"].Env["LOG_LEVEL"] != "warning" {
-		t.Errorf("Desired api.Env[LOG_LEVEL] = %q, want warning", ds.Services["api"].Env["LOG_LEVEL"])
-	}
-	if ds.Services["redis"].Image != "redis:8" {
-		t.Errorf("Desired redis.Image = %q, want redis:8", ds.Services["redis"].Image)
-	}
-	if err := ds.Validate(); err != nil {
-		t.Errorf("Desired.Validate: %v", err)
+	for _, want := range []string{"ghcr.io/acme/api:1.9", "LOG_LEVEL: warning", "redis:8"} {
+		if !strings.Contains(contents, want) {
+			t.Errorf("revision artifact missing %q: %s", want, contents)
+		}
 	}
 }
 
@@ -94,12 +80,9 @@ func TestGitSource_DesiredAtExplicitRef(t *testing.T) {
 	}
 	// Passing the same commit explicitly must yield the same desired state.
 	ref := &sources.Commit{SHA: wantSHA, Branch: wantBranch, Time: wantTime}
-	ds, err := g.Desired(ctx, ref)
-	if err != nil {
-		t.Fatalf("Desired: %v", err)
-	}
-	if ds.Commit != wantSHA {
-		t.Errorf("Desired Commit = %q, want %q", ds.Commit, wantSHA)
+	revision, _ := revisionContents(t, g, ref, testutil.ComposeFile)
+	if revision.Commit.SHA != wantSHA {
+		t.Errorf("Revision Commit = %q, want %q", revision.Commit.SHA, wantSHA)
 	}
 }
 
@@ -125,34 +108,21 @@ func TestGitSource_DesiredAtOlderCommit(t *testing.T) {
 
 	// Request the older commit explicitly.
 	ref := &sources.Commit{SHA: old.SHA, Branch: old.Branch, Time: old.Time}
-	ds, err := g.Desired(ctx, ref)
-	if err != nil {
-		t.Fatalf("Desired at older commit: %v", err)
+	revision, oldContents := revisionContents(t, g, ref, testutil.ComposeFile)
+	if revision.Commit.SHA != old.SHA {
+		t.Errorf("Revision Commit = %q, want older %q", revision.Commit.SHA, old.SHA)
 	}
-	if ds.Commit != old.SHA {
-		t.Errorf("Desired Commit = %q, want older %q", ds.Commit, old.SHA)
-	}
-	// The services must come from v1, not the checked-out v2 HEAD.
-	if got, want := ds.Services["api"].Image, "ghcr.io/acme/api:1.8"; got != want {
-		t.Errorf("Desired api.Image at older commit = %q, want %q", got, want)
-	}
-	if got, want := ds.Services["api"].Env["LOG_LEVEL"], "info"; got != want {
-		t.Errorf("Desired api.Env[LOG_LEVEL] at older commit = %q, want %q", got, want)
-	}
-	if got, want := ds.Services["redis"].Image, "redis:7"; got != want {
-		t.Errorf("Desired redis.Image at older commit = %q, want %q", got, want)
+	for _, want := range []string{"ghcr.io/acme/api:1.8", "LOG_LEVEL: info", "redis:7"} {
+		if !strings.Contains(oldContents, want) {
+			t.Errorf("older revision missing %q: %s", want, oldContents)
+		}
 	}
 
-	// Sanity: requesting HEAD via nil ref must still return v2 services.
-	dsHead, err := g.Desired(ctx, nil)
-	if err != nil {
-		t.Fatalf("Desired at HEAD: %v", err)
-	}
-	if got, want := dsHead.Services["api"].Image, "ghcr.io/acme/api:1.9"; got != want {
-		t.Errorf("Desired api.Image at HEAD = %q, want %q", got, want)
-	}
-	if got, want := dsHead.Services["redis"].Image, "redis:8"; got != want {
-		t.Errorf("Desired redis.Image at HEAD = %q, want %q", got, want)
+	_, headContents := revisionContents(t, g, nil, testutil.ComposeFile)
+	for _, want := range []string{"ghcr.io/acme/api:1.9", "redis:8"} {
+		if !strings.Contains(headContents, want) {
+			t.Errorf("HEAD revision missing %q: %s", want, headContents)
+		}
 	}
 }
 
@@ -200,23 +170,28 @@ func TestGitSource_ComposeContextAndExternalFileDigests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	headDesired, err := g.Desired(ctx, &head)
+	headRevision, err := g.Revision(ctx, &head)
 	if err != nil {
-		t.Fatalf("Desired HEAD: %v", err)
+		t.Fatalf("Revision HEAD: %v", err)
 	}
-	oldDesired, err := g.Desired(ctx, &sources.Commit{SHA: oldSHA, Branch: "main"})
+	defer func() { _ = headRevision.Close() }()
+	oldRevision, err := g.Revision(ctx, &sources.Commit{SHA: oldSHA, Branch: "main"})
 	if err != nil {
-		t.Fatalf("Desired old: %v", err)
+		t.Fatalf("Revision old: %v", err)
 	}
-	if got := oldDesired.Services["api"].Image; got != "api:1" {
-		t.Errorf("extended image = %q, want api:1", got)
+	defer func() { _ = oldRevision.Close() }()
+	headDigest, headOK, err := headRevision.Digest("deploy/service.env")
+	if err != nil || !headOK {
+		t.Fatalf("HEAD tracked digest = %q, %t, %v", headDigest, headOK, err)
 	}
-	if got := oldDesired.Services["api"].Volumes[0].Source; got != "data" {
-		t.Errorf("relative bind source = %q, want data", got)
+	oldDigest, oldOK, err := oldRevision.Digest("deploy/service.env")
+	if err != nil || !oldOK {
+		t.Fatalf("old tracked digest = %q, %t, %v", oldDigest, oldOK, err)
 	}
-	if headDesired.Services["api"].Hash() == oldDesired.Services["api"].Hash() {
-		t.Fatal("tracked env_file content change did not change service hash")
+	if headDigest == oldDigest {
+		t.Fatal("tracked env_file content change did not change revision digest")
 	}
+	assertRevisionFile(t, oldRevision, "deploy/base.yaml", "services:\n  base:\n    image: api:1\n    volumes:\n      - ./data:/data\n")
 	assertIntegrationFile(t, filepath.Join(cache, "deploy", "service.env"), "MODE=two\n")
 	if err := g.Materialize(ctx, &sources.Commit{SHA: oldSHA}); err != nil {
 		t.Fatalf("Materialize old: %v", err)
@@ -265,7 +240,7 @@ func TestGitSource_ValidateErrors(t *testing.T) {
 }
 
 // TestGitSource_InPlace binds the git source directly to a user-owned worktree
-// (source.path, no URL) and verifies Fetch/Desired read the current HEAD in
+// (source.path, no URL) and verifies Fetch/Revision read the current HEAD in
 // place without cloning. It mirrors TestGitSource_CloneFetchCheckoutAndHead
 // but against a worktree that already exists on disk (issue #95).
 func TestGitSource_InPlace(t *testing.T) {
@@ -301,19 +276,15 @@ func TestGitSource_InPlace(t *testing.T) {
 		t.Errorf("Fetch Time = %v, want %v", commit.Time, wantTime)
 	}
 
-	// Desired reads the compose file from the working tree at HEAD.
-	ds, err := g.Desired(ctx, nil)
-	if err != nil {
-		t.Fatalf("Desired: %v", err)
+	revision, contents := revisionContents(t, g, nil, testutil.ComposeFile)
+	if revision.Commit.SHA != wantSHA {
+		t.Errorf("Revision Commit = %q, want %q", revision.Commit.SHA, wantSHA)
 	}
-	if ds.Commit != wantSHA {
-		t.Errorf("Desired Commit = %q, want %q", ds.Commit, wantSHA)
+	if !strings.Contains(contents, "ghcr.io/acme/api:1.9") {
+		t.Errorf("revision artifact does not contain HEAD image: %s", contents)
 	}
-	if ds.Services["api"].Image != "ghcr.io/acme/api:1.9" {
-		t.Errorf("Desired api.Image = %q, want ghcr.io/acme/api:1.9", ds.Services["api"].Image)
-	}
-	if ds.Repository != worktree {
-		t.Errorf("Desired Repository = %q, want worktree %q", ds.Repository, worktree)
+	if revision.Repository != worktree {
+		t.Errorf("Revision Repository = %q, want worktree %q", revision.Repository, worktree)
 	}
 
 	// Materialize is unsupported in in-place mode (would rewrite the worktree).
@@ -350,15 +321,12 @@ func TestGitSource_InPlaceDesiredAtOlderCommit(t *testing.T) {
 		t.Fatalf("Fetch: %v", err)
 	}
 	ref := &sources.Commit{SHA: old.SHA, Branch: old.Branch, Time: old.Time}
-	ds, err := g.Desired(ctx, ref)
-	if err != nil {
-		t.Fatalf("Desired at older commit: %v", err)
+	revision, contents := revisionContents(t, g, ref, testutil.ComposeFile)
+	if revision.Commit.SHA != old.SHA {
+		t.Errorf("Revision Commit = %q, want older %q", revision.Commit.SHA, old.SHA)
 	}
-	if ds.Commit != old.SHA {
-		t.Errorf("Desired Commit = %q, want older %q", ds.Commit, old.SHA)
-	}
-	if got, want := ds.Services["api"].Image, "ghcr.io/acme/api:1.8"; got != want {
-		t.Errorf("Desired api.Image at older commit = %q, want %q", got, want)
+	if !strings.Contains(contents, "ghcr.io/acme/api:1.8") {
+		t.Errorf("older revision missing old image: %s", contents)
 	}
 
 	// The working tree must still reflect HEAD (v2): the older read must not
@@ -417,16 +385,42 @@ services:
 
 	worktree := testutil.MakeLocalWorktree(t, "file://"+origin, "main")
 	g := New(config.Source{Type: "git", Path: "deploy/compose.yaml"}, WithCacheDir(worktree))
-	desired, err := g.Desired(context.Background(), &sources.Commit{SHA: oldSHA, Branch: "main"})
+	revision, err := g.Revision(context.Background(), &sources.Commit{SHA: oldSHA, Branch: "main"})
 	if err != nil {
-		t.Fatalf("Desired at older commit: %v", err)
+		t.Fatalf("Revision at older commit: %v", err)
 	}
-	if got := desired.Services["api"].Image; got != "api:1" {
-		t.Errorf("extended image = %q, want api:1", got)
-	}
-	if got := desired.Services["worker"].Image; got != "worker:1" {
-		t.Errorf("included image = %q, want worker:1", got)
-	}
+	defer func() { _ = revision.Close() }()
+	assertRevisionFile(t, revision, "deploy/base.yaml", "services:\n  base:\n    image: api:1\n")
+	assertRevisionFile(t, revision, "deploy/included.yaml", "services:\n  worker:\n    image: worker:1\n")
 	assertIntegrationFile(t, filepath.Join(worktree, "deploy", "base.yaml"), "services:\n  base:\n    image: api:2\n")
 	assertIntegrationFile(t, filepath.Join(worktree, "deploy", "included.yaml"), "services:\n  worker:\n    image: worker:2\n")
+}
+
+func revisionContents(t *testing.T, g *Git, ref *sources.Commit, repositoryPath string) (*sources.Revision, string) {
+	t.Helper()
+	revision, err := g.Revision(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("Revision: %v", err)
+	}
+	path, err := revision.Path(repositoryPath)
+	if err != nil {
+		t.Fatalf("revision path: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read revision artifact: %v", err)
+	}
+	if err := revision.Close(); err != nil {
+		t.Fatalf("close revision: %v", err)
+	}
+	return revision, string(data)
+}
+
+func assertRevisionFile(t *testing.T, revision *sources.Revision, repositoryPath, want string) {
+	t.Helper()
+	path, err := revision.Path(repositoryPath)
+	if err != nil {
+		t.Fatalf("revision path: %v", err)
+	}
+	assertIntegrationFile(t, path, want)
 }

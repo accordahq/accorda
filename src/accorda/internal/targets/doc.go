@@ -2,7 +2,7 @@
 // against concrete deployment targets.
 //
 // Accorda core is target-independent and interacts with targets through the
-// Target interface (Validate, Current, Plan, Apply, Health). Concrete drivers
+// Target interface (Desired, Validate, Current, Plan, Apply, Health). Concrete drivers
 // such as Docker Compose and Kubernetes live here; additional target types
 // (for example Helm) may be added later without changing core concepts.
 // Operational capabilities outside reconciliation, such as fetching or

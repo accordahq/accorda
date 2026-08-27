@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 
 	"accorda/internal/core/state"
+	"accorda/internal/sources"
 )
 
 var composeServiceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -56,6 +58,50 @@ func LoadFileWithContext(ctx context.Context, path string) (map[string]state.Ser
 		return nil, fmt.Errorf("compose: %s: %w", filepath.Base(path), err)
 	}
 	return services, nil
+}
+
+func attachExternalFileDigests(ctx context.Context, revision *sources.Revision, artifact string, services map[string]state.Service) error {
+	if revision == nil || artifact == "" {
+		return nil
+	}
+	base := path.Dir(artifact)
+	for name, service := range services {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var err error
+		service.EnvFiles, err = digestExternalFiles(revision, base, service.EnvFiles)
+		if err != nil {
+			return err
+		}
+		service.LabelFiles, err = digestExternalFiles(revision, base, service.LabelFiles)
+		if err != nil {
+			return err
+		}
+		services[name] = service
+	}
+	return nil
+}
+
+func digestExternalFiles(revision *sources.Revision, base string, files []state.ExternalFile) ([]state.ExternalFile, error) {
+	out := append([]state.ExternalFile(nil), files...)
+	for i := range out {
+		if filepath.IsAbs(out[i].Path) {
+			continue
+		}
+		repositoryPath := path.Clean(path.Join(base, filepath.ToSlash(out[i].Path)))
+		if repositoryPath == ".." || strings.HasPrefix(repositoryPath, "../") {
+			continue
+		}
+		digest, ok, err := revision.Digest(repositoryPath)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out[i].Digest = digest
+		}
+	}
+	return out, nil
 }
 
 // Parse decodes a Docker Compose document from raw YAML bytes and normalizes

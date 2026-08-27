@@ -8,6 +8,7 @@ import (
 
 	"accorda/internal/core/plan"
 	"accorda/internal/core/state"
+	"accorda/internal/sources"
 )
 
 func TestApplyError(t *testing.T) {
@@ -51,6 +52,9 @@ func TestStub_SatisfiesTarget(t *testing.T) {
 	if err := tgt.Validate(ctx); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("Validate: err = %v, want ErrNotImplemented", err)
 	}
+	if ds, err := tgt.Desired(ctx, sources.NewRevision(sources.Commit{}, "", t.TempDir(), nil, nil)); !errors.Is(err, ErrNotImplemented) || ds != nil {
+		t.Errorf("Desired: ds=%v err=%v, want nil, ErrNotImplemented", ds, err)
+	}
 	if rs, err := tgt.Current(ctx); !errors.Is(err, ErrNotImplemented) || rs != nil {
 		t.Errorf("Current: rs=%v err=%v, want nil, ErrNotImplemented", rs, err)
 	}
@@ -68,7 +72,7 @@ func TestStub_SatisfiesTarget(t *testing.T) {
 	}
 }
 
-// TestTargetInterfaceContract documents the five methods the spec
+// TestTargetInterfaceContract documents the target contract methods the spec
 // (docs/ACCORDA.md §12) requires. The compile-time assertion
 // `var _ Target = (*Stub)(nil)` in target.go enforces that Stub implements
 // the full interface; this test keeps a named reference to each method so a
@@ -77,6 +81,7 @@ func TestTargetInterfaceContract(t *testing.T) {
 	var tgt Target = NewStub()
 	ctx := context.Background()
 	_ = tgt.Validate
+	_ = tgt.Desired
 	_ = tgt.Current
 	_ = tgt.Plan
 	_ = tgt.Apply
