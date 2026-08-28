@@ -21,6 +21,7 @@ import (
 	"accorda/internal/core/health"
 	"accorda/internal/core/history"
 	"accorda/internal/core/state"
+	"accorda/internal/format"
 	"accorda/internal/sources"
 	"accorda/internal/sources/git"
 	"accorda/internal/targets"
@@ -124,7 +125,7 @@ func runStatusOne(cmd *cobra.Command, dir string, p *config.Project) error {
 		info := collectStatus(ctx, p, src, tgt, history.NewFileStore(targetReceiptPath(dir, p.Name, tgtCfg, multiTarget)))
 		info.EnvOverrides = tgtCfg.Services
 		writeTargetHeader(cmd.OutOrStdout(), p.Name, tgtCfg, multiTarget)
-		writeStatus(cmd.OutOrStdout(), info)
+		writeStatus(cmd.OutOrStdout(), info, format.NewStyle(cmd.OutOrStdout()))
 	}
 	return nil
 }
@@ -420,15 +421,17 @@ func desiredService(desired *state.DesiredState, name string) (state.Service, bo
 }
 
 // writeStatus prints the status report in the tabular format shown in
-// docs/ACCORDA.md §11.
-func writeStatus(w io.Writer, info statusInfo) {
+// docs/ACCORDA.md §11. The sync and runtime labels and the per-service state
+// and health cells are colored when writing to a terminal; piped output stays
+// plain.
+func writeStatus(w io.Writer, info statusInfo, st *format.Style) {
 	fmt.Fprintf(w, "Environment   %s\n", info.Environment)
 	fmt.Fprintf(w, "Repository    %s\n", info.Repository)
 	fmt.Fprintf(w, "Branch        %s\n", info.Branch)
 	fmt.Fprintf(w, "Git HEAD      %s\n", info.GitHead)
 	fmt.Fprintf(w, "Deployed      %s\n", info.Deployed)
-	fmt.Fprintf(w, "Sync          %s\n", info.Sync)
-	fmt.Fprintf(w, "Runtime       %s\n", info.Runtime)
+	fmt.Fprintf(w, "Sync          %s\n", st.Paint(info.Sync, syncColor(info.Sync)))
+	fmt.Fprintf(w, "Runtime       %s\n", st.Paint(info.Runtime, runtimeColor(info.Runtime)))
 	fmt.Fprintf(w, "Last deploy   %s\n", info.LastDeploy)
 	if info.Checkout != "" {
 		fmt.Fprintf(w, "Checkout      %s\n", info.Checkout)
@@ -436,7 +439,63 @@ func writeStatus(w io.Writer, info statusInfo) {
 	writeEnvOverridesStatus(w, info.EnvOverrides)
 	fmt.Fprintf(w, "SERVICE      STATE       HEALTH      IMAGE\n")
 	for _, r := range info.services {
-		fmt.Fprintf(w, "%-12s %-11s %-11s %s\n", r.name, r.state, r.health, r.image)
+		fmt.Fprintf(w, "%-12s %-11s %-11s %s\n",
+			r.name,
+			st.Paint(r.state, stateColor(r.state)),
+			st.Paint(r.health, healthColor(r.health)),
+			r.image)
+	}
+}
+
+// syncColor maps a sync label to a terminal color: SYNCED green, OUT_OF_SYNC
+// yellow, UNKNOWN plain.
+func syncColor(label string) string {
+	switch label {
+	case "SYNCED":
+		return format.Green
+	case "OUT_OF_SYNC":
+		return format.Yellow
+	default:
+		return ""
+	}
+}
+
+// runtimeColor maps a runtime label to a terminal color: HEALTHY green,
+// UNHEALTHY red, UNKNOWN/other plain.
+func runtimeColor(label string) string {
+	switch label {
+	case "HEALTHY":
+		return format.Green
+	case "UNHEALTHY":
+		return format.Red
+	default:
+		return ""
+	}
+}
+
+// stateColor maps a per-service state to a terminal color: running green,
+// exited/absent red, other plain.
+func stateColor(state string) string {
+	switch state {
+	case "running":
+		return format.Green
+	case "exited", "absent":
+		return format.Red
+	default:
+		return ""
+	}
+}
+
+// healthColor maps a per-service health to a terminal color: healthy green,
+// unhealthy red, other plain.
+func healthColor(health string) string {
+	switch health {
+	case "healthy":
+		return format.Green
+	case "unhealthy":
+		return format.Red
+	default:
+		return ""
 	}
 }
 

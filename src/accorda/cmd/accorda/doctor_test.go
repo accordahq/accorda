@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"accorda/internal/config"
+	"accorda/internal/format"
 	gitSource "accorda/internal/sources/git"
 )
 
@@ -151,7 +152,7 @@ func TestWriteDoctorReport(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			writeDoctorReport(&out, tc.results)
+			writeDoctorReport(&out, tc.results, format.NewStyle(&out))
 			if got := out.String(); got != tc.wantOutput {
 				t.Fatalf("writeDoctorReport() = %q, want %q", got, tc.wantOutput)
 			}

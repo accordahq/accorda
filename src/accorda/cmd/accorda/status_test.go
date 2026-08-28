@@ -10,6 +10,7 @@ import (
 	"accorda/internal/core/health"
 	"accorda/internal/core/state"
 	shareddocker "accorda/internal/docker"
+	"accorda/internal/format"
 	"accorda/internal/sources"
 )
 
@@ -162,7 +163,7 @@ func TestWriteStatus_ContainsExpectedColumns(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	writeStatus(&buf, info)
+	writeStatus(&buf, info, format.NewStyle(&buf))
 	out := buf.String()
 	for _, want := range []string{
 		"Environment   production",
