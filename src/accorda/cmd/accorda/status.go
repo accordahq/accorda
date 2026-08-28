@@ -103,26 +103,29 @@ func runStatus(cmd *cobra.Command, dir string) error {
 	return nil
 }
 
-// runStatusOne reports the status for a single project. name is the project's
-// operator-chosen name (empty for a single-project document), used to scope
-// the source, target, and receipt journal.
+// runStatusOne reports the status for a single project's targets. name is the
+// project's operator-chosen name (empty for a single-project document), used
+// to scope the source, target, and receipt journal.
 func runStatusOne(cmd *cobra.Command, dir string, p *config.Project) error {
-	src, err := buildSource(p, dir, p.Name)
+	src, err := buildSource(p, dir)
 	if err != nil {
 		return err
 	}
-	tgt, err := buildTarget(p, dir, src, p.Name)
-	if err != nil {
-		return err
-	}
-
 	ctx := context.Background()
-	info := collectStatus(ctx, p, src, tgt, history.NewFileStore(receiptPath(dir, p.Name)))
-	info.EnvOverrides = p.Target.Services
-	if p.Name != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
+
+	targets := p.NormalizedTargets()
+	multiTarget := len(targets) > 1
+	for i := range targets {
+		tgtCfg := targets[i]
+		tgt, err := buildTargetConfig(p, tgtCfg, dir, src, p.Name)
+		if err != nil {
+			return err
+		}
+		info := collectStatus(ctx, p, src, tgt, history.NewFileStore(targetReceiptPath(dir, p.Name, tgtCfg, multiTarget)))
+		info.EnvOverrides = tgtCfg.Services
+		writeTargetHeader(cmd.OutOrStdout(), p.Name, tgtCfg, multiTarget)
+		writeStatus(cmd.OutOrStdout(), info)
 	}
-	writeStatus(cmd.OutOrStdout(), info)
 	return nil
 }
 

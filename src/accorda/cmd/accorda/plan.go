@@ -64,61 +64,68 @@ func runPlan(cmd *cobra.Command, dir string) error {
 	return nil
 }
 
-// runPlanOne computes and prints the plan for a single project. name is the
-// project's operator-chosen name (empty for a single-project document), used
-// to scope the source, target, and receipt journal.
+// runPlanOne computes and prints the plan for a single project's targets. name
+// is the project's operator-chosen name (empty for a single-project document),
+// used to scope the source, target, and receipt journal.
 func runPlanOne(cmd *cobra.Command, dir string, p *config.Project) error {
-	src, err := buildSource(p, dir, p.Name)
-	if err != nil {
-		return err
-	}
-	tgt, err := buildTarget(p, dir, src, p.Name)
+	src, err := buildSource(p, dir)
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
 
-	// Re-reading the deployed commit from the managed worktree temporarily
-	// checks out a historical revision, so plan takes the same deployment
-	// lock as sync to avoid racing a concurrent deployment
-	// (docs/DECISIONS.md #40).
-	return withDeploymentLock(ctx, dir, p.Target, func() error {
-		commit, err := src.Fetch(ctx)
-		if err != nil {
-			return fmt.Errorf("fetch desired state: %w", err)
-		}
-		desired, derr := desiredAt(ctx, src, tgt, &commit)
-		if derr != nil && desired == nil {
-			return fmt.Errorf("read desired state: %w", derr)
-		}
-		if derr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: revision cleanup: %v\n", derr)
-		}
-
-		// The plan is computed against the last known-healthy deployment as the
-		// deployed baseline (docs/ACCORDA.md §20). The baseline is the full
-		// service model reloaded by the target at the deployed commit (the
-		// receipt journal stores only image/digest), so `accorda plan` and
-		// `accorda diff` agree on the deployed side and a converged service is
-		// not over-reported as CHANGED. The reconcile loop independently hydrates
-		// its receipt baseline from the same deployed Git commit before planning,
-		// so plan and sync compare equivalent full models. When history has no
-		// healthy deployment, the baseline is nil and the plan treats every
-		// desired service as new.
-		store := history.NewFileStore(receiptPath(dir, p.Name))
-		deployed := deployedStateFromDesired(deployedAtCommit(ctx, src, tgt, store, cmd.ErrOrStderr()))
-		pn, err := tgt.Plan(ctx, desired, deployed)
+	targets := p.NormalizedTargets()
+	multiTarget := len(targets) > 1
+	for i := range targets {
+		tgtCfg := targets[i]
+		tgt, err := buildTargetConfig(p, tgtCfg, dir, src, p.Name)
 		if err != nil {
 			return err
 		}
 
-		if p.Name != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
+		// Re-reading the deployed commit from the managed worktree temporarily
+		// checks out a historical revision, so plan takes the same deployment
+		// lock as sync to avoid racing a concurrent deployment
+		// (docs/DECISIONS.md #40).
+		if err := withDeploymentLock(ctx, dir, tgtCfg, func() error {
+			commit, err := src.Fetch(ctx)
+			if err != nil {
+				return fmt.Errorf("fetch desired state: %w", err)
+			}
+			desired, derr := desiredAt(ctx, src, tgt, &commit)
+			if derr != nil && desired == nil {
+				return fmt.Errorf("read desired state: %w", derr)
+			}
+			if derr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: revision cleanup: %v\n", derr)
+			}
+
+			// The plan is computed against the last known-healthy deployment as the
+			// deployed baseline (docs/ACCORDA.md §20). The baseline is the full
+			// service model reloaded by the target at the deployed commit (the
+			// receipt journal stores only image/digest), so `accorda plan` and
+			// `accorda diff` agree on the deployed side and a converged service is
+			// not over-reported as CHANGED. The reconcile loop independently hydrates
+			// its receipt baseline from the same deployed Git commit before planning,
+			// so plan and sync compare equivalent full models. When history has no
+			// healthy deployment, the baseline is nil and the plan treats every
+			// desired service as new.
+			store := history.NewFileStore(targetReceiptPath(dir, p.Name, tgtCfg, multiTarget))
+			deployed := deployedStateFromDesired(deployedAtCommit(ctx, src, tgt, store, cmd.ErrOrStderr()))
+			pn, err := tgt.Plan(ctx, desired, deployed)
+			if err != nil {
+				return err
+			}
+
+			writeTargetHeader(cmd.OutOrStdout(), p.Name, tgtCfg, multiTarget)
+			writePlan(cmd.OutOrStdout(), pn)
+			writeEnvOverrides(cmd.OutOrStdout(), tgtCfg.Services)
+			return nil
+		}); err != nil {
+			return err
 		}
-		writePlan(cmd.OutOrStdout(), pn)
-		writeEnvOverrides(cmd.OutOrStdout(), p.Target.Services)
-		return nil
-	})
+	}
+	return nil
 }
 
 // writePlan prints the plan in the format shown in docs/ACCORDA.md §11. It

@@ -84,11 +84,19 @@ const (
 // ...) so one agent can manage several workloads. A standalone project leaves
 // Name empty.
 type Project struct {
-	Name          string        `yaml:"name,omitempty"`
-	Version       int           `yaml:"version"`
-	Environment   string        `yaml:"environment"`
-	Source        Source        `yaml:"source"`
-	Target        Target        `yaml:"target"`
+	Name        string `yaml:"name,omitempty"`
+	Version     int    `yaml:"version"`
+	Environment string `yaml:"environment"`
+	Source      Source `yaml:"source"`
+	// Target is the legacy single-target alias (docs/ACCORDA.md §25). It is
+	// accepted for backwards compatibility and promoted into Targets during
+	// ApplyDefaults/applyDefaults; new configuration should use Targets.
+	Target Target `yaml:"target,omitempty"`
+	// Targets is the list of deployment targets reconciled from the single
+	// Source. A project may declare several targets (Compose + Compose, or
+	// future Compose + Kubernetes) so one repository revision fans out to
+	// each deployment artifact (issue #103, docs/DECISIONS.md #53).
+	Targets       Targets       `yaml:"targets,omitempty"`
 	Sync          Sync          `yaml:"sync,omitempty"`
 	Images        Images        `yaml:"images,omitempty"`
 	Reconcile     Reconcile     `yaml:"reconcile,omitempty"`
@@ -136,7 +144,8 @@ type ensembleMember struct {
 	Name          string        `yaml:"name,omitempty"`
 	Environment   string        `yaml:"environment"`
 	Source        Source        `yaml:"source"`
-	Target        Target        `yaml:"target"`
+	Target        Target        `yaml:"target,omitempty"`
+	Targets       Targets       `yaml:"targets,omitempty"`
 	Images        *Images       `yaml:"images,omitempty"`
 	Reconcile     *Reconcile    `yaml:"reconcile,omitempty"`
 	Health        *Health       `yaml:"health,omitempty"`
@@ -173,6 +182,7 @@ func (e *Ensemble) resolveMember(m ensembleMember) Project {
 		Environment:   m.Environment,
 		Source:        m.Source,
 		Target:        m.Target,
+		Targets:       m.Targets,
 		Secrets:       m.Secrets,
 		Notifications: m.Notifications,
 	}
@@ -254,6 +264,13 @@ type Auth struct {
 // the remaining fields. Compose targets require a File; Kubernetes targets
 // require a Path.
 type Target struct {
+	// Name is an optional, operator-chosen identifier for this target. It is
+	// used for per-target attribution in output, receipt journals, and locks.
+	// When omitted, an Identity is derived deterministically from the target's
+	// type and configured path/image, so multi-target projects without names
+	// still get stable, collision-free per-target identity (issue #103,
+	// docs/DECISIONS.md #53).
+	Name string `yaml:"name,omitempty"`
 	Type string `yaml:"type"`
 	Path string `yaml:"path,omitempty"`
 	File string `yaml:"file,omitempty"`
@@ -286,6 +303,66 @@ func (t Target) ConfiguredPath() string {
 		return t.File
 	}
 	return t.Path
+}
+
+// Identity returns a stable, human-readable identifier for this target: the
+// operator-chosen Name when set, otherwise a deterministic label derived from
+// the type and configured path/image (for example "compose:docker-compose.yml"
+// or "image:registry.example.com/edge:1"). It is the single source of truth
+// for per-target attribution, so output headers, state-transition events, and
+// receipt keys all agree on how a target is identified — and, unlike the
+// internal lock key, it never embeds a NUL separator (issue #103,
+// docs/DECISIONS.md #53).
+func (t Target) Identity() string {
+	if t.Name != "" {
+		return t.Name
+	}
+	if t.Image != "" {
+		return t.Type + ":" + t.Image
+	}
+	return t.Type + ":" + t.ConfiguredPath()
+}
+
+// Targets is the list of deployment targets a project reconciles from one
+// source (issue #103, docs/DECISIONS.md #53). It is a plain slice so the
+// strict loader (KnownFields) checks each entry's fields; the legacy single
+// target: shorthand is promoted into a one-element Targets list by
+// ApplyDefaults.
+type Targets []Target
+
+// Empty reports whether the target list is unset (nil or empty). It is used
+// by ApplyDefaults to decide whether to promote the legacy single Target.
+func (ts Targets) Empty() bool {
+	return len(ts) == 0
+}
+
+// PromoteTarget promotes the legacy single Target into the Targets list when
+// the plural list is unset (docs/DECISIONS.md #53). It is the single source
+// of truth for the backwards-compatible `target:` shorthand so callers (and
+// the CLI) always read Targets after normalization.
+func (p *Project) PromoteTarget() {
+	if !p.Targets.Empty() {
+		return
+	}
+	if p.Target.Type != "" {
+		p.Targets = Targets{p.Target}
+		return
+	}
+	// No target configured; leave an empty list so ValidateTargets reports it.
+	p.Targets = Targets{}
+}
+
+// NormalizedTargets returns the project's effective target list after
+// promoting the legacy single Target, without mutating the project. It lets
+// read-only consumers iterate Targets even before ApplyDefaults has run.
+func (p *Project) NormalizedTargets() Targets {
+	if !p.Targets.Empty() {
+		return p.Targets
+	}
+	if p.Target.Type != "" {
+		return Targets{p.Target}
+	}
+	return Targets{}
 }
 
 // ServiceOverride declares per-service environment inputs applied at deploy
@@ -503,7 +580,7 @@ func Load(dir string) (*Project, error) {
 	if err := validateCredentialFileMode(path, project); err != nil {
 		return nil, err
 	}
-	resolveServiceOverridePaths(project.Target.Services, dir)
+	resolveServiceOverridesPaths(project, dir)
 	return project, nil
 }
 
@@ -543,7 +620,10 @@ func LoadDocument(dir string) (*Document, error) {
 // resolveServiceOverridesPaths resolves env_file paths for a single project,
 // mirroring the per-project resolution in Load.
 func resolveServiceOverridesPaths(p *Project, dir string) {
-	resolveServiceOverridePaths(p.Target.Services, dir)
+	targets := p.NormalizedTargets()
+	for i := range targets {
+		resolveServiceOverridePaths(targets[i].Services, dir)
+	}
 }
 
 // resolveServiceOverridePaths resolves env_files paths relative to the
@@ -798,7 +878,15 @@ func MarshalProject(p *Project) ([]byte, error) {
 	if p == nil {
 		return nil, errors.New("config: project is nil")
 	}
-	out, err := yaml.Marshal(p)
+	// Emit the canonical targets: list form (issue #103, docs/DECISIONS.md
+	// #53). The legacy single target: is promoted into Targets by
+	// ApplyDefaults; marshaling a copy with Target cleared avoids emitting
+	// both forms, keeping init output minimal and matching the documented
+	// unified project format.
+	outProject := *p
+	outProject.Targets = p.NormalizedTargets()
+	outProject.Target = Target{}
+	out, err := yaml.Marshal(outProject)
 	if err != nil {
 		return nil, fmt.Errorf("config: marshal %q: %w", File, err)
 	}
@@ -813,6 +901,7 @@ func applyDefaults(p *Project) {
 	if p.Source.Type == "" {
 		p.Source.Type = "git"
 	}
+	p.PromoteTarget()
 	if p.Source.Branch == "" {
 		// In-place sources derive the effective branch from worktree HEAD; this
 		// remote-mode default remains in normalized config but is ignored.
@@ -870,7 +959,7 @@ func Validate(p *Project) error {
 	if err := validateSource(p); err != nil {
 		return err
 	}
-	if err := validateTarget(p); err != nil {
+	if err := ValidateTargets(p); err != nil {
 		return err
 	}
 	if err := validateImages(p); err != nil {
@@ -958,35 +1047,66 @@ func validateSourceAuth(p *Project) error {
 	return nil
 }
 
-// validateTarget checks the deployment target type and its required fields.
-func validateTarget(p *Project) error {
-	if p.Target.Type == "" {
-		return errors.New("config: target.type is required")
+// ValidateTargets checks the project's target list (docs/DECISIONS.md #53).
+// A project must declare at least one target, each target must be valid, and
+// target identities must be unique within the project so two targets that
+// would share a receipt journal or deployment lock are rejected. Uniqueness
+// is keyed on Target.Identity (the operator Name when set, else the derived
+// type+path/image label), which is the same contract receipts and locks key
+// on — so a legal config where two named targets share a path is accepted,
+// and two targets that collide on Name are rejected.
+func ValidateTargets(p *Project) error {
+	targets := p.NormalizedTargets()
+	if len(targets) == 0 {
+		return errors.New("config: at least one target is required")
 	}
-	switch p.Target.Type {
+	seen := make(map[string]struct{}, len(targets))
+	for i := range targets {
+		tgt := &targets[i]
+		if err := validateTarget(tgt); err != nil {
+			return fmt.Errorf("config: targets[%d]: %w", i, err)
+		}
+		identity := tgt.Identity()
+		if _, dup := seen[identity]; dup {
+			return fmt.Errorf("config: targets[%d] with identity %q collides with another target (target identities must be unique within a project)", i, identity)
+		}
+		seen[identity] = struct{}{}
+	}
+	return nil
+}
+
+// validateTarget checks one deployment target's type and required fields. It
+// is called per entry by ValidateTargets; keeping it unexported avoids a
+// speculative public API until an individual-target selection surface (for
+// example `accorda plan --target`) actually exists.
+func validateTarget(tgt *Target) error {
+	if tgt.Type == "" {
+		return errors.New("target.type is required")
+	}
+	switch tgt.Type {
 	case TargetCompose:
 		// The compose file may be given via "file" (§8 example) or "path"
 		// (§25 example); at least one is required.
-		if p.Target.File == "" && p.Target.Path == "" {
-			return fmt.Errorf("config: target.file or target.path is required for %q targets", TargetCompose)
+		if tgt.File == "" && tgt.Path == "" {
+			return fmt.Errorf("target.file or target.path is required for %q targets", TargetCompose)
 		}
 	case TargetKubernetes, TargetHelm:
-		if p.Target.Path == "" {
-			return fmt.Errorf("config: target.path is required for %q targets", p.Target.Type)
+		if tgt.Path == "" {
+			return fmt.Errorf("target.path is required for %q targets", tgt.Type)
 		}
 	case TargetImage:
-		if strings.TrimSpace(p.Target.Image) == "" {
-			return fmt.Errorf("config: target.image is required for %q targets", TargetImage)
+		if strings.TrimSpace(tgt.Image) == "" {
+			return fmt.Errorf("target.image is required for %q targets", TargetImage)
 		}
-		for _, port := range p.Target.Ports {
+		for _, port := range tgt.Ports {
 			if strings.TrimSpace(port) == "" {
-				return fmt.Errorf("config: target.ports: empty entry is not allowed")
+				return fmt.Errorf("target.ports: empty entry is not allowed")
 			}
 		}
 	default:
-		return fmt.Errorf("config: target.type %q is not supported", p.Target.Type)
+		return fmt.Errorf("target.type %q is not supported", tgt.Type)
 	}
-	return validateServiceOverrides(p.Target.Services)
+	return validateServiceOverrides(tgt.Services)
 }
 
 // validateServiceOverrides checks the per-service env override entries

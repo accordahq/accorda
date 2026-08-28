@@ -198,6 +198,17 @@ func (t *Target) File() string {
 	return t.file
 }
 
+// ComposeProject returns the Compose project name the target deploys under.
+// For a named target in a multi-target project this is base+"-"+targetName,
+// so tests and cleanup helpers address the same project the reconciler
+// manages (issue #103, docs/DECISIONS.md #53).
+func (t *Target) ComposeProject() string {
+	if t == nil {
+		return ""
+	}
+	return t.project
+}
+
 // ProjectName returns the default Compose project name New assigns for cfg.
 // Compose identifies a project by the normalized directory containing its
 // Compose file, independent of the file's name.

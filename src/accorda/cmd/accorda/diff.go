@@ -85,15 +85,11 @@ func runDiff(cmd *cobra.Command, dir string) error {
 	return nil
 }
 
-// runDiffOne computes and prints the diff for a single project. name is the
-// project's operator-chosen name (empty for a single-project document), used
-// to scope the source and receipt journal.
+// runDiffOne computes and prints the diff for a single project's targets.
+// name is the project's operator-chosen name (empty for a single-project
+// document), used to scope the source and receipt journal.
 func runDiffOne(cmd *cobra.Command, dir string, p *config.Project) error {
-	src, err := buildSource(p, dir, p.Name)
-	if err != nil {
-		return err
-	}
-	tgt, err := buildTarget(p, dir, src, p.Name)
+	src, err := buildSource(p, dir)
 	if err != nil {
 		return err
 	}
@@ -102,31 +98,41 @@ func runDiffOne(cmd *cobra.Command, dir string, p *config.Project) error {
 	// Re-reading the deployed commit from the managed worktree temporarily
 	// checks out a historical revision, so diff takes the same deployment lock
 	// as sync to avoid racing a concurrent deployment (docs/DECISIONS.md #40).
-	return withDeploymentLock(ctx, dir, p.Target, func() error {
-		// Fetch first so the desired side reflects the current remote tip, not a
-		// stale local cache (the git source's Desired only fetches when the cache
-		// is empty). This matches `accorda plan` and `accorda status`.
-		commit, err := src.Fetch(ctx)
+	targets := p.NormalizedTargets()
+	multiTarget := len(targets) > 1
+	for i := range targets {
+		tgtCfg := targets[i]
+		tgt, err := buildTargetConfig(p, tgtCfg, dir, src, p.Name)
 		if err != nil {
-			return fmt.Errorf("fetch desired state: %w", err)
+			return err
 		}
-		desired, derr := desiredAt(ctx, src, tgt, &commit)
-		if derr != nil && desired == nil {
-			return fmt.Errorf("read desired state: %w", derr)
-		}
-		if derr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: revision cleanup: %v\n", derr)
-		}
+		if err := withDeploymentLock(ctx, dir, tgtCfg, func() error {
+			// Fetch first so the desired side reflects the current remote tip, not a
+			// stale local cache (the git source's Desired only fetches when the cache
+			// is empty). This matches `accorda plan` and `accorda status`.
+			commit, err := src.Fetch(ctx)
+			if err != nil {
+				return fmt.Errorf("fetch desired state: %w", err)
+			}
+			desired, derr := desiredAt(ctx, src, tgt, &commit)
+			if derr != nil && desired == nil {
+				return fmt.Errorf("read desired state: %w", derr)
+			}
+			if derr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: revision cleanup: %v\n", derr)
+			}
 
-		store := history.NewFileStore(receiptPath(dir, p.Name))
-		deployed := deployedAtCommit(ctx, src, tgt, store, cmd.ErrOrStderr())
+			store := history.NewFileStore(targetReceiptPath(dir, p.Name, tgtCfg, multiTarget))
+			deployed := deployedAtCommit(ctx, src, tgt, store, cmd.ErrOrStderr())
 
-		if p.Name != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", p.Name)
+			writeTargetHeader(cmd.OutOrStdout(), p.Name, tgtCfg, multiTarget)
+			writeDiff(cmd.OutOrStdout(), buildDiff(deployed, desired))
+			return nil
+		}); err != nil {
+			return err
 		}
-		writeDiff(cmd.OutOrStdout(), buildDiff(deployed, desired))
-		return nil
-	})
+	}
+	return nil
 }
 
 // deployedAtCommit returns the full desired state at the last healthy

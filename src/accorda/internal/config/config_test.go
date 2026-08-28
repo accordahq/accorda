@@ -358,7 +358,7 @@ func TestValidate_Errors(t *testing.T) {
 		{
 			name: "missing target type",
 			yaml: "version: 1\nenvironment: production\nsource: {url: x}\n",
-			want: "target.type is required",
+			want: "at least one target is required",
 		},
 		{
 			name: "compose without file or path",
@@ -658,8 +658,18 @@ func assertProjectEqual(t *testing.T, want, got *Project) {
 	if got.Source.URL != want.Source.URL || got.Source.Branch != want.Source.Branch {
 		t.Errorf("Source = %+v, want %+v", got.Source, want.Source)
 	}
-	if got.Target.Type != want.Target.Type {
-		t.Errorf("Target.Type = %q, want %q", got.Target.Type, want.Target.Type)
+	gotTargets := got.NormalizedTargets()
+	wantTargets := want.NormalizedTargets()
+	if len(gotTargets) != len(wantTargets) {
+		t.Errorf("Targets len = %d, want %d", len(gotTargets), len(wantTargets))
+	}
+	for i := range wantTargets {
+		if gotTargets[i].Type != wantTargets[i].Type {
+			t.Errorf("Targets[%d].Type = %q, want %q", i, gotTargets[i].Type, wantTargets[i].Type)
+		}
+		if gotTargets[i].ConfiguredPath() != wantTargets[i].ConfiguredPath() {
+			t.Errorf("Targets[%d].ConfiguredPath = %q, want %q", i, gotTargets[i].ConfiguredPath(), wantTargets[i].ConfiguredPath())
+		}
 	}
 	if len(got.Secrets.Files) != len(want.Secrets.Files) {
 		t.Errorf("Secrets.Files len = %d, want %d", len(got.Secrets.Files), len(want.Secrets.Files))
@@ -1409,5 +1419,177 @@ projects:
 		if got := p.Sync.Interval; got != 45*time.Second {
 			t.Errorf("project[%d].Sync.Interval = %s, want the global 45s", i, got)
 		}
+	}
+}
+
+// TestParse_MultiTarget verifies a project can declare a targets: list and
+// that the legacy single target: is promoted into it (issue #103).
+func TestParse_MultiTarget(t *testing.T) {
+	doc := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+  branch: main
+targets:
+  - type: ` + TargetCompose + `
+    file: docker-compose.yml
+  - type: ` + TargetCompose + `
+    file: qa/docker-compose.yml
+`
+	p, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse: unexpected error: %v", err)
+	}
+	targets := p.NormalizedTargets()
+	if len(targets) != 2 {
+		t.Fatalf("targets len = %d, want 2", len(targets))
+	}
+	if targets[0].Type != TargetCompose || targets[0].File != "docker-compose.yml" {
+		t.Errorf("targets[0] = %+v, want compose docker-compose.yml", targets[0])
+	}
+	if targets[1].Type != TargetCompose || targets[1].File != "qa/docker-compose.yml" {
+		t.Errorf("targets[1] = %+v, want compose qa/docker-compose.yml", targets[1])
+	}
+	if err := Validate(p); err != nil {
+		t.Fatalf("Validate: unexpected error: %v", err)
+	}
+}
+
+// TestParse_PromotesLegacySingleTarget verifies the legacy single target:
+// shorthand is promoted into a one-element Targets list by ApplyDefaults, so
+// callers always read Targets after normalization (issue #103).
+func TestParse_PromotesLegacySingleTarget(t *testing.T) {
+	p, err := Parse([]byte(composeExample))
+	if err != nil {
+		t.Fatalf("Parse: unexpected error: %v", err)
+	}
+	targets := p.NormalizedTargets()
+	if len(targets) != 1 {
+		t.Fatalf("normalized targets len = %d, want 1", len(targets))
+	}
+	if targets[0].Type != TargetCompose {
+		t.Errorf("targets[0].Type = %q, want %q", targets[0].Type, TargetCompose)
+	}
+	if p.Targets.Empty() {
+		t.Error("ApplyDefaults did not promote the legacy target into Targets")
+	}
+}
+
+// TestValidateTargets_RequiresAtLeastOne verifies a project with no target is
+// rejected (issue #103).
+func TestValidateTargets_RequiresAtLeastOne(t *testing.T) {
+	p := &Project{
+		Version:     SchemaVersion,
+		Environment: "production",
+		Source:      Source{Type: "git", URL: "https://example.com/repo.git", Branch: "main"},
+	}
+	if err := Validate(p); err == nil {
+		t.Fatal("Validate succeeded with no target, want error")
+	}
+}
+
+// TestValidateTargets_RejectsCollidingIdentity verifies two targets whose
+// effective identity collides within one project are rejected, since they
+// would share a receipt journal and deployment lock (issue #103,
+// docs/DECISIONS.md #53). Identity is Target.Identity (Name when set, else the
+// derived type+path/image label), matching what receipts and locks key on.
+func TestValidateTargets_RejectsCollidingIdentity(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+	}{
+		{
+			name: "same unnamed path",
+			doc: `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+  branch: main
+targets:
+  - type: ` + TargetCompose + `
+    file: docker-compose.yml
+  - type: ` + TargetCompose + `
+    file: docker-compose.yml
+`,
+		},
+		{
+			name: "shared name different paths",
+			doc: `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+  branch: main
+targets:
+  - name: prod
+    type: ` + TargetCompose + `
+    file: a.yml
+  - name: prod
+    type: ` + TargetCompose + `
+    file: b.yml
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.doc))
+			if err == nil {
+				t.Fatal("Parse succeeded with colliding target identities, want error")
+			}
+			if !strings.Contains(err.Error(), "collides") {
+				t.Fatalf("Parse error = %v, want a collision error", err)
+			}
+		})
+	}
+}
+
+// TestValidateTargets_AcceptsNamedTargetsSharingPath verifies that two named
+// targets with different names but the same configured path are accepted: they
+// have distinct Identities (and therefore distinct journals and locks), so
+// rejecting them would block a legal multi-target configuration (issue #103).
+func TestValidateTargets_AcceptsNamedTargetsSharingPath(t *testing.T) {
+	doc := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+  branch: main
+targets:
+  - name: prod
+    type: ` + TargetCompose + `
+    file: docker-compose.yml
+  - name: canary
+    type: ` + TargetCompose + `
+    file: docker-compose.yml
+`
+	if _, err := Parse([]byte(doc)); err != nil {
+		t.Fatalf("Parse rejected distinct named targets sharing a path: %v", err)
+	}
+}
+
+// TestParse_MultiTarget_RejectsUnknownField verifies the strict loader rejects
+// an unknown field inside a targets: entry, so a typo in a target mapping
+// surfaces rather than being silently ignored (issue #103, docs/DECISIONS.md
+// #9, #53).
+func TestParse_MultiTarget_RejectsUnknownField(t *testing.T) {
+	doc := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+  branch: main
+targets:
+  - type: ` + TargetCompose + `
+    file: docker-compose.yml
+    bogus_field: oops
+`
+	_, err := Parse([]byte(doc))
+	if err == nil {
+		t.Fatal("Parse accepted an unknown field inside a targets: entry, want rejection")
+	}
+	if !strings.Contains(err.Error(), "bogus_field") {
+		t.Fatalf("Parse error = %v, want it to name the unknown field", err)
 	}
 }

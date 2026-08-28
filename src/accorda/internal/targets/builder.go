@@ -17,6 +17,12 @@ import (
 type TargetContext struct {
 	// Project is the resolved Accorda project configuration.
 	Project config.Project
+	// Target is the specific target being constructed. In a multi-target
+	// project (issue #103, docs/DECISIONS.md #53) it selects which of
+	// Project.Targets this builder drives; for the common single-target case
+	// it is the project's only target. Builders must read Target, not
+	// Project.Target.
+	Target config.Target
 	// Dir is the operator project directory (the directory containing
 	// accorda.yaml).
 	Dir string
@@ -95,17 +101,23 @@ func RegisterBuilder(targetType string, b TargetBuilder) {
 	builders[targetType] = b
 }
 
-// BuildTarget constructs the target for ctx.Project.Target.Type by dispatching
-// to its registered builder. It returns a clear error when no builder is
-// registered for the type, so an unimplemented target type (kubernetes, helm)
-// surfaces as "not implemented" rather than a nil target.
+// BuildTarget constructs the target for ctx.Target.Type by dispatching to its
+// registered builder. It returns a clear error when no builder is registered
+// for the type, so an unimplemented target type (kubernetes, helm) surfaces
+// as "not implemented" rather than a nil target. When ctx.Target is empty it
+// falls back to ctx.Project.Target for callers that only populate the project.
 func BuildTarget(ctx TargetContext) (Target, error) {
+	tgt := ctx.Target
+	if tgt.Type == "" {
+		tgt = ctx.Project.Target
+	}
 	buildersMu.RLock()
-	b, ok := builders[ctx.Project.Target.Type]
+	b, ok := builders[tgt.Type]
 	buildersMu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("target type %q is not implemented", ctx.Project.Target.Type)
+		return nil, fmt.Errorf("target type %q is not implemented", tgt.Type)
 	}
+	ctx.Target = tgt
 	return b.Build(ctx)
 }
 

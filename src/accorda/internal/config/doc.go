@@ -24,4 +24,10 @@
 // member carries an operator-chosen name so one agent can reconcile several
 // workloads (api, worker, monitoring, internal-tools) concurrently, each with
 // its own source, target, and state paths.
+//
+// A project may declare one or several deployment targets (issue #103,
+// docs/DECISIONS.md #53). The plural targets: list is the canonical form; the
+// legacy single target: scalar is promoted into a one-element list by
+// ApplyDefaults, so NormalizedTargets is the single read path for the
+// project's targets. Each target reconciles from the project's single source.
 package config

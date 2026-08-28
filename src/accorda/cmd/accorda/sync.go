@@ -96,10 +96,12 @@ func runProjectsSync(cmd *cobra.Command, dir string, watch bool, projects []conf
 	}
 	defer cleanup()
 	if len(members) == 1 {
-		// A single-project document runs through the same single-reconciler
-		// path as before, preserving its output and state layout.
+		// A single-project document runs through the same single-cycle path as
+		// before, preserving its output and state layout. The member is either
+		// a single-target reconciler or a multi-target project runner; both
+		// expose the same CycleRunner interface so one path serves them.
 		m := members[0]
-		return runReconciler(cmd, watch, projects[0].Sync.Interval, m.Reconciler)
+		return runReconciler(cmd, watch, projects[0].Sync.Interval, m.CycleRunner())
 	}
 	ensemble, err := reconcile.NewEnsemble(members)
 	if err != nil {
@@ -200,6 +202,9 @@ func writeProjectTransition(w io.Writer, prefix string, payload any) {
 		return
 	}
 	fmt.Fprintf(w, "%ssync: %s", prefix, transition.To)
+	if transition.Target != "" {
+		fmt.Fprintf(w, " target=%s", transition.Target)
+	}
 	if transition.Commit != "" {
 		fmt.Fprintf(w, " commit=%s", shortSHA(transition.Commit))
 	}
@@ -219,18 +224,19 @@ func syncPrefix(name string) string {
 }
 
 type syncReconciler interface {
-	Reconcile(context.Context) *reconcile.Result
-	Run(context.Context, time.Duration, reconcile.ResultHandler) error
+	reconcile.CycleRunner
 }
 
 func runReconciler(cmd *cobra.Command, watch bool, interval time.Duration, r syncReconciler) error {
 	ctx := cmd.Context()
 	if watch {
-		return r.Run(ctx, interval, func(res *reconcile.Result) {
-			if resultErr := writeSyncResult(cmd, res); resultErr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "sync: %v\n", resultErr)
+		return r.Run(ctx, interval, func(results []reconcile.MemberResult) {
+			for _, mr := range results {
+				if resultErr := writeMemberResult(cmd, mr); resultErr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "sync: %v\n", resultErr)
+				}
 			}
 		})
 	}
-	return writeSyncResult(cmd, r.Reconcile(ctx))
+	return writeEnsembleResults(cmd, r.Reconcile(ctx))
 }

@@ -32,6 +32,11 @@ var (
 // target without relying on Compose labels.
 const containerNameLabel = "accorda.image.service"
 
+// projectLabel is the Docker label carrying the Accorda project (group)
+// name, so a multi-target project's image containers can be grouped and
+// attributed to their project (issue #103, docs/DECISIONS.md #53).
+const projectLabel = "accorda.image.project"
+
 // Target is the raw single-image target driver (docs/DECISIONS.md #24). It
 // reconciles a single container image declared in accorda.yaml against the
 // container actually running on a Docker engine.
@@ -43,9 +48,14 @@ const containerNameLabel = "accorda.image.service"
 // the `docker` CLI stays confined to this adapter.
 type Target struct {
 	// name is the Accorda service name the single container is managed
-	// under. It is the project name (or a derived default) so ensemble
-	// members do not collide.
+	// under. It is the target's own name when set, otherwise the ensemble
+	// member name, so two image targets in one project do not collide
+	// (issue #103, docs/DECISIONS.md #53).
 	name string
+	// project is the Accorda project (group) name, empty for a standalone
+	// project. It is set as the accorda.image.project Docker label so a
+	// multi-target project's image containers are grouped and attributable.
+	project string
 	// image is the desired container image reference.
 	image string
 	// env is the desired environment, keyed by variable name.
@@ -104,6 +114,14 @@ func WithHealthTimeout(d time.Duration) Option {
 // target generates (docs/ACCORDA.md §25, §31).
 func WithEnvironment(env string) Option {
 	return func(t *Target) { t.environment = env }
+}
+
+// WithProject sets the Accorda project (group) name, emitted as the
+// accorda.image.project Docker label so a multi-target project's image
+// containers are grouped and attributable (issue #103, docs/DECISIONS.md
+// #53). It is optional: a standalone project may omit it.
+func WithProject(project string) Option {
+	return func(t *Target) { t.project = project }
 }
 
 // New constructs an image Target from an Accorda project's target
@@ -328,6 +346,9 @@ func (t *Target) applyAction(ctx context.Context, a plan.Action) error {
 // the command is deterministic (docs/DECISIONS.md #7).
 func (t *Target) runArgs() []string {
 	args := []string{"run", "-d", "--name", t.name, "--label", containerNameLabel + "=" + t.name}
+	if t.project != "" {
+		args = append(args, "--label", projectLabel+"="+t.project)
+	}
 	for _, k := range sortedEnvKeys(t.env) {
 		args = append(args, "-e", k+"="+t.env[k])
 	}

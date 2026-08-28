@@ -89,30 +89,41 @@ func diagnose(ctx context.Context, dir string) []doctorResult {
 // diagnoseProject runs the dependency-order checks for one project. The
 // results are prefixed with the project name so a multi-project report stays
 // attributable to its workload; a single unnamed project prints with no
-// prefix.
+// prefix. In a multi-target project each target is checked independently.
 func diagnoseProject(ctx context.Context, dir string, p *config.Project) []doctorResult {
 	results := []doctorResult{doctorCheck(doctorProject, nil)}
 
-	src, err := buildSource(p, dir, p.Name)
+	src, err := buildSource(p, dir)
 	if err != nil {
 		return append(results, doctorCheck(doctorSource, err))
 	}
 	results = append(results, doctorCheck(doctorSource, src.Validate(ctx)))
 
-	tgt, err := buildTarget(p, dir, src, p.Name)
-	if err == nil {
-		err = tgt.Validate(ctx)
-		if err != nil && managedTargetPending(src, p.Target, err) {
-			// The Compose target exposes ValidateEnvironment so doctor can
-			// check the Docker engine and Compose CLI before the managed Git
-			// checkout exists. The image target validates the engine in
-			// Validate, so it does not need this fallback.
-			if ve, ok := tgt.(validateEnvironmentTarget); ok {
-				err = ve.ValidateEnvironment(ctx)
+	targets := p.NormalizedTargets()
+	multiTarget := len(targets) > 1
+	for i := range targets {
+		tgtCfg := targets[i]
+		tgt, err := buildTargetConfig(p, tgtCfg, dir, src, p.Name)
+		if err == nil {
+			err = tgt.Validate(ctx)
+			if err != nil && managedTargetPending(src, tgtCfg, err) {
+				// The Compose target exposes ValidateEnvironment so doctor can
+				// check the Docker engine and Compose CLI before the managed Git
+				// checkout exists. The image target validates the engine in
+				// Validate, so it does not need this fallback.
+				if ve, ok := tgt.(validateEnvironmentTarget); ok {
+					err = ve.ValidateEnvironment(ctx)
+				}
 			}
 		}
+		// Attribute the check to the target when the project declares more
+		// than one, so a multi-target report distinguishes each target.
+		name := doctorTarget
+		if multiTarget {
+			name = tgtCfg.Identity() + " — " + doctorTarget
+		}
+		results = append(results, doctorCheck(name, err))
 	}
-	results = append(results, doctorCheck(doctorTarget, err))
 
 	// Surface the managed checkout path so operators know where to place
 	// gitignored deployment-time inputs (env_file, label_file) that Compose
