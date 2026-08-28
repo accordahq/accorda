@@ -694,3 +694,22 @@ duration. Removal runs after callback success, error, or panic; failures join th
 returned error; during unwinding a `PanicCleanupError` re-panic preserves the exact
 original panic value. SOPS owns cryptography; this package owns plaintext lifecycle
 and shared redaction.
+
+### 56. Tag-driven releases and the install script
+
+Issue #30 (§23): distribution is tag-driven. `scripts/tag.sh` validates the
+working tree (clean, on `main`, up to date with `origin/main`), derives the next
+semantic version from the highest reachable `v*` tag (`major`/`minor`/`patch`
+autoincrement, or an explicit `vX.Y.Z`), refuses to overwrite an existing tag, and
+pushes the annotated tag. The `Release` workflow (`.github/workflows/release.yml`)
+runs on `push` of a `v*` tag: it runs the full `scripts/test.sh` validation, then
+builds `CGO_ENABLED=0` static Linux binaries for `amd64` and `arm64` with
+`-trimpath` and `-ldflags "-s -w -X main.buildVersion=<tag>"` (so `accorda version`
+reports the release version), writes a `checksums.txt`, and creates a GitHub
+release with `--generate-notes`. The root `install.sh` downloads the latest (or a
+`--version`-specific) release asset, verifies its SHA-256 against `checksums.txt`,
+installs to `/usr/local/bin/accorda`, and registers a hardened systemd unit that
+runs `accorda sync --watch --dir <project-dir>` on boot and restarts on failure
+(`--no-service` installs the binary only). The workflow and scripts are the
+single source of truth for the release artifact layout, so the install script and
+the workflow must stay in lockstep (DRY).
