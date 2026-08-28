@@ -264,6 +264,13 @@ type Auth struct {
 // the remaining fields. Compose targets require a File; Kubernetes targets
 // require a Path.
 type Target struct {
+	// Name is an optional, operator-chosen identifier for this target. It is
+	// used for per-target attribution in output, receipt journals, and locks.
+	// When omitted, an Identity is derived deterministically from the target's
+	// type and configured path/image, so multi-target projects without names
+	// still get stable, collision-free per-target identity (issue #103,
+	// docs/DECISIONS.md #53).
+	Name string `yaml:"name,omitempty"`
 	Type string `yaml:"type"`
 	Path string `yaml:"path,omitempty"`
 	File string `yaml:"file,omitempty"`
@@ -296,6 +303,24 @@ func (t Target) ConfiguredPath() string {
 		return t.File
 	}
 	return t.Path
+}
+
+// Identity returns a stable, human-readable identifier for this target: the
+// operator-chosen Name when set, otherwise a deterministic label derived from
+// the type and configured path/image (for example "compose:docker-compose.yml"
+// or "image:registry.example.com/edge:1"). It is the single source of truth
+// for per-target attribution, so output headers, state-transition events, and
+// receipt keys all agree on how a target is identified — and, unlike the
+// internal lock key, it never embeds a NUL separator (issue #103,
+// docs/DECISIONS.md #53).
+func (t Target) Identity() string {
+	if t.Name != "" {
+		return t.Name
+	}
+	if t.Image != "" {
+		return t.Type + ":" + t.Image
+	}
+	return t.Type + ":" + t.ConfiguredPath()
 }
 
 // Targets is the list of deployment targets a project reconciles from one
@@ -1034,7 +1059,7 @@ func ValidateTargets(p *Project) error {
 	seen := make(map[string]struct{}, len(targets))
 	for i := range targets {
 		tgt := &targets[i]
-		if err := ValidateTarget(tgt); err != nil {
+		if err := validateTarget(tgt); err != nil {
 			return fmt.Errorf("config: targets[%d]: %w", i, err)
 		}
 		identity := tgt.ConfiguredPath()
@@ -1046,10 +1071,11 @@ func ValidateTargets(p *Project) error {
 	return nil
 }
 
-// ValidateTarget checks one deployment target's type and required fields. It
-// is exported so the CLI and wire layer can validate individual targets
-// (for example in `accorda plan --target` selection).
-func ValidateTarget(tgt *Target) error {
+// validateTarget checks one deployment target's type and required fields. It
+// is called per entry by ValidateTargets; keeping it unexported avoids a
+// speculative public API until an individual-target selection surface (for
+// example `accorda plan --target`) actually exists.
+func validateTarget(tgt *Target) error {
 	if tgt.Type == "" {
 		return errors.New("target.type is required")
 	}

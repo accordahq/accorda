@@ -502,9 +502,11 @@ func TestTargetReceiptPath_MultiTargetScopesByTarget(t *testing.T) {
 	}
 }
 
-// TestTargetLabel verifies the human-readable target identity used to prefix
-// per-target output in a multi-target project (issue #103).
-func TestTargetLabel(t *testing.T) {
+// TestTargetIdentity verifies the human-readable target identity used to
+// prefix per-target output in a multi-target project: the operator Name when
+// set, else a deterministic label from the type and configured path/image
+// (issue #103).
+func TestTargetIdentity(t *testing.T) {
 	cases := []struct {
 		name string
 		tgt  config.Target
@@ -512,11 +514,12 @@ func TestTargetLabel(t *testing.T) {
 	}{
 		{"compose file", config.Target{Type: config.TargetCompose, File: "docker-compose.yml"}, "compose:docker-compose.yml"},
 		{"image", config.Target{Type: config.TargetImage, Image: "registry/x:1"}, "image:registry/x:1"},
+		{"operator name wins", config.Target{Name: "edge", Type: config.TargetImage, Image: "registry/x:1"}, "edge"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := targetLabel(tc.tgt); got != tc.want {
-				t.Errorf("targetLabel = %q, want %q", got, tc.want)
+			if got := tc.tgt.Identity(); got != tc.want {
+				t.Errorf("Identity() = %q, want %q", got, tc.want)
 			}
 		})
 	}

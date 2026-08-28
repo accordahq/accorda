@@ -100,6 +100,7 @@ func diagnoseProject(ctx context.Context, dir string, p *config.Project) []docto
 	results = append(results, doctorCheck(doctorSource, src.Validate(ctx)))
 
 	targets := p.NormalizedTargets()
+	multiTarget := len(targets) > 1
 	for i := range targets {
 		tgtCfg := targets[i]
 		tgt, err := buildTargetConfig(p, tgtCfg, dir, src, p.Name)
@@ -115,7 +116,13 @@ func diagnoseProject(ctx context.Context, dir string, p *config.Project) []docto
 				}
 			}
 		}
-		results = append(results, doctorCheck(doctorTarget, err))
+		// Attribute the check to the target when the project declares more
+		// than one, so a multi-target report distinguishes each target.
+		name := doctorTarget
+		if multiTarget {
+			name = tgtCfg.Identity() + " — " + doctorTarget
+		}
+		results = append(results, doctorCheck(name, err))
 	}
 
 	// Surface the managed checkout path so operators know where to place

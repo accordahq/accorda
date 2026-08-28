@@ -201,13 +201,15 @@ func New(src sources.Source, tgt targets.Target, bus events.Bus) *Reconciler {
 	return &Reconciler{source: src, target: tgt, bus: bus, driftPolicy: DriftReport}
 }
 
-// WithTarget sets the operator-facing target identity this reconciler drives,
-// so state-transition and deployment events attribute their output to the
-// specific target in a multi-target project (issue #103,
-// docs/DECISIONS.md #53). It is optional: a single-target project may omit it
-// and events carry an empty Target.
-func (r *Reconciler) WithTarget(targetID string) *Reconciler {
-	r.targetID = targetID
+// WithTarget sets the operator-facing target label this reconciler drives, so
+// state-transition and deployment events attribute their output to the
+// specific target in a multi-target project (issue #103, docs/DECISIONS.md
+// #53). It should be a human-readable identity (type + configured path/image,
+// e.g. "compose:docker-compose.yml"), not the internal lock key. It is
+// optional: a single-target project may omit it and events carry an empty
+// Target.
+func (r *Reconciler) WithTarget(targetLabel string) *Reconciler {
+	r.targetID = targetLabel
 	return r
 }
 

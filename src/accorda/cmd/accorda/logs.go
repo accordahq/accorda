@@ -60,6 +60,7 @@ func runLogsOne(cmd *cobra.Command, dir, service string, opts targets.LogOptions
 		return err
 	}
 	tgts := p.NormalizedTargets()
+	multiTarget := len(tgts) > 1
 	for i := range tgts {
 		tgtCfg := tgts[i]
 		tgt, err := buildTargetConfig(p, tgtCfg, dir, src, p.Name)
@@ -70,6 +71,9 @@ func runLogsOne(cmd *cobra.Command, dir, service string, opts targets.LogOptions
 		if !ok {
 			return fmt.Errorf("logs %s: target type %q does not support logs", p.Name, tgtCfg.Type)
 		}
+		// Attribute the stream to the target when the project declares more
+		// than one, so concurrent multi-target log output stays attributable.
+		writeTargetHeader(cmd.OutOrStdout(), p.Name, tgtCfg, multiTarget)
 		if err := logTarget.Logs(cmd.Context(), service, opts, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
 			return err
 		}

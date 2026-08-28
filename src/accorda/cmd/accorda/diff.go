@@ -135,14 +135,6 @@ func runDiffOne(cmd *cobra.Command, dir string, p *config.Project) error {
 	return nil
 }
 
-// targetLabel returns a human-readable identity for a target.
-func targetLabel(tgt config.Target) string {
-	if tgt.Image != "" {
-		return tgt.Type + ":" + tgt.Image
-	}
-	return tgt.Type + ":" + tgt.ConfiguredPath()
-}
-
 // deployedAtCommit returns the full desired state at the last healthy
 // deployment's commit, reconstructed from a source revision by the target. It returns nil when
 // history has no healthy deployment or the source cannot be read at that

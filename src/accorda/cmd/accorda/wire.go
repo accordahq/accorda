@@ -137,7 +137,7 @@ func writeTargetHeader(w io.Writer, projectName string, tgt config.Target, multi
 		parts = append(parts, projectName)
 	}
 	if multiTarget {
-		parts = append(parts, targetLabel(tgt))
+		parts = append(parts, tgt.Identity())
 	}
 	if len(parts) > 0 {
 		fmt.Fprintf(w, "%s\n", strings.Join(parts, ": "))
@@ -241,9 +241,14 @@ func buildProjectMember(p *config.Project, dir string, src sourceAndWorktree, bu
 		if err != nil {
 			return reconcile.EnsembleMember{}, err
 		}
-		r.WithTarget(targetIdentity(dir, tgtCfg))
+		// Use the human-readable target identity (name when set, else the
+		// type + configured path/image) for event and result attribution, not
+		// the internal lock key (which contains an embedded NUL and is meant
+		// only as a state-dir key). The lock itself still uses targetIdentity.
+		label := tgtCfg.Identity()
+		r.WithTarget(label)
 		targetMembers = append(targetMembers, reconcile.TargetMember{
-			Target:     targetIdentity(dir, tgtCfg),
+			Target:     label,
 			Reconciler: r,
 		})
 	}
@@ -334,13 +339,7 @@ func targetReceiptPath(dir, name string, tgt config.Target, multiTarget bool) st
 	if name != "" {
 		key = filepath.Join(key, name)
 	}
-	identity := tgt.Type
-	if path := tgt.ConfiguredPath(); path != "" {
-		identity += "\x00" + path
-	} else if tgt.Image != "" {
-		identity += "\x00" + tgt.Image
-	}
-	key = filepath.Join(key, "targets", safeSegment(identity))
+	key = filepath.Join(key, "targets", safeSegment(tgt.Identity()))
 	return filepath.Join(stateBase(), "accorda", "receipts", key+".jsonl")
 }
 

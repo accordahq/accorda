@@ -796,3 +796,212 @@ func TestE2E_ImageSync_ConvergesToSynced(t *testing.T) {
 		t.Errorf("second sync output = %q, want it to contain SYNCED", out.String())
 	}
 }
+
+// multiTargetCompose declares the Compose target of a mixed multi-target
+// project (issue #103): a healthy busybox:1.36 service with a healthcheck, so
+// a first sync converges it to SYNCED.
+const multiTargetCompose = `services:
+  api:
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 1s
+      timeout: 1s
+      retries: 3
+`
+
+// writeMultiTargetProject creates a Git origin with a placeholder file and an
+// operator directory whose accorda.yaml declares one named project with a
+// mixed targets: list — a Compose target (compose.yaml) and an image target
+// (nginx:alpine) — both reconciling from the same single source. Using two
+// target types keeps them in independent namespaces (Compose project vs. a
+// standalone container), so per-target isolation and rollback are meaningful.
+// The project and target names are derived from the test name so Docker
+// containers do not collide across tests running in the same package.
+func writeMultiTargetProject(t *testing.T) (dir, origin, projectName, composeName, imageName string) {
+	t.Helper()
+	origin = t.TempDir()
+	runGit(t, origin, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(origin, testutil.ComposeFile), []byte(multiTargetCompose), 0o644); err != nil {
+		t.Fatalf("write origin compose: %v", err)
+	}
+	runGit(t, origin, "add", ".")
+	runGit(t, origin, "commit", "-m", "initial")
+
+	dir = e2eProjectDir(t)
+	projectName = multiTargetProjectName(t)
+	composeName = multiTargetName(t, "compose")
+	imageName = multiTargetName(t, "img")
+	doc := `version: 1
+projects:
+  - name: ` + projectName + `
+    environment: production
+    source:
+      type: git
+      url: file://` + origin + `
+      branch: main
+    targets:
+      - name: ` + composeName + `
+        type: ` + config.TargetCompose + `
+        file: ` + config.DefaultComposeFile + `
+      - name: ` + imageName + `
+        type: ` + config.TargetImage + `
+        image: nginx:alpine
+images:
+  pull: ` + config.PullNever + `
+health:
+  timeout: 30s
+`
+	if err := os.WriteFile(filepath.Join(dir, config.File), []byte(doc), 0o600); err != nil {
+		t.Fatalf("write accorda.yaml: %v", err)
+	}
+	return dir, origin, projectName, composeName, imageName
+}
+
+// multiTargetProjectName derives a per-test Compose project name so the
+// Docker containers one test deploys do not collide with another test's. It
+// uses a hash of the test name so two top-level tests (which share no common
+// prefix beyond "TestE2E_MultiTargetSync_") still get distinct, Compose-safe
+// slugs.
+func multiTargetProjectName(t *testing.T) string {
+	sum := sha256.Sum256([]byte(t.Name()))
+	return fmt.Sprintf("mt-%x", sum[:4])
+}
+
+// multiTargetName derives a per-test target name (used as the image container
+// name) so two tests' image containers do not collide on the Docker daemon.
+func multiTargetName(t *testing.T, kind string) string {
+	return kind + "-" + multiTargetProjectName(t)
+}
+
+// cleanupMultiTargetProject tears down both workloads the multi-target sync
+// deployed: the Compose project (base+"-"+composeTarget) and the image target's
+// standalone container (named imageTarget), so one test's containers do not
+// leak into the next. It uses the deterministic names from writeMultiTargetProject
+// directly, so it does not need to re-resolve the source checkout.
+func cleanupMultiTargetProject(t *testing.T, dir, projectName, composeName, imageName string) {
+	t.Helper()
+	t.Cleanup(func() {
+		// Compose project is base+"-"+targetName for a named target.
+		_ = exec.Command("docker", "compose", "-p", projectName+"-"+composeName, "down", "--remove-orphans").Run()
+		_ = exec.Command("docker", "rm", "-f", imageName).Run()
+	})
+}
+
+// TestE2E_MultiTargetSync_ReconcilesAllTargets drives one `accorda sync`
+// through a multi-target project: a single source revision fans out to a
+// Compose and an image target, each converges to SYNCED, and each keeps its
+// own receipt journal (issue #103, docs/ACCORDA.md §49).
+func TestE2E_MultiTargetSync_ReconcilesAllTargets(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir, _, projectName, composeName, imageName := writeMultiTargetProject(t)
+	cleanupMultiTargetProject(t, dir, projectName, composeName, imageName)
+
+	var out bytes.Buffer
+	if err := run([]string{"sync", "--dir", dir}, &out, nil); err != nil {
+		t.Fatalf("multi-target sync: %v\noutput: %s", err, out.String())
+	}
+	s := out.String()
+	if !strings.Contains(s, composeName+": sync: SYNCED") {
+		t.Errorf("sync output missing compose target SYNCED; got:\n%s", s)
+	}
+	if !strings.Contains(s, imageName+": sync: SYNCED") {
+		t.Errorf("sync output missing image target SYNCED; got:\n%s", s)
+	}
+
+	// Each target must have its own receipt journal with a healthy entry,
+	// proving per-target state isolation (issue #103).
+	proj := loadMultiTargetProject(t, dir)
+	targets := proj.NormalizedTargets()
+	for i := range targets {
+		store := history.NewFileStore(targetReceiptPath(dir, proj.Name, targets[i], len(targets) > 1))
+		receipts, err := store.List(context.Background())
+		if err != nil {
+			t.Fatalf("list target %d receipts: %v", i, err)
+		}
+		if len(receipts) == 0 {
+			t.Errorf("target %s has no receipts after sync", targets[i].Identity())
+		}
+	}
+}
+
+// loadMultiTargetProject loads the project file for a multi-target e2e test.
+func loadMultiTargetProject(t *testing.T, dir string) *config.Project {
+	t.Helper()
+	projects, err := loadProjects(dir)
+	if err != nil {
+		t.Fatalf("load projects: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("project count = %d, want 1", len(projects))
+	}
+	return &projects[0]
+}
+
+// TestE2E_MultiTargetSync_RollsBackIndependently verifies per-target rollback:
+// a first sync converges both targets and records healthy receipts; Git then
+// advances with a broken Compose image so the Compose target's deploy fails.
+// The failure must roll back the Compose target to its previous healthy commit
+// while leaving the image target's healthy deployment and journal untouched
+// (issue #103, docs/ACCORDA.md §20). The image target is used as the stable
+// sibling precisely because its config-driven desired state does not change
+// when Git advances, so it is a genuine independent workload.
+func TestE2E_MultiTargetSync_RollsBackIndependently(t *testing.T) {
+	testutil.RequireCompose(t)
+	testutil.RequireGit(t)
+
+	dir, origin, projectName, composeName, imageName := writeMultiTargetProject(t)
+	cleanupMultiTargetProject(t, dir, projectName, composeName, imageName)
+
+	// 1. Converge both targets and record their healthy receipts.
+	if err := run([]string{"sync", "--dir", dir}, &bytes.Buffer{}, nil); err != nil {
+		t.Fatalf("first multi-target sync: %v", err)
+	}
+	proj := loadMultiTargetProject(t, dir)
+	targets := proj.NormalizedTargets()
+	composeStore := history.NewFileStore(targetReceiptPath(dir, proj.Name, targets[0], true))
+	imageStore := history.NewFileStore(targetReceiptPath(dir, proj.Name, targets[1], true))
+
+	// 2. Break only the Compose target's image in Git (nonexistent tag). The
+	// image target's desired state is config-driven, so Git content does not
+	// affect it.
+	if err := os.WriteFile(filepath.Join(origin, testutil.ComposeFile), []byte(badImageCompose), 0o644); err != nil {
+		t.Fatalf("write broken compose: %v", err)
+	}
+	runGit(t, origin, "add", testutil.ComposeFile)
+	runGit(t, origin, "commit", "-m", "break compose image")
+
+	// 3. Second sync: Compose target fails and rolls back; image target stays
+	// healthy.
+	var out bytes.Buffer
+	err := run([]string{"sync", "--dir", dir}, &out, nil)
+	if err == nil {
+		t.Fatalf("second sync succeeded, want a compose rollback: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "rollback: restored to commit") {
+		t.Errorf("second sync output = %q, want a rollback message", out.String())
+	}
+
+	// 4. Compose target's journal has a rolled_back receipt; image target's
+	// journal still has a healthy receipt (its deployment was not touched).
+	composeReceipts, err := composeStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("list compose receipts: %v", err)
+	}
+	if len(composeReceipts) == 0 {
+		t.Fatalf("compose target has no receipts after rollback")
+	}
+	if composeReceipts[len(composeReceipts)-1].Result != history.OutcomeRolledBack {
+		t.Errorf("compose last receipt = %s, want %s", composeReceipts[len(composeReceipts)-1].Result, history.OutcomeRolledBack)
+	}
+	imageReceipts, err := imageStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("list image receipts: %v", err)
+	}
+	if len(imageReceipts) == 0 || imageReceipts[len(imageReceipts)-1].Result != history.OutcomeHealthy {
+		t.Errorf("image target lost its healthy deployment after sibling rollback")
+	}
+}
