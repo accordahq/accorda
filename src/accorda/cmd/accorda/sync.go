@@ -12,6 +12,7 @@ import (
 	"accorda/internal/config"
 	"accorda/internal/core/events"
 	"accorda/internal/core/reconcile"
+	"accorda/internal/format"
 )
 
 // newSyncCmd builds the `accorda sync` command (docs/ACCORDA.md §11). It loads
@@ -157,20 +158,24 @@ func writeSyncResult(cmd *cobra.Command, res *reconcile.Result) error {
 // prefix (empty for a single-project document, "name: " for an ensemble
 // member). It is the single renderer for a cycle outcome so the failure,
 // rollback, and healthy rendering is shared and cannot drift between the
-// single-project and ensemble paths.
+// single-project and ensemble paths. The name prefix is rendered in magenta
+// and the terminal phase and rollback line are colored when writing to a
+// terminal; piped output stays plain.
 func writeSyncResultWithPrefix(w io.Writer, prefix string, res *reconcile.Result) error {
+	st := format.NewStyle(w)
+	prefix = st.Paint(prefix, format.Magenta)
 	if res.Phase == reconcile.PhaseFailed {
-		fmt.Fprintf(w, "%ssync: %s\n", prefix, res.Phase)
+		fmt.Fprintf(w, "%ssync: %s\n", prefix, st.Paint(string(res.Phase), format.Red))
 		if res.RolledBack {
 			// A failed deployment was rolled back to a known previous commit.
 			// Report the rollback clearly so a user sees what was restored and
 			// why the active state is healthy (docs/ACCORDA.md §20).
-			fmt.Fprintf(w, "%srollback: restored to commit %s\n", prefix, res.RolledBackTo)
+			fmt.Fprintf(w, "%srollback: restored to commit %s\n", prefix, st.Paint(res.RolledBackTo, format.Yellow))
 			return fmt.Errorf("reconciliation failed and was rolled back: %w", res.Err)
 		}
 		return fmt.Errorf("reconciliation failed: %w", res.Err)
 	}
-	fmt.Fprintf(w, "%ssync: %s\n", prefix, res.Phase)
+	fmt.Fprintf(w, "%ssync: %s\n", prefix, st.Paint(string(res.Phase), format.Green))
 	fmt.Fprintf(w, "%s%s\n", prefix, res.Comparison.String())
 	return nil
 }
@@ -178,9 +183,13 @@ func writeSyncResultWithPrefix(w io.Writer, prefix string, res *reconcile.Result
 // projectSyncProgressWriter returns an event handler that prints lifecycle
 // progress lines for one project. Lines are prefixed with the project name so
 // concurrent ensemble output stays attributable to its workload; an empty name
-// (single-project document) prints with no prefix.
+// (single-project document) prints with no prefix. The name prefix is rendered
+// in magenta when writing to a terminal, matching the per-target headers, so
+// concurrent projects read as distinct groups; piped output stays plain.
 func projectSyncProgressWriter(w io.Writer, name string) events.Handler {
 	prefix := syncPrefix(name)
+	st := format.NewStyle(w)
+	prefix = st.Paint(prefix, format.Magenta)
 	return func(_ context.Context, event events.Event) {
 		switch event.Type {
 		case events.EventDriftDetected:
@@ -188,20 +197,22 @@ func projectSyncProgressWriter(w io.Writer, name string) events.Handler {
 		case events.EventDriftReconciled:
 			fmt.Fprintf(w, "%ssync: drift repaired\n", prefix)
 		case events.EventStateTransition:
-			writeProjectTransition(w, prefix, event.Payload)
+			writeProjectTransition(w, prefix, st, event.Payload)
 		}
 	}
 }
 
 // writeProjectTransition prints a non-terminal state transition line for one
 // project. prefix is the project-name prefix (including any trailing ": ") or
-// empty for a single-project document.
-func writeProjectTransition(w io.Writer, prefix string, payload any) {
+// empty for a single-project document. The phase is colored when writing to a
+// terminal: HEALTHY green, the intermediate phases cyan, so the lifecycle
+// reads at a glance; piped output stays plain.
+func writeProjectTransition(w io.Writer, prefix string, st *format.Style, payload any) {
 	transition, ok := payload.(reconcile.StateTransition)
 	if !ok || transition.To == reconcile.PhaseSynced || transition.To == reconcile.PhaseFailed {
 		return
 	}
-	fmt.Fprintf(w, "%ssync: %s", prefix, transition.To)
+	fmt.Fprintf(w, "%ssync: %s", prefix, st.Paint(string(transition.To), phaseColor(transition.To)))
 	if transition.Target != "" {
 		fmt.Fprintf(w, " target=%s", transition.Target)
 	}
@@ -212,6 +223,20 @@ func writeProjectTransition(w io.Writer, prefix string, payload any) {
 		fmt.Fprintf(w, " deployment=%s", transition.DeploymentID)
 	}
 	fmt.Fprintln(w)
+}
+
+// phaseColor maps a lifecycle phase to a terminal color: HEALTHY green, the
+// intermediate phases cyan, other plain.
+func phaseColor(phase reconcile.Phase) string {
+	switch phase {
+	case reconcile.PhaseHealthy:
+		return format.Green
+	case reconcile.PhaseFetching, reconcile.PhaseValidating, reconcile.PhasePlanning,
+		reconcile.PhasePulling, reconcile.PhaseDeploying, reconcile.PhaseVerifying:
+		return format.Cyan
+	default:
+		return ""
+	}
 }
 
 // syncPrefix returns the "name: " prefix for a project name, or "" when the

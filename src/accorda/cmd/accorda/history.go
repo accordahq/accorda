@@ -18,6 +18,7 @@ import (
 
 	"accorda/internal/config"
 	"accorda/internal/core/history"
+	"accorda/internal/format"
 )
 
 // historyRow is one row of the deployment history table. It is a plain
@@ -87,7 +88,7 @@ func runHistoryOne(cmd *cobra.Command, dir string, p *config.Project) error {
 			return err
 		}
 		writeTargetHeader(cmd.OutOrStdout(), p.Name, targets[i], multiTarget)
-		writeHistory(cmd.OutOrStdout(), rows)
+		writeHistory(cmd.OutOrStdout(), rows, format.NewStyle(cmd.OutOrStdout()))
 	}
 	return nil
 }
@@ -169,10 +170,26 @@ func joinChanges(changes []string) string {
 
 // writeHistory prints the deployment history table in the format shown in
 // docs/ACCORDA.md §11. The header is always printed; rows follow in the
-// order given (newest first).
-func writeHistory(w io.Writer, rows []historyRow) {
+// order given (newest first). The result glyph is colored when writing to a
+// terminal: healthy green, failed red, rolled_back yellow.
+func writeHistory(w io.Writer, rows []historyRow, st *format.Style) {
 	fmt.Fprintf(w, "%-20s %-10s %-14s %s\n", "TIME", "COMMIT", "RESULT", "CHANGES")
 	for _, r := range rows {
-		fmt.Fprintf(w, "%-20s %-10s %-14s %s\n", r.time, r.commit, r.result, r.changes)
+		fmt.Fprintf(w, "%-20s %-10s %-14s %s\n", r.time, r.commit, st.Paint(r.result, resultColor(r.result)), r.changes)
+	}
+}
+
+// resultColor maps a history result glyph to a terminal color: healthy green,
+// failed red, rolled_back yellow, other plain.
+func resultColor(result string) string {
+	switch {
+	case strings.HasPrefix(result, "✓"):
+		return format.Green
+	case strings.HasPrefix(result, "✗"):
+		return format.Red
+	case strings.HasPrefix(result, "↺"):
+		return format.Yellow
+	default:
+		return ""
 	}
 }

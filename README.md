@@ -33,13 +33,35 @@ The `accorda doctor` command (`cmd/accorda/doctor.go`, `docs/ACCORDA.md` §11) c
 
 ```bash
 cd src/accorda
-go build ./cmd/accorda
+go build -o accorda ./cmd/accorda
 ./accorda version
 ./accorda init --env production --repo git@github.com:acme/backend.git --branch main
 ./accorda sync --watch
 ```
 
 `accorda init` writes a minimal `accorda.yaml` project file in the current directory (override with `--dir <path>`) using the unified project format (§25), so `accorda sync` can load it directly. The `--file` value is recorded as both the Git source's Compose path and the Compose target file. On the first `plan` or `sync`, Accorda clones the repository into its private cache and runs Compose directly from that managed checkout; the operator does not clone the application repository beside `accorda.yaml`. New project files use mode `0600`, and `init` refuses to overwrite an existing file. Run `accorda init --help` for the available flags (source auth type, Compose file path). `accorda version` prints the build version, falling back to VCS revision info from the Go build. The CLI is built on [cobra](https://github.com/spf13/cobra); run `accorda --help` or `accorda <command> --help` for details.
+
+## Building
+
+The Go module lives under `src/accorda`. From that directory, build the `accorda`
+binary into the current directory:
+
+```bash
+cd src/accorda
+go build -o accorda ./cmd/accorda
+```
+
+The resulting `./accorda` binary is self-contained and can be run from anywhere
+(see the Quick start above). To install it on your `PATH` instead, use `go
+install`:
+
+```bash
+cd src/accorda
+go install ./cmd/accorda
+```
+
+`go install` places the binary in `$(go env GOPATH)/bin`. The build embeds VCS
+revision info, so `accorda version` reports the commit it was built from.
 
 ## Project file
 
@@ -323,6 +345,7 @@ The CLI implements the minimum command set from `docs/ACCORDA.md` §79 Step 6 pl
 │       │   ├── providers/
 │       │   ├── targets/
 │       │   ├── secrets/
+│       │   ├── format/
 │       │   └── notifications/
 │       ├── go.mod
 │       └── README.md

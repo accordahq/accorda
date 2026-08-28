@@ -26,6 +26,7 @@ import (
 	"accorda/internal/core/locking"
 	"accorda/internal/core/reconcile"
 	"accorda/internal/core/state"
+	"accorda/internal/format"
 	"accorda/internal/notifications/webhook"
 	"accorda/internal/sources"
 	"accorda/internal/sources/git"
@@ -130,7 +131,9 @@ func buildTargetConfig(p *config.Project, tgt config.Target, dir string, worktre
 // nothing, so single-project output stays unchanged. projectName is the
 // operator-chosen project name (empty for a standalone project); tgt is the
 // target being reported; multiTarget reports whether the project declares
-// more than one target.
+// more than one target. The header is preceded by a blank line and rendered
+// in magenta when writing to a terminal, so multi-project output reads as
+// distinct sections.
 func writeTargetHeader(w io.Writer, projectName string, tgt config.Target, multiTarget bool) {
 	parts := []string{}
 	if projectName != "" {
@@ -140,7 +143,8 @@ func writeTargetHeader(w io.Writer, projectName string, tgt config.Target, multi
 		parts = append(parts, tgt.Identity())
 	}
 	if len(parts) > 0 {
-		fmt.Fprintf(w, "%s\n", strings.Join(parts, ": "))
+		st := format.NewStyle(w)
+		fmt.Fprintf(w, "\n%s\n", st.Paint(strings.Join(parts, ": "), format.Magenta))
 	}
 }
 

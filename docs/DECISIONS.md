@@ -550,6 +550,18 @@ a concurrent `sync` reading the on-disk file could race. Both acquire the same
 target-scoped deployment lock for their source-read + plan section, releasing
 before return. Advisory and per-target, so independent projects are unaffected.
 
+### 55. Terminal-aware CLI styling lives in `internal/format`
+
+Human-facing output (`status`, `history`, `doctor`, `sync`, and the per-target
+headers) is hard to scan in a multi-project report. A shared `internal/format`
+package centralizes ANSI styling behind a `Style` that emits color only when
+writing to a character device (`os.ModeCharDevice`), so piped output and tests
+(buffers) stay plain. Status labels and per-service state/health are colored
+(green/red/yellow), history result glyphs are colored by outcome, doctor
+PASS/FAIL is colored, the `sync` terminal phase and rollback line are colored,
+and the per-target header is preceded by a blank line and rendered magenta. No
+terminal dependency is added; the package is dependency-free.
+
 ---
 
 ## Notifications

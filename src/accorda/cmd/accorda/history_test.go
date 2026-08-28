@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"accorda/internal/core/history"
+	"accorda/internal/format"
 )
 
 // memStore is an in-memory history.Store for unit testing the history and
@@ -223,7 +224,7 @@ func TestWriteHistory_Format(t *testing.T) {
 		{time: "17:13", commit: "a01fd92", result: "✗ failed", changes: "worker"},
 	}
 	var buf bytes.Buffer
-	writeHistory(&buf, rows)
+	writeHistory(&buf, rows, format.NewStyle(&buf))
 	out := buf.String()
 	for _, want := range []string{
 		"TIME                 COMMIT     RESULT         CHANGES\n",
@@ -239,7 +240,7 @@ func TestWriteHistory_Format(t *testing.T) {
 // TestWriteHistory_Empty verifies the header is printed even with no rows.
 func TestWriteHistory_Empty(t *testing.T) {
 	var buf bytes.Buffer
-	writeHistory(&buf, nil)
+	writeHistory(&buf, nil, format.NewStyle(&buf))
 	if !strings.Contains(buf.String(), "TIME") {
 		t.Errorf("empty history missing header; got:\n%s", buf.String())
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"accorda/internal/config"
+	"accorda/internal/format"
 	gitSource "accorda/internal/sources/git"
 )
 
@@ -57,7 +58,7 @@ func newDoctorCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			results := diagnose(cmd.Context(), dir)
-			writeDoctorReport(cmd.OutOrStdout(), results)
+			writeDoctorReport(cmd.OutOrStdout(), results, format.NewStyle(cmd.OutOrStdout()))
 			if doctorFailed(results) {
 				return fmt.Errorf("doctor: %w", errDoctorFailed)
 			}
@@ -168,15 +169,29 @@ func doctorFailed(results []doctorResult) bool {
 	return false
 }
 
-func writeDoctorReport(w io.Writer, results []doctorResult) {
+func writeDoctorReport(w io.Writer, results []doctorResult, st *format.Style) {
 	for _, result := range results {
+		status := st.Paint(result.status, doctorStatusColor(result.status))
 		if result.detail == "" {
-			fmt.Fprintf(w, "%s  %s\n", result.status, result.name)
+			fmt.Fprintf(w, "%s  %s\n", status, result.name)
 			continue
 		}
-		fmt.Fprintf(w, "%s  %s: %s\n", result.status, result.name, result.detail)
+		fmt.Fprintf(w, "%s  %s: %s\n", status, result.name, result.detail)
 	}
 	if !doctorFailed(results) {
 		fmt.Fprintln(w, "Accorda is ready.")
+	}
+}
+
+// doctorStatusColor maps a doctor status to a terminal color: PASS green,
+// FAIL red, INFO plain.
+func doctorStatusColor(status string) string {
+	switch status {
+	case doctorPass:
+		return format.Green
+	case doctorFail:
+		return format.Red
+	default:
+		return ""
 	}
 }
