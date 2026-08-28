@@ -673,8 +673,12 @@ func cleanupEnsembleProject(t *testing.T, dir string) {
 				continue
 			}
 			file := ct.File()
-			project := compose.ProjectName(config.Target{File: file})
-			cmd := exec.Command("docker", "compose", "-f", file, "-p", project, "down", "--remove-orphans")
+			// The deployed Compose project name is the member name (or
+			// base+"-"+target name for a named target), set on the Target
+			// via WithProjectName. Recomposing it from the cache-dir path
+			// would derive accorda-<hash> and target the wrong project, so
+			// address the same project the reconciler deploys under.
+			cmd := exec.Command("docker", "compose", "-f", file, "-p", ct.ComposeProject(), "down", "--remove-orphans")
 			_ = cmd.Run()
 		}
 	})
