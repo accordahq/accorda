@@ -16,12 +16,12 @@
 #   --version <vX.Y.Z>   install a specific release instead of the latest
 #   --no-service         install the binary only, without the systemd service
 #   --service-name <n>   systemd unit name (default: accorda)
-#   --service-user <u>   system user the service runs as (default: accorda)
+#   --service-user <u>   user the service runs as (default: the invoking user)
 #   --project-dir <dir>  directory the service reconciles (default: /etc/accorda)
 #
-# The service runs as a dedicated unprivileged system user (default: accorda),
-# which owns the project directory. Manage the project file with
-# `sudo -u accorda accorda init --dir /etc/accorda`.
+# The service runs as the user who invoked the script (via sudo), and that
+# user owns the project directory, so `accorda init --dir <dir>` works without
+# sudo. Override with --service-user.
 #
 # Requires root (writes to /usr/local/bin and /etc/systemd/system) and curl.
 # POSIX shell (works under both sh and bash).
@@ -32,7 +32,7 @@ repo=accorda
 version=""
 no_service=0
 service_name=accorda
-service_user=accorda
+service_user="${SUDO_USER:-}"
 project_dir=/etc/accorda
 
 usage() {
@@ -54,6 +54,16 @@ done
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "error: install.sh must run as root (sudo sh install.sh)" >&2
+  exit 1
+fi
+
+# The service runs as the user who invoked the script. When run via sudo,
+# SUDO_USER is that user; fall back to the current (root) user only if unset.
+if [ -z "$service_user" ]; then
+  service_user="$(id -un)"
+fi
+if ! id "$service_user" >/dev/null 2>&1; then
+  echo "error: service user $service_user does not exist" >&2
   exit 1
 fi
 
@@ -124,22 +134,10 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 0
 fi
 
-# --- dedicated service user ----------------------------------------------
+# --- service user --------------------------------------------------------
 
-# Run the service as a dedicated, unprivileged system user rather than root.
-# The project dir is owned by that user so the service can read/write it and
-# the operator can manage it with `sudo -u <user> accorda init`.
-if ! id "$service_user" >/dev/null 2>&1; then
-  if command -v useradd >/dev/null 2>&1; then
-    useradd --system --home-dir /var/lib/accorda --shell /usr/sbin/nologin "$service_user"
-  elif command -v adduser >/dev/null 2>&1; then
-    adduser --system --home /var/lib/accorda --shell /usr/sbin/nologin "$service_user"
-  else
-    echo "error: no useradd/adduser available to create service user $service_user" >&2
-    exit 1
-  fi
-  echo "Created system user $service_user"
-fi
+# The service runs as the invoking user (SUDO_USER), who also owns the project
+# directory, so `accorda init --dir <dir>` works without sudo.
 
 # Grant Docker access so the compose target can reach the daemon.
 if command -v usermod >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; then
@@ -186,4 +184,4 @@ else
   echo "Start it with: systemctl start ${service_name}"
 fi
 echo "Place an accorda.yaml project file in ${project_dir} (owned by ${service_user})."
-echo "Manage it with: sudo -u ${service_user} accorda init --dir ${project_dir}"
+echo "Create it with: accorda init --dir ${project_dir}"
