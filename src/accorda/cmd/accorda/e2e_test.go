@@ -880,7 +880,7 @@ func multiTargetName(t *testing.T, kind string) string {
 // standalone container (named imageTarget), so one test's containers do not
 // leak into the next. It uses the deterministic names from writeMultiTargetProject
 // directly, so it does not need to re-resolve the source checkout.
-func cleanupMultiTargetProject(t *testing.T, dir, projectName, composeName, imageName string) {
+func cleanupMultiTargetProject(t *testing.T, projectName, composeName, imageName string) {
 	t.Helper()
 	t.Cleanup(func() {
 		// Compose project is base+"-"+targetName for a named target.
@@ -898,7 +898,7 @@ func TestE2E_MultiTargetSync_ReconcilesAllTargets(t *testing.T) {
 	testutil.RequireGit(t)
 
 	dir, _, projectName, composeName, imageName := writeMultiTargetProject(t)
-	cleanupMultiTargetProject(t, dir, projectName, composeName, imageName)
+	cleanupMultiTargetProject(t, projectName, composeName, imageName)
 
 	var out bytes.Buffer
 	if err := run([]string{"sync", "--dir", dir}, &out, nil); err != nil {
@@ -954,7 +954,7 @@ func TestE2E_MultiTargetSync_RollsBackIndependently(t *testing.T) {
 	testutil.RequireGit(t)
 
 	dir, origin, projectName, composeName, imageName := writeMultiTargetProject(t)
-	cleanupMultiTargetProject(t, dir, projectName, composeName, imageName)
+	cleanupMultiTargetProject(t, projectName, composeName, imageName)
 
 	// 1. Converge both targets and record their healthy receipts.
 	if err := run([]string{"sync", "--dir", dir}, &bytes.Buffer{}, nil); err != nil {
