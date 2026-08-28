@@ -172,7 +172,8 @@ RestartSec=5
 # Hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
+# read-only (not inaccessible) so the service can read the SSH key from ~/.ssh
+ProtectHome=read-only
 PrivateTmp=true
 # ProtectSystem=strict makes the filesystem read-only; allow the state dir.
 ReadWritePaths=${state_dir}
