@@ -63,6 +63,32 @@ go install ./cmd/accorda
 `go install` places the binary in `$(go env GOPATH)/bin`. The build embeds VCS
 revision info, so `accorda version` reports the commit it was built from.
 
+
+## System requirements
+
+`accorda` is a single self-contained Go binary with a small runtime footprint.
+The numbers below are observed on a local development machine running
+`accorda sync --watch` against a Compose target while idle between
+reconciliation cycles; they are indicative, not a guarantee, and scale with the
+number of projects, targets, and services being reconciled.
+
+| Resource     | Idle (observed) | Notes                                                                                                                                 |
+| ------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| CPU          | ~0%             | The watch loop sleeps between `sync.interval` polls; CPU rises only during a reconciliation pass (fetch, plan, pull, deploy, verify). |
+| Memory (RSS) | ~15 MB          | Go runtime baseline; grows with the number of projects/targets and the size of the fetched repository.                                |
+| Threads      | ~18             | Go runtime worker threads; all sleeping while idle.                                                                                   |
+
+Runtime prerequisites (see [Installation](docs/INSTALLATION.md)):
+
+- a reachable Docker Engine and Docker Compose v2 (`docker compose`) for the Compose target;
+- network access to the configured Git repository and container registries;
+- Git credentials for the repository (SSH key or HTTPS token).
+
+The system `git` executable is not required at runtime — Accorda uses its
+built-in Git adapter. There is no separate daemon binary: `accorda sync
+--watch` is the daemon process and should be supervised by systemd, Docker, or
+the platform's service manager in production.
+
 ## Project file
 
 The unified Accorda project format is defined in `docs/ACCORDA.md` §8 (Docker Compose Target) and §25 (Unified Project Format) and implemented by the `internal/config` package. A project is described in an `accorda.yaml` file:
@@ -307,18 +333,18 @@ go test ./internal/targets/compose/
 
 The CLI implements the minimum command set from `docs/ACCORDA.md` §79 Step 6 plus the wider §11 surface:
 
-| Command   | Status              | Description                                               |
-| --------- | ------------------- | --------------------------------------------------------- |
-| `init`    | implemented         | create an Accorda project/target                          |
-| `version` | implemented         | print the Accorda version                                 |
-| `status`  | implemented         | show environment, repo, branch, Git HEAD, deployed SHA... |
-| `diff`    | implemented         | show deployed vs desired changes                          |
-| `plan`    | implemented         | show intended actions without deploying                   |
-| `sync`    | implemented         | run once, or continuously with `--watch`                  |
-| `history` | implemented         | show deployment history                                   |
-| `inspect` | implemented         | show details for a specific deployment                    |
-| `logs`    | implemented         | fetch or follow logs for a service                        |
-| `doctor`  | implemented         | check the local Accorda installation and configuration    |
+| Command   | Status      | Description                                               |
+| --------- | ----------- | --------------------------------------------------------- |
+| `init`    | implemented | create an Accorda project/target                          |
+| `version` | implemented | print the Accorda version                                 |
+| `status`  | implemented | show environment, repo, branch, Git HEAD, deployed SHA... |
+| `diff`    | implemented | show deployed vs desired changes                          |
+| `plan`    | implemented | show intended actions without deploying                   |
+| `sync`    | implemented | run once, or continuously with `--watch`                  |
+| `history` | implemented | show deployment history                                   |
+| `inspect` | implemented | show details for a specific deployment                    |
+| `logs`    | implemented | fetch or follow logs for a service                        |
+| `doctor`  | implemented | check the local Accorda installation and configuration    |
 
 ## Repository layout
 
