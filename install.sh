@@ -16,7 +16,12 @@
 #   --version <vX.Y.Z>   install a specific release instead of the latest
 #   --no-service         install the binary only, without the systemd service
 #   --service-name <n>   systemd unit name (default: accorda)
+#   --service-user <u>   system user the service runs as (default: accorda)
 #   --project-dir <dir>  directory the service reconciles (default: /etc/accorda)
+#
+# The service runs as a dedicated unprivileged system user (default: accorda),
+# which owns the project directory. Manage the project file with
+# `sudo -u accorda accorda init --dir /etc/accorda`.
 #
 # Requires root (writes to /usr/local/bin and /etc/systemd/system) and curl.
 # POSIX shell (works under both sh and bash).
@@ -27,10 +32,11 @@ repo=accorda
 version=""
 no_service=0
 service_name=accorda
+service_user=accorda
 project_dir=/etc/accorda
 
 usage() {
-  echo "usage: $0 [--version vX.Y.Z] [--no-service] [--service-name <n>] [--project-dir <dir>]" >&2
+  echo "usage: $0 [--version vX.Y.Z] [--no-service] [--service-name <n>] [--service-user <u>] [--project-dir <dir>]" >&2
   exit 2
 }
 
@@ -39,6 +45,7 @@ while [ $# -gt 0 ]; do
     --version) version="$2"; shift 2 ;;
     --no-service) no_service=1; shift ;;
     --service-name) service_name="$2"; shift 2 ;;
+    --service-user) service_user="$2"; shift 2 ;;
     --project-dir) project_dir="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) usage ;;
@@ -117,7 +124,31 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 0
 fi
 
+# --- dedicated service user ----------------------------------------------
+
+# Run the service as a dedicated, unprivileged system user rather than root.
+# The project dir is owned by that user so the service can read/write it and
+# the operator can manage it with `sudo -u <user> accorda init`.
+if ! id "$service_user" >/dev/null 2>&1; then
+  if command -v useradd >/dev/null 2>&1; then
+    useradd --system --home-dir /var/lib/accorda --shell /usr/sbin/nologin "$service_user"
+  elif command -v adduser >/dev/null 2>&1; then
+    adduser --system --home /var/lib/accorda --shell /usr/sbin/nologin "$service_user"
+  else
+    echo "error: no useradd/adduser available to create service user $service_user" >&2
+    exit 1
+  fi
+  echo "Created system user $service_user"
+fi
+
+# Grant Docker access so the compose target can reach the daemon.
+if command -v usermod >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; then
+  usermod -aG docker "$service_user"
+  echo "Added $service_user to the docker group"
+fi
+
 mkdir -p "$project_dir"
+chown "$service_user" "$project_dir"
 unit="/etc/systemd/system/${service_name}.service"
 cat > "$unit" <<EOF
 [Unit]
@@ -127,6 +158,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=${service_user}
 ExecStart=/usr/local/bin/accorda sync --watch --dir ${project_dir}
 Restart=on-failure
 RestartSec=5
@@ -143,5 +175,15 @@ EOF
 systemctl daemon-reload
 systemctl enable "$service_name"
 echo "Registered and enabled systemd service ${service_name}.service"
-echo "Start it with: systemctl start ${service_name}"
-echo "Place an accorda.yaml project file in ${project_dir} before starting."
+
+# If the service is already running (e.g. an upgrade from an earlier install
+# that ran as root), restart it so the new unit (User=, project dir) takes
+# effect without manual steps.
+if systemctl is-active --quiet "$service_name"; then
+  systemctl restart "$service_name"
+  echo "Restarted running service ${service_name}.service with the new unit"
+else
+  echo "Start it with: systemctl start ${service_name}"
+fi
+echo "Place an accorda.yaml project file in ${project_dir} (owned by ${service_user})."
+echo "Manage it with: sudo -u ${service_user} accorda init --dir ${project_dir}"
