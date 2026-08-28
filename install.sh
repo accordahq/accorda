@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Install the Accorda agent on a Linux host (docs/ACCORDA.md §23).
 #
 # Downloads the static Linux binary from the GitHub release (latest by
@@ -19,7 +19,8 @@
 #   --project-dir <dir>  directory the service reconciles (default: /etc/accorda)
 #
 # Requires root (writes to /usr/local/bin and /etc/systemd/system) and curl.
-set -euo pipefail
+# POSIX shell (works under both sh and bash).
+set -eu
 
 owner=accordahq
 repo=accorda
@@ -33,7 +34,7 @@ usage() {
   exit 2
 }
 
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
   case "$1" in
     --version) version="$2"; shift 2 ;;
     --no-service) no_service=1; shift ;;
@@ -44,7 +45,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$(id -u)" -ne 0 ]]; then
+if [ "$(id -u)" -ne 0 ]; then
   echo "error: install.sh must run as root (sudo sh install.sh)" >&2
   exit 1
 fi
@@ -66,10 +67,10 @@ case "$arch" in
     ;;
 esac
 
-if [[ -z "$version" ]]; then
+if [ -z "$version" ]; then
   version="$(curl -fsSL "https://api.github.com/repos/${owner}/${repo}/releases/latest" \
     | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)"
-  if [[ -z "$version" ]]; then
+  if [ -z "$version" ]; then
     echo "error: could not determine the latest release" >&2
     exit 1
   fi
@@ -89,12 +90,12 @@ curl -fsSL -o "$tmpdir/$asset" "$base_url/$asset"
 curl -fsSL -o "$tmpdir/checksums.txt" "$base_url/checksums.txt"
 
 expected="$(awk -v name="$asset" '$2 == name { print $1 }' "$tmpdir/checksums.txt")"
-if [[ -z "$expected" ]]; then
+if [ -z "$expected" ]; then
   echo "error: no checksum found for $asset in the release" >&2
   exit 1
 fi
 actual="$(sha256sum "$tmpdir/$asset" | awk '{ print $1 }')"
-if [[ "$actual" != "$expected" ]]; then
+if [ "$actual" != "$expected" ]; then
   echo "error: checksum mismatch for $asset" >&2
   echo "  expected: $expected" >&2
   echo "  actual:   $actual" >&2
@@ -104,7 +105,7 @@ fi
 install -m 0755 "$tmpdir/$asset" "/usr/local/bin/accorda"
 echo "Installed /usr/local/bin/accorda"
 
-if [[ "$no_service" -eq 1 ]]; then
+if [ "$no_service" -eq 1 ]; then
   echo "Skipping systemd service (--no-service)"
   exit 0
 fi
