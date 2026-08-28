@@ -216,3 +216,103 @@ func TestComposeTarget_ApplyUsesControlledInterpolationEnvironment(t *testing.T)
 		t.Errorf("runtime image = %q, want planned busybox:1.36", got)
 	}
 }
+
+// TestComposeTarget_RenameReclaimsOwnedStaleContainer exercises the project
+// rename path end-to-end: a container created under an old Accorda project
+// name (carrying the accorda.managed label and an explicit container_name)
+// collides with a new project's service. Apply must reclaim the stale,
+// Accorda-owned container and bring up the new one under the new project.
+func TestComposeTarget_RenameReclaimsOwnedStaleContainer(t *testing.T) {
+	testutil.RequireCompose(t)
+	ctx := context.Background()
+
+	dir := integrationProjectDir(t)
+	path := filepath.Join(dir, config.DefaultComposeFile)
+	composeFile := `services:
+  db:
+    image: busybox:1.36
+    container_name: rename-db
+    command: ["sh", "-c", "sleep 300"]
+`
+	if err := os.WriteFile(path, []byte(composeFile), 0o600); err != nil {
+		t.Fatalf("write compose: %v", err)
+	}
+
+	// First, deploy as the "old" project via a target that stamps the
+	// ownership label and uses a real docker CLI runner. This simulates the
+	// prior Accorda deployment before the rename.
+	oldTgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithPullPolicy(config.PullNever),
+		WithProjectName("old-project"),
+		WithHealthTimeout(30*time.Second))
+	if err != nil {
+		t.Fatalf("New old target: %v", err)
+	}
+	oldDesired := &state.DesiredState{
+		Repository: "acme/infra",
+		Commit:     "old",
+		Services: map[string]state.Service{
+			"db": {Image: "busybox:1.36"},
+		},
+	}
+	oldPlan, err := oldTgt.Plan(ctx, oldDesired, nil)
+	if err != nil {
+		t.Fatalf("old Plan: %v", err)
+	}
+	if err := oldTgt.Apply(ctx, oldPlan); err != nil {
+		t.Fatalf("old Apply: %v", err)
+	}
+	t.Cleanup(func() { down(t, path, "old-project") })
+	t.Cleanup(func() { _ = (cliDocker{}).Run(ctx, "rm", "-f", "rename-db") })
+
+	// The stale container must carry the Accorda ownership label.
+	cli := cliDocker{}
+	if err := cli.Run(ctx, "inspect", "--format", "{{index .Config.Labels \"accorda.managed\"}}", "rename-db"); err != nil {
+		t.Fatalf("old container should carry accorda.managed label: %v", err)
+	}
+
+	// Now deploy as the "new" project. Apply must reclaim the stale owned
+	// container and bring up the new one under the new project name.
+	newTgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithPullPolicy(config.PullNever),
+		WithProjectName("new-project"),
+		WithHealthTimeout(30*time.Second))
+	if err != nil {
+		t.Fatalf("New new target: %v", err)
+	}
+	newDesired := &state.DesiredState{
+		Repository: "acme/infra",
+		Commit:     "new",
+		Services: map[string]state.Service{
+			"db": {Image: "busybox:1.36"},
+		},
+	}
+	newPlan, err := newTgt.Plan(ctx, newDesired, nil)
+	if err != nil {
+		t.Fatalf("new Plan: %v", err)
+	}
+	// Assign a deployment ID the way the reconcile loop does, so Apply can
+	// stamp it as the accorda.deployment_id label (docs/ACCORDA.md §7).
+	newPlan.DeploymentID = "dep_rename_new"
+	if err := newTgt.Apply(ctx, newPlan); err != nil {
+		t.Fatalf("new Apply: %v", err)
+	}
+	t.Cleanup(func() { down(t, path, "new-project") })
+
+	// The new project's Current must see the db service.
+	runtime, err := newTgt.Current(ctx)
+	if err != nil {
+		t.Fatalf("new Current: %v", err)
+	}
+	if _, ok := runtime.Services["db"]; !ok {
+		t.Fatalf("new project runtime missing db service: %+v", runtime.Services)
+	}
+
+	// The recreated container must carry the ownership and deployment labels.
+	if err := cli.Run(ctx, "inspect", "--format", "{{index .Config.Labels \""+accordaManagedLabel+"\"}}", "rename-db"); err != nil {
+		t.Fatalf("new container should carry accorda.managed label: %v", err)
+	}
+	if err := cli.Run(ctx, "inspect", "--format", "{{index .Config.Labels \""+accordaDeploymentLabel+"\"}}", "rename-db"); err != nil {
+		t.Fatalf("new container should carry accorda.deployment_id label: %v", err)
+	}
+}

@@ -69,6 +69,10 @@ type Target struct {
 	// runner executes `docker compose` subcommands for Apply. It is injected
 	// so tests can substitute a fake without a `docker compose` binary.
 	runner composeRunner
+	// dockerCli runs plain `docker` subcommands for reclaim and volume
+	// migration (removing a stale container, copying a named volume). It is
+	// injected so tests can substitute a fake without a `docker` binary.
+	dockerCli dockerCli
 	// pullPolicy selects which images to pull before deployment
 	// (docs/ACCORDA.md §9). It defaults to config.PullChanged.
 	pullPolicy string
@@ -102,6 +106,14 @@ func WithDockerClient(c dockerClient) Option {
 // cliRunner that shells out to `docker compose`.
 func WithRunner(r composeRunner) Option {
 	return func(t *Target) { t.runner = r }
+}
+
+// WithDockerCLI injects a dockerCli for the target to use for plain `docker`
+// subcommands (reclaim and volume migration). It is primarily intended for
+// tests; production callers leave it unset and New builds a cliDocker that
+// shells out to `docker`.
+func WithDockerCLI(r dockerCli) Option {
+	return func(t *Target) { t.dockerCli = r }
 }
 
 // WithPullPolicy sets the image pull policy the target uses to decide which
@@ -183,6 +195,9 @@ func New(cfg config.Target, opts ...Option) (*Target, error) {
 	}
 	if t.runner == nil {
 		t.runner = cliRunner{file: t.file, project: t.project}
+	}
+	if t.dockerCli == nil {
+		t.dockerCli = cliDocker{}
 	}
 	return t, nil
 }
@@ -457,11 +472,21 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 	if err := t.validateApply(p); err != nil {
 		return err
 	}
-	deployFile, err := t.renderDeployFile()
+	deployFile, err := t.renderDeployFile(p.DeploymentID)
 	if err != nil {
 		return err
 	}
 	defer cleanupDeployFile(deployFile, t.file)
+
+	// Reclaim stale containers before any `up` runs: a service with an
+	// explicit container_name whose name is held by an Accorda-owned container
+	// from another project would otherwise fail with a name conflict. This is
+	// safe because reclaim only removes Accorda-owned containers
+	// (docs/DECISIONS.md #54).
+	if err := t.reclaimStaleContainers(ctx, deployFile, servicesToReclaim(p)); err != nil {
+		return &targets.ApplyError{Err: err}
+	}
+
 	removedOrphans := false
 	completed := make([]plan.Action, 0, len(p.Actions))
 	for _, a := range p.Actions {
@@ -515,6 +540,26 @@ func actionsOfKind(actions []plan.Action, kind plan.ActionKind) []plan.Action {
 	return selected
 }
 
+// servicesToReclaim returns the distinct service names the plan will create
+// or recreate — the only services that might collide with a stale container
+// claiming an explicit container_name. Pull, stop, and remove actions do not
+// create containers, so they are excluded.
+func servicesToReclaim(p *plan.Plan) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(p.Actions))
+	for _, a := range p.Actions {
+		switch a.Kind {
+		case plan.ActionCreate, plan.ActionRecreate, plan.ActionStart:
+			if _, ok := seen[a.Service]; ok {
+				continue
+			}
+			seen[a.Service] = struct{}{}
+			out = append(out, a.Service)
+		}
+	}
+	return out
+}
+
 // applyActionOn executes a single plan action against the Compose project
 // using the given compose file (the source or a rendered deploy file). It
 // returns an error naming the service and action so a partial failure is
@@ -549,10 +594,12 @@ func (t *Target) applyActionOn(ctx context.Context, a plan.Action, composeFile s
 }
 
 // renderDeployFile renders a deploy Compose file with per-service env
-// overrides merged in, or returns the source file unchanged when no
-// overrides are configured (docs/DECISIONS.md #23).
-func (t *Target) renderDeployFile() (string, error) {
-	return renderDeployCompose(t.file, t.serviceOverrides)
+// overrides merged in and the Accorda ownership/deployment labels stamped,
+// or returns the source file unchanged when no overrides are configured
+// (docs/DECISIONS.md #23). deploymentID is stamped as the
+// accorda.deployment_id label when non-empty.
+func (t *Target) renderDeployFile(deploymentID string) (string, error) {
+	return renderDeployCompose(t.file, t.serviceOverrides, deploymentID)
 }
 
 // runnerFor returns the compose runner scoped to the given file. When the file

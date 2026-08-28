@@ -14,6 +14,7 @@ import (
 
 	composeloader "github.com/compose-spec/compose-go/v2/loader"
 	"github.com/compose-spec/compose-go/v2/types"
+	"gopkg.in/yaml.v3"
 
 	"accorda/internal/core/state"
 	"accorda/internal/sources"
@@ -58,6 +59,30 @@ func LoadFileWithContext(ctx context.Context, path string) (map[string]state.Ser
 		return nil, fmt.Errorf("compose: %s: %w", filepath.Base(path), err)
 	}
 	return services, nil
+}
+
+// serviceContainerNames returns the explicit `container_name` declared for
+// each service, keyed by service name. Only services that declare an explicit
+// container name are included. Accorda uses this to know which daemon-wide
+// unique container names its project's services will claim, so it can detect
+// and safely reclaim a stale container with that name that belongs to a
+// different Compose project (docs/DECISIONS.md #54).
+func serviceContainerNames(data []byte) (map[string]string, error) {
+	var doc struct {
+		Services map[string]struct {
+			ContainerName string `yaml:"container_name"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("compose: parse service container names: %w", err)
+	}
+	out := make(map[string]string, len(doc.Services))
+	for name, svc := range doc.Services {
+		if svc.ContainerName != "" {
+			out[name] = svc.ContainerName
+		}
+	}
+	return out, nil
 }
 
 func attachExternalFileDigests(ctx context.Context, revision *sources.Revision, artifact string, services map[string]state.Service) error {

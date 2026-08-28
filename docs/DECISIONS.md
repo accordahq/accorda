@@ -326,6 +326,53 @@ runs `docker run -d` via a `Runner` seam, removing an existing container first.
 desired state because it is Git-authored config, unlike the Compose
 `ServiceOverride`. Service name = project name or the project-directory basename.
 
+### 54. Accorda-owned containers and safe stale reclaim
+
+Issue context: a project rename collides when Compose services declare explicit
+`container_name`, because those names are daemon-global — the old project's
+containers keep the names and the new project's `docker compose up` fails with
+"container name already in use". Accorda must resolve this itself, but must
+**never delete a container it does not own** and must preserve the renamed
+service's data.
+
+Decision:
+
+- Every container Accorda deploys is stamped with `accorda.managed=true` via the
+  rendered deploy Compose file (the always-rendered `.accorda-deploy.yml`), so
+  the label travels with the container regardless of the Compose project Accorda
+  later manages it under. This is the durable ownership proof
+  (`internal/targets/compose/deploy.go`, `docker.go`).
+- Each deployed container also carries `accorda.deployment_id=<dep>` (when a
+  deployment ID is assigned), linking the live container back to its receipt
+  journal entry for ops traceability. The label is informational only: it never
+  enters desired state, hashing, or drift comparison.
+- Before `docker compose up`, `Apply` scans the daemon for containers that claim
+  an explicit `container_name` a service is about to create but that belong to a
+  **different** project, and force-removes them **only** when they carry the
+  `accorda.managed` label **and** their Compose working directory matches this
+  target's Compose file directory (`com.docker.compose.project.working_dir`).
+  The working-dir match is the ownership-intent guard: a stale container from a
+  prior rename of the SAME Compose file shares the directory, while a live
+  container from a sibling Accorda project on the same daemon (which reuses the
+  same explicit `container_name` but a different Compose file) does not, so it
+  is never reclaimed. A container without the label is never touched, even on a
+  name collision (`internal/targets/compose/reclaim.go`).
+- Before removing a stale owned container, its named volumes are migrated to the
+  current project's volume namespace (via a throwaway busybox that clears the
+  destination before copying), so a renamed service keeps its data and a
+  partially populated destination from an earlier failed attempt cannot silently
+  merge. Bind mounts and non-project volumes are left untouched. A failed
+  migration aborts the reclaim so data is not silently dropped.
+- Reclaim uses a plain `docker` CLI runner seam (`dockerCli`), mirroring the
+  image target's `Runner`, so the SDK `Client` interface is unchanged.
+
+Consequence: Accorda autonomously heals name collisions from its own earlier
+deployments and preserves volume data across renames, while the ownership label
+is the hard guarantee that it never deletes a container it did not create.
+Containers deployed before this change (no label) require a one-time manual
+teardown; the label protects all future deployments. Files:
+`internal/targets/compose/{reclaim.go,reclaim_test.go,deploy.go,docker.go}`.
+
 ---
 
 ## Core — reconciliation

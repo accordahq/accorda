@@ -2,8 +2,10 @@ package compose
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -11,20 +13,15 @@ import (
 )
 
 // renderDeployCompose reads the source Compose file, merges per-service env
-// overrides from accorda.yaml into each named service's environment:, and
-// writes the result to a deploy Compose file alongside the source. It returns
-// the deploy file path, or the source path unchanged when no overrides are
-// configured (docs/DECISIONS.md #23).
-//
-// The deploy file carries only the merged environment: entries for overridden
-// services; all other services and fields are preserved verbatim from the
-// source so `docker compose up -d` sees the full project. The deploy file is
-// written next to the source so Compose's relative-path resolution (build
-// contexts, volumes, env_file) still resolves against the same checkout root.
-func renderDeployCompose(sourceFile string, overrides map[string]config.ServiceOverride) (string, error) {
-	if len(overrides) == 0 {
-		return sourceFile, nil
-	}
+// overrides from accorda.yaml into each named service's environment:, stamps
+// the Accorda ownership label (accordaManagedLabel) on every service, and
+// writes the result to a deploy Compose file alongside the source. It always
+// renders a deploy file: the ownership label is what lets Accorda later prove
+// a container is its own when reclaiming stale containers (docs/DECISIONS.md
+// #54). The deploy file is written next to the source so Compose's
+// relative-path resolution (build contexts, volumes, env_file) still resolves
+// against the same checkout root (docs/DECISIONS.md #23).
+func renderDeployCompose(sourceFile string, overrides map[string]config.ServiceOverride, deploymentID string) (string, error) {
 	data, err := os.ReadFile(sourceFile)
 	if err != nil {
 		return "", fmt.Errorf("compose: read source for deploy render: %w", err)
@@ -41,16 +38,16 @@ func renderDeployCompose(sourceFile string, overrides map[string]config.ServiceO
 	if err != nil {
 		return "", err
 	}
-	for name, env := range mergedEnv {
-		svc, ok := services[name].(map[string]any)
+	for name, svc := range services {
+		m, ok := svc.(map[string]any)
 		if !ok {
-			// The override targets a service not in the Compose file; skip it
-			// rather than inventing a service, since Accorda's plan would not
-			// have included it either.
 			continue
 		}
-		svc["environment"] = mergeServiceEnv(svc["environment"], env)
-		services[name] = svc
+		if env, ok := mergedEnv[name]; ok {
+			m["environment"] = mergeServiceEnv(m["environment"], env)
+		}
+		m["labels"] = withAccordaLabels(m["labels"], deploymentID)
+		services[name] = m
 	}
 	doc["services"] = services
 	deployFile := deployComposePath(sourceFile)
@@ -62,6 +59,59 @@ func renderDeployCompose(sourceFile string, overrides map[string]config.ServiceO
 		return "", fmt.Errorf("compose: write deploy file: %w", err)
 	}
 	return deployFile, nil
+}
+
+// withAccordaLabels returns the given labels map (Compose labels: may be a map
+// or a list of KEY=VALUE strings) with the Accorda ownership label added and,
+// when a deployment ID is supplied, the deployment identifier label added.
+// Existing labels are preserved. Service labels declared in the Compose file
+// are stamped onto the container by Compose, so this marks the container as
+// owned by Accorda and ties it to its deployment at creation time.
+func withAccordaLabels(existing any, deploymentID string) any {
+	labels := normalizeLabelsValue(existing)
+	labels[accordaManagedLabel] = "true"
+	if deploymentID != "" {
+		labels[accordaDeploymentLabel] = deploymentID
+	}
+	// Compose accepts a map form for labels.
+	out := make(map[string]string, len(labels))
+	maps.Copy(out, labels)
+	return out
+}
+
+// normalizeLabelsValue converts Compose's labels declaration (a map, a list of
+// KEY=VALUE strings, or absent) into a map.
+func normalizeLabelsValue(v any) map[string]string {
+	switch l := v.(type) {
+	case map[string]string:
+		return l
+	case map[string]any:
+		out := make(map[string]string, len(l))
+		for k, val := range l {
+			out[k] = fmt.Sprint(val)
+		}
+		return out
+	case []string:
+		out := make(map[string]string, len(l))
+		for _, e := range l {
+			if k, val, found := strings.Cut(e, "="); found {
+				out[k] = val
+			}
+		}
+		return out
+	case []any:
+		out := map[string]string{}
+		for _, e := range l {
+			if s, ok := e.(string); ok {
+				if k, val, found := strings.Cut(s, "="); found {
+					out[k] = val
+				}
+			}
+		}
+		return out
+	default:
+		return map[string]string{}
+	}
 }
 
 // deployComposePath returns the path for the rendered deploy Compose file,

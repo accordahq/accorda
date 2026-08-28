@@ -32,11 +32,38 @@ func newDockerClient() (dockerClient, error) {
 // without relying on naming conventions.
 const composeProjectLabel = "com.docker.compose.project"
 
+// composeProjectWorkingDirLabel is the Docker label Compose v2 sets on every
+// container it manages, carrying the directory Compose resolved the project
+// from. Accorda uses it as the ownership-intent signal when reclaiming a stale
+// container: a stale container from a prior rename of the SAME Compose file
+// shares this target's working directory, while a live container from a
+// sibling Accorda project (a different Compose file that happens to reuse the
+// same explicit container_name) does not.
+const composeProjectWorkingDirLabel = "com.docker.compose.project.working_dir"
+
 // composeServiceLabel is the Docker label carrying the Compose service name
 // (the key in the Compose file's `services:` map). Accorda maps it back to
 // the desired-state service name so runtime state aligns with the desired
 // state keyed in Git.
 const composeServiceLabel = "com.docker.compose.service"
+
+// accordaManagedLabel is the Docker label Accorda stamps on every container
+// it deploys, marking it as owned by Accorda. It is the durable ownership
+// proof used when reclaiming stale containers: a container that collides by
+// explicit container_name with a service Accorda is about to deploy is only
+// force-removed when it carries this label (so Accorda never deletes a
+// container it did not create, docs/DECISIONS.md #54). The label is set via
+// the rendered deploy Compose file so it travels with the container regardless
+// of which Compose project Accorda later manages it under.
+const accordaManagedLabel = "accorda.managed"
+
+// accordaDeploymentLabel is the Docker label Accorda stamps on every container
+// it deploys, carrying the deployment identifier (e.g. "dep_xxx") that links
+// the live container back to its deployment receipt journal entry
+// (docs/ACCORDA.md §7). It is informational and never participates in desired
+// state, hashing, or drift comparison. Only set when the plan carries a
+// DeploymentID, so direct-construction paths that assign none are unaffected.
+const accordaDeploymentLabel = "accorda.deployment_id"
 
 // projectFilters returns the Docker filter args that select all containers
 // belonging to the given Compose project, including stopped ones so that
