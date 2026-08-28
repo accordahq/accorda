@@ -349,13 +349,20 @@ Decision:
 - Before `docker compose up`, `Apply` scans the daemon for containers that claim
   an explicit `container_name` a service is about to create but that belong to a
   **different** project, and force-removes them **only** when they carry the
-  `accorda.managed` label. A container without the label is never touched, even
-  on a name collision (`internal/targets/compose/reclaim.go`).
+  `accorda.managed` label **and** their Compose working directory matches this
+  target's Compose file directory (`com.docker.compose.project.working_dir`).
+  The working-dir match is the ownership-intent guard: a stale container from a
+  prior rename of the SAME Compose file shares the directory, while a live
+  container from a sibling Accorda project on the same daemon (which reuses the
+  same explicit `container_name` but a different Compose file) does not, so it
+  is never reclaimed. A container without the label is never touched, even on a
+  name collision (`internal/targets/compose/reclaim.go`).
 - Before removing a stale owned container, its named volumes are migrated to the
-  current project's volume namespace (via a throwaway busybox
-  `cp -a /from/. /to/`), so a renamed service keeps its data. Bind mounts and
-  non-project volumes are left untouched. A failed volume migration aborts the
-  reclaim so data is not silently dropped.
+  current project's volume namespace (via a throwaway busybox that clears the
+  destination before copying), so a renamed service keeps its data and a
+  partially populated destination from an earlier failed attempt cannot silently
+  merge. Bind mounts and non-project volumes are left untouched. A failed
+  migration aborts the reclaim so data is not silently dropped.
 - Reclaim uses a plain `docker` CLI runner seam (`dockerCli`), mirroring the
   image target's `Runner`, so the SDK `Client` interface is unchanged.
 

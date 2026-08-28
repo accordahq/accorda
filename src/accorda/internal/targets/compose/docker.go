@@ -32,6 +32,15 @@ func newDockerClient() (dockerClient, error) {
 // without relying on naming conventions.
 const composeProjectLabel = "com.docker.compose.project"
 
+// composeProjectWorkingDirLabel is the Docker label Compose v2 sets on every
+// container it manages, carrying the directory Compose resolved the project
+// from. Accorda uses it as the ownership-intent signal when reclaiming a stale
+// container: a stale container from a prior rename of the SAME Compose file
+// shares this target's working directory, while a live container from a
+// sibling Accorda project (a different Compose file that happens to reuse the
+// same explicit container_name) does not.
+const composeProjectWorkingDirLabel = "com.docker.compose.project.working_dir"
+
 // composeServiceLabel is the Docker label carrying the Compose service name
 // (the key in the Compose file's `services:` map). Accorda maps it back to
 // the desired-state service name so runtime state aligns with the desired

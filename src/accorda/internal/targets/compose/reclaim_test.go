@@ -3,6 +3,8 @@ package compose
 import (
 	"context"
 	"errors"
+	"maps"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -26,7 +28,9 @@ func (f *fakeDockerCLI) Run(_ context.Context, args ...string) error {
 
 // reclaimHarness builds a Compose target with a fake Docker client (a stale
 // container with the given labels + project) and a fake docker CLI, all wired
-// through a real deploy file declaring the services.
+// through a real deploy file declaring the services. The stale container's
+// working-dir label is set to match the target's file dir, as a stale
+// container from a prior rename of the same Compose file would.
 func reclaimHarness(t *testing.T, staleLabels map[string]string, staleProject string) (*Target, *fakeDockerClient, *fakeDockerCLI) {
 	t.Helper()
 	path := writeSourceCompose(t, `services:
@@ -34,19 +38,23 @@ func reclaimHarness(t *testing.T, staleLabels map[string]string, staleProject st
     image: postgres:17
     container_name: sonarqube_db
 `)
+	labels := map[string]string{
+		composeProjectWorkingDirLabel: filepath.Dir(path),
+	}
+	maps.Copy(labels, staleLabels)
 	cli := &fakeDockerClient{
 		containers: []container.Summary{
 			{
 				ID:     "stale-id",
 				Names:  []string{"/sonarqube_db"},
-				Labels: staleLabels,
+				Labels: labels,
 			},
 		},
 		inspected: map[string]container.InspectResponse{
 			"stale-id": {
 				Config: &container.Config{
 					Image:  "postgres:17",
-					Labels: staleLabels,
+					Labels: labels,
 				},
 				Mounts: []container.MountPoint{
 					{Type: "volume", Name: staleProject + "_postgresql_data"},
@@ -81,13 +89,17 @@ func TestReclaimStaleContainers_RemovesOwnedStaleAndMigratesVolume(t *testing.T)
 		t.Fatalf("reclaimStaleContainers: %v", err)
 	}
 
-	// Volume migration copy must target the current project namespace.
+	// Volume migration copy must target the current project namespace and
+	// clear the destination before copying (no silent merge).
 	if len(dcli.calls) < 1 {
 		t.Fatalf("docker cli calls = %v, want a volume copy + rm", dcli.calls)
 	}
 	volCall := dcli.calls[0]
 	if !hasVolumes(volCall, "local-developer-sonar_postgresql_data", "dev-sonar_postgresql_data") {
-		t.Errorf("volume migration call = %v, want copy from old to new project volume", volCall)
+		t.Errorf("volume migration call = %v, want clear+copy from old to new project volume", volCall)
+	}
+	if !hasClearThenCopy(volCall) {
+		t.Errorf("volume migration call = %v, want rm -rf /to/. && cp -a /from/. /to/", volCall)
 	}
 	// The stale container must be force-removed by name.
 	if !hasRm(dcli.calls, "sonarqube_db") {
@@ -112,6 +124,47 @@ func TestReclaimStaleContainers_NeverRemovesUnownedContainer(t *testing.T) {
 	}
 	if len(dcli.calls) != 0 {
 		t.Errorf("docker cli calls = %v, want none (unowned container must not be touched)", dcli.calls)
+	}
+}
+
+// A container that carries the ownership label but resolves to a DIFFERENT
+// Compose working directory is a live sibling project's container (it reuses
+// the same explicit container_name). Accorda must never reclaim it, even
+// though it is owned by Accorda.
+func TestReclaimStaleContainers_NeverRemovesSiblingProjectContainer(t *testing.T) {
+	path := writeSourceCompose(t, `services:
+  db:
+    image: postgres:17
+    container_name: sonarqube_db
+`)
+	// The stale container lives in a different directory from this target's
+	// Compose file, as a sibling project on the same daemon would.
+	siblingDir := filepath.Dir(path) + "-sibling"
+	cli := &fakeDockerClient{
+		containers: []container.Summary{
+			{
+				ID:    "sibling-id",
+				Names: []string{"/sonarqube_db"},
+				Labels: map[string]string{
+					composeProjectLabel:           "other-project",
+					accordaManagedLabel:           "true",
+					composeServiceLabel:           "db",
+					composeProjectWorkingDirLabel: siblingDir,
+				},
+			},
+		},
+	}
+	dcli := &fakeDockerCLI{}
+	tgt, err := New(config.Target{Type: config.TargetCompose, File: path},
+		WithDockerClient(cli), WithDockerCLI(dcli), WithProjectName("dev-sonar"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := tgt.reclaimStaleContainers(context.Background(), tgt.file, []string{"db"}); err != nil {
+		t.Fatalf("reclaimStaleContainers: %v", err)
+	}
+	if len(dcli.calls) != 0 {
+		t.Errorf("docker cli calls = %v, want none (sibling project container must not be touched)", dcli.calls)
 	}
 }
 
@@ -215,6 +268,17 @@ func hasVolumes(call []string, from, to string) bool {
 		joined += a + " "
 	}
 	return containsSub(joined, "-v "+from+":/from") && containsSub(joined, "-v "+to+":/to")
+}
+
+// hasClearThenCopy reports whether the volume-migration invocation clears the
+// destination before copying, so a partially populated destination cannot
+// silently merge with the source.
+func hasClearThenCopy(call []string) bool {
+	joined := ""
+	for _, a := range call {
+		joined += a + " "
+	}
+	return containsSub(joined, "rm -rf /to/. && cp -a /from/. /to/")
 }
 
 func hasRm(calls [][]string, name string) bool {
