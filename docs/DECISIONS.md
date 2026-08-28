@@ -177,17 +177,17 @@ sharing state between targets. Files: `internal/config`, `internal/targets`,
 `sync.go`, `diff.go`, `plan.go`, `status.go`, `history.go`, `inspect.go`,
 `logs.go`, `doctor.go`).
 
-Note on scoping: the receipt journal keys by the target's type + configured
-path/image, so two Compose targets in the same directory get distinct journals.
-The deployment lock, however, keys by the driver's `LockIdentityFromConfig`,
-which for the Compose target is the Compose project name (derived from the
-directory basename), so two Compose files in the *same* directory share one
-lock and serialize each other. This is intentional: same-directory Compose
-files belong to the same Compose project and would collide on Docker labels and
-`--remove-orphans` anyway. The divergence between path-scoped receipts and
-project-name-scoped locks means same-directory Compose targets reconcile
-sequentially even though their journals are independent; distinct directories
-reconcile in parallel.
+Target naming: a named target drives both the Compose project name and the
+image container name. For a named Compose target the Compose project name is
+`base+"-"+targetName` (for example `aura-qa`), so several Compose targets in one
+project deploy into isolated Compose namespaces and do not collide on Docker
+labels or `--remove-orphans`; the deployment lock keys off the same
+disambiguated identity. For an image target the container is named after the
+target (for example `edge-agent`) and carries an `accorda.image.project`
+label with the project (group) name, so the project is the logical group and
+the target name identifies the specific container instance. A single unnamed
+target preserves the legacy derivation (project name for Compose, project
+directory basename for image).
 
 ---
 
