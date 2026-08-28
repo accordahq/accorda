@@ -342,6 +342,10 @@ Decision:
   the label travels with the container regardless of the Compose project Accorda
   later manages it under. This is the durable ownership proof
   (`internal/targets/compose/deploy.go`, `docker.go`).
+- Each deployed container also carries `accorda.deployment_id=<dep>` (when a
+  deployment ID is assigned), linking the live container back to its receipt
+  journal entry for ops traceability. The label is informational only: it never
+  enters desired state, hashing, or drift comparison.
 - Before `docker compose up`, `Apply` scans the daemon for containers that claim
   an explicit `container_name` a service is about to create but that belong to a
   **different** project, and force-removes them **only** when they carry the

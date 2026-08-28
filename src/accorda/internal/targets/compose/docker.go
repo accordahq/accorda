@@ -48,6 +48,14 @@ const composeServiceLabel = "com.docker.compose.service"
 // of which Compose project Accorda later manages it under.
 const accordaManagedLabel = "accorda.managed"
 
+// accordaDeploymentLabel is the Docker label Accorda stamps on every container
+// it deploys, carrying the deployment identifier (e.g. "dep_xxx") that links
+// the live container back to its deployment receipt journal entry
+// (docs/ACCORDA.md §7). It is informational and never participates in desired
+// state, hashing, or drift comparison. Only set when the plan carries a
+// DeploymentID, so direct-construction paths that assign none are unaffected.
+const accordaDeploymentLabel = "accorda.deployment_id"
+
 // projectFilters returns the Docker filter args that select all containers
 // belonging to the given Compose project, including stopped ones so that
 // drift (a manually stopped service) is observable rather than hidden

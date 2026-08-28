@@ -2,6 +2,7 @@ package compose
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,7 @@ import (
 // #54). The deploy file is written next to the source so Compose's
 // relative-path resolution (build contexts, volumes, env_file) still resolves
 // against the same checkout root (docs/DECISIONS.md #23).
-func renderDeployCompose(sourceFile string, overrides map[string]config.ServiceOverride) (string, error) {
+func renderDeployCompose(sourceFile string, overrides map[string]config.ServiceOverride, deploymentID string) (string, error) {
 	data, err := os.ReadFile(sourceFile)
 	if err != nil {
 		return "", fmt.Errorf("compose: read source for deploy render: %w", err)
@@ -45,7 +46,7 @@ func renderDeployCompose(sourceFile string, overrides map[string]config.ServiceO
 		if env, ok := mergedEnv[name]; ok {
 			m["environment"] = mergeServiceEnv(m["environment"], env)
 		}
-		m["labels"] = withManagedLabel(m["labels"])
+		m["labels"] = withAccordaLabels(m["labels"], deploymentID)
 		services[name] = m
 	}
 	doc["services"] = services
@@ -60,19 +61,21 @@ func renderDeployCompose(sourceFile string, overrides map[string]config.ServiceO
 	return deployFile, nil
 }
 
-// withManagedLabel returns the given labels map (Compose labels: may be a map
-// or a list of KEY=VALUE strings) with the Accorda ownership label added,
-// preserving any existing labels. A service label declared in the Compose file
-// is stamped onto the container by Compose, so this marks the container as
-// owned by Accorda at creation time.
-func withManagedLabel(existing any) any {
+// withAccordaLabels returns the given labels map (Compose labels: may be a map
+// or a list of KEY=VALUE strings) with the Accorda ownership label added and,
+// when a deployment ID is supplied, the deployment identifier label added.
+// Existing labels are preserved. Service labels declared in the Compose file
+// are stamped onto the container by Compose, so this marks the container as
+// owned by Accorda and ties it to its deployment at creation time.
+func withAccordaLabels(existing any, deploymentID string) any {
 	labels := normalizeLabelsValue(existing)
 	labels[accordaManagedLabel] = "true"
+	if deploymentID != "" {
+		labels[accordaDeploymentLabel] = deploymentID
+	}
 	// Compose accepts a map form for labels.
 	out := make(map[string]string, len(labels))
-	for k, v := range labels {
-		out[k] = v
-	}
+	maps.Copy(out, labels)
 	return out
 }
 

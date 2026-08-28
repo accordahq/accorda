@@ -291,6 +291,9 @@ func TestComposeTarget_RenameReclaimsOwnedStaleContainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new Plan: %v", err)
 	}
+	// Assign a deployment ID the way the reconcile loop does, so Apply can
+	// stamp it as the accorda.deployment_id label (docs/ACCORDA.md §7).
+	newPlan.DeploymentID = "dep_rename_new"
 	if err := newTgt.Apply(ctx, newPlan); err != nil {
 		t.Fatalf("new Apply: %v", err)
 	}
@@ -303,5 +306,13 @@ func TestComposeTarget_RenameReclaimsOwnedStaleContainer(t *testing.T) {
 	}
 	if _, ok := runtime.Services["db"]; !ok {
 		t.Fatalf("new project runtime missing db service: %+v", runtime.Services)
+	}
+
+	// The recreated container must carry the ownership and deployment labels.
+	if err := cli.Run(ctx, "inspect", "--format", "{{index .Config.Labels \""+accordaManagedLabel+"\"}}", "rename-db"); err != nil {
+		t.Fatalf("new container should carry accorda.managed label: %v", err)
+	}
+	if err := cli.Run(ctx, "inspect", "--format", "{{index .Config.Labels \""+accordaDeploymentLabel+"\"}}", "rename-db"); err != nil {
+		t.Fatalf("new container should carry accorda.deployment_id label: %v", err)
 	}
 }

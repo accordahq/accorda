@@ -19,7 +19,7 @@ func TestRenderDeployCompose_NoOverrides_StillStampsOwnershipLabel(t *testing.T)
     environment:
       MODE: production
 `)
-	deployFile, err := renderDeployCompose(source, nil)
+	deployFile, err := renderDeployCompose(source, nil, "dep_abc")
 	if err != nil {
 		t.Fatalf("renderDeployCompose: %v", err)
 	}
@@ -34,9 +34,35 @@ func TestRenderDeployCompose_NoOverrides_StillStampsOwnershipLabel(t *testing.T)
 	if got := labels[accordaManagedLabel]; got != "true" {
 		t.Errorf("accorda.managed label = %v, want true", got)
 	}
+	if got := labels[accordaDeploymentLabel]; got != "dep_abc" {
+		t.Errorf("accorda.deployment_id label = %v, want dep_abc", got)
+	}
 	// The env override path must not clobber the ownership label either.
 	if _, ok := svc["environment"]; !ok {
 		t.Errorf("environment should be preserved when no overrides")
+	}
+}
+
+func TestRenderDeployCompose_EmptyDeploymentID_Omitted(t *testing.T) {
+	source := writeSourceCompose(t, `services:
+  api:
+    image: api:1
+`)
+	deployFile, err := renderDeployCompose(source, nil, "")
+	if err != nil {
+		t.Fatalf("renderDeployCompose: %v", err)
+	}
+	svc := readDeployService(t, deployFile, "api")
+	labels, ok := svc["labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("deploy service %q missing labels map: %v", "api", svc["labels"])
+	}
+	// Ownership label is always present; deployment ID is omitted when empty.
+	if got := labels[accordaManagedLabel]; got != "true" {
+		t.Errorf("accorda.managed label = %v, want true", got)
+	}
+	if _, present := labels[accordaDeploymentLabel]; present {
+		t.Errorf("accorda.deployment_id label should be omitted when deployment ID is empty")
 	}
 }
 
@@ -51,7 +77,7 @@ func TestRenderDeployCompose_MergesInlineEnv(t *testing.T) {
 	overrides := map[string]config.ServiceOverride{
 		"api": {Env: map[string]string{"MODE": "staging", "NEW_KEY": "added"}},
 	}
-	deployFile, err := renderDeployCompose(source, overrides)
+	deployFile, err := renderDeployCompose(source, overrides, "dep_abc")
 	if err != nil {
 		t.Fatalf("renderDeployCompose: %v", err)
 	}
@@ -85,7 +111,7 @@ func TestRenderDeployCompose_MergesEnvFile(t *testing.T) {
 	overrides := map[string]config.ServiceOverride{
 		"api": {EnvFiles: []config.EnvFileRef{{Path: envFile}}},
 	}
-	deployFile, err := renderDeployCompose(source, overrides)
+	deployFile, err := renderDeployCompose(source, overrides, "dep_abc")
 	if err != nil {
 		t.Fatalf("renderDeployCompose: %v", err)
 	}
@@ -114,7 +140,7 @@ func TestRenderDeployCompose_InlineOverridesEnvFile(t *testing.T) {
 			EnvFiles: []config.EnvFileRef{{Path: envFile}},
 		},
 	}
-	deployFile, err := renderDeployCompose(source, overrides)
+	deployFile, err := renderDeployCompose(source, overrides, "dep_abc")
 	if err != nil {
 		t.Fatalf("renderDeployCompose: %v", err)
 	}
@@ -136,7 +162,7 @@ func TestRenderDeployCompose_SkipsUnknownService(t *testing.T) {
 	overrides := map[string]config.ServiceOverride{
 		"nonexistent": {Env: map[string]string{"KEY": "val"}},
 	}
-	deployFile, err := renderDeployCompose(source, overrides)
+	deployFile, err := renderDeployCompose(source, overrides, "dep_abc")
 	if err != nil {
 		t.Fatalf("renderDeployCompose: %v", err)
 	}
@@ -208,7 +234,7 @@ func TestRenderDeployCompose_DeployFilePermissions(t *testing.T) {
 	overrides := map[string]config.ServiceOverride{
 		"api": {Env: map[string]string{"KEY": "val"}},
 	}
-	deployFile, err := renderDeployCompose(source, overrides)
+	deployFile, err := renderDeployCompose(source, overrides, "dep_abc")
 	if err != nil {
 		t.Fatalf("renderDeployCompose: %v", err)
 	}
@@ -245,7 +271,7 @@ func TestRenderDeployCompose_MissingEnvFileIsError(t *testing.T) {
 	overrides := map[string]config.ServiceOverride{
 		"api": {EnvFiles: []config.EnvFileRef{{Path: "/nonexistent/path/file.env"}}},
 	}
-	_, err := renderDeployCompose(source, overrides)
+	_, err := renderDeployCompose(source, overrides, "dep_abc")
 	if err == nil {
 		t.Fatal("renderDeployCompose with missing env file should return error")
 	}

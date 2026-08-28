@@ -472,7 +472,7 @@ func (t *Target) Apply(ctx context.Context, p *plan.Plan) error {
 	if err := t.validateApply(p); err != nil {
 		return err
 	}
-	deployFile, err := t.renderDeployFile()
+	deployFile, err := t.renderDeployFile(p.DeploymentID)
 	if err != nil {
 		return err
 	}
@@ -594,10 +594,12 @@ func (t *Target) applyActionOn(ctx context.Context, a plan.Action, composeFile s
 }
 
 // renderDeployFile renders a deploy Compose file with per-service env
-// overrides merged in, or returns the source file unchanged when no
-// overrides are configured (docs/DECISIONS.md #23).
-func (t *Target) renderDeployFile() (string, error) {
-	return renderDeployCompose(t.file, t.serviceOverrides)
+// overrides merged in and the Accorda ownership/deployment labels stamped,
+// or returns the source file unchanged when no overrides are configured
+// (docs/DECISIONS.md #23). deploymentID is stamped as the
+// accorda.deployment_id label when non-empty.
+func (t *Target) renderDeployFile(deploymentID string) (string, error) {
+	return renderDeployCompose(t.file, t.serviceOverrides, deploymentID)
 }
 
 // runnerFor returns the compose runner scoped to the given file. When the file
