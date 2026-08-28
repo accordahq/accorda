@@ -1,0 +1,59 @@
+name: Release
+
+# Build static Linux binaries and publish a GitHub release whenever a `v*`
+# tag is pushed (docs/ACCORDA.md §23). The tag is created by
+# `scripts/tag.sh`, which validates the working tree and computes the next
+# semantic version. The release bakes the exact tag into the binary via
+# `-ldflags -X main.buildVersion`, so `accorda version` reports the release
+# version rather than a VCS fallback.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
+      - name: Start Docker daemon
+        run: |
+          sudo systemctl start docker
+          docker info
+
+      # Release only healthy code: run the same full validation as the Go CI
+      # workflow so a broken tagged commit is never published.
+      - name: Run full validation
+        run: scripts/test.sh
+
+      - name: Build static Linux binaries
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          cd src/accorda
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w -X main.buildVersion=${version}" \
+              -o "dist/accorda-linux-${arch}" ./cmd/accorda
+          done
+          (cd dist && sha256sum accorda-linux-* > checksums.txt)
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            src/accorda/dist/accorda-linux-* \
+            src/accorda/dist/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

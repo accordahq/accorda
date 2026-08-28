@@ -63,6 +63,24 @@ go install ./cmd/accorda
 `go install` places the binary in `$(go env GOPATH)/bin`. The build embeds VCS
 revision info, so `accorda version` reports the commit it was built from.
 
+## Releases & installation
+
+Releases are tag-driven. `scripts/tag.sh` validates the working tree, derives
+the next semantic version from the latest `v*` tag (or takes an explicit
+`vX.Y.Z`), and pushes the tag; the `Release` workflow
+(`.github/workflows/release.yml`) then builds static Linux binaries for
+`amd64` and `arm64`, runs the full validation, and publishes a GitHub release
+with checksums.
+
+On a Linux host, install the latest release and register it as a systemd
+service that runs the reconciliation loop on boot:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/accordahq/accorda/main/install.sh | sudo sh
+```
+
+See [Installation](docs/INSTALLATION.md) for specific versions, binary-only
+installs, and manual downloads.
 
 ## System requirements
 
