@@ -38,6 +38,16 @@ const composeProjectLabel = "com.docker.compose.project"
 // state keyed in Git.
 const composeServiceLabel = "com.docker.compose.service"
 
+// accordaManagedLabel is the Docker label Accorda stamps on every container
+// it deploys, marking it as owned by Accorda. It is the durable ownership
+// proof used when reclaiming stale containers: a container that collides by
+// explicit container_name with a service Accorda is about to deploy is only
+// force-removed when it carries this label (so Accorda never deletes a
+// container it did not create, docs/DECISIONS.md #54). The label is set via
+// the rendered deploy Compose file so it travels with the container regardless
+// of which Compose project Accorda later manages it under.
+const accordaManagedLabel = "accorda.managed"
+
 // projectFilters returns the Docker filter args that select all containers
 // belonging to the given Compose project, including stopped ones so that
 // drift (a manually stopped service) is observable rather than hidden

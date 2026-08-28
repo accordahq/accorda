@@ -12,19 +12,31 @@ import (
 	"accorda/internal/config"
 )
 
-func TestRenderDeployCompose_NoOverrides_ReturnsSource(t *testing.T) {
+func TestRenderDeployCompose_NoOverrides_StillStampsOwnershipLabel(t *testing.T) {
 	source := writeSourceCompose(t, `services:
   api:
     image: api:1
     environment:
       MODE: production
 `)
-	got, err := renderDeployCompose(source, nil)
+	deployFile, err := renderDeployCompose(source, nil)
 	if err != nil {
 		t.Fatalf("renderDeployCompose: %v", err)
 	}
-	if got != source {
-		t.Errorf("renderDeployCompose() = %q, want source %q (no overrides)", got, source)
+	if deployFile == source {
+		t.Fatal("deploy file path should differ from source even with no overrides (ownership label)")
+	}
+	svc := readDeployService(t, deployFile, "api")
+	labels, ok := svc["labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("deploy service %q missing labels map: %v", "api", svc["labels"])
+	}
+	if got := labels[accordaManagedLabel]; got != "true" {
+		t.Errorf("accorda.managed label = %v, want true", got)
+	}
+	// The env override path must not clobber the ownership label either.
+	if _, ok := svc["environment"]; !ok {
+		t.Errorf("environment should be preserved when no overrides")
 	}
 }
 
@@ -149,6 +161,22 @@ func writeSourceCompose(t *testing.T, content string) string {
 
 func readDeployServiceEnv(t *testing.T, deployFile, service string) map[string]string {
 	t.Helper()
+	svc := readDeployService(t, deployFile, service)
+	env, ok := svc["environment"].(map[string]any)
+	if !ok {
+		t.Fatalf("service %q has no environment map", service)
+	}
+	result := make(map[string]string, len(env))
+	for k, v := range env {
+		result[k] = stringOf(v)
+	}
+	return result
+}
+
+// readDeployService reads the deploy file and returns the raw map form of one
+// service so tests can assert any field (env, labels, etc.).
+func readDeployService(t *testing.T, deployFile, service string) map[string]any {
+	t.Helper()
 	data, err := os.ReadFile(deployFile)
 	if err != nil {
 		t.Fatalf("read deploy file: %v", err)
@@ -165,15 +193,7 @@ func readDeployServiceEnv(t *testing.T, deployFile, service string) map[string]s
 	if !ok {
 		t.Fatalf("service %q not found in deploy file", service)
 	}
-	env, ok := svc["environment"].(map[string]any)
-	if !ok {
-		t.Fatalf("service %q has no environment map", service)
-	}
-	result := make(map[string]string, len(env))
-	for k, v := range env {
-		result[k] = stringOf(v)
-	}
-	return result
+	return svc
 }
 
 func stringOf(v any) string {
