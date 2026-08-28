@@ -1489,11 +1489,19 @@ func TestValidateTargets_RequiresAtLeastOne(t *testing.T) {
 	}
 }
 
-// TestValidateTargets_RejectsCollidingIdentity verifies two targets with the
-// same configured path within one project are rejected, since they would
-// collide on the receipt journal and deployment lock (issue #103).
+// TestValidateTargets_RejectsCollidingIdentity verifies two targets whose
+// effective identity collides within one project are rejected, since they
+// would share a receipt journal and deployment lock (issue #103,
+// docs/DECISIONS.md #53). Identity is Target.Identity (Name when set, else the
+// derived type+path/image label), matching what receipts and locks key on.
 func TestValidateTargets_RejectsCollidingIdentity(t *testing.T) {
-	doc := `version: 1
+	cases := []struct {
+		name string
+		doc  string
+	}{
+		{
+			name: "same unnamed path",
+			doc: `version: 1
 environment: production
 source:
   type: git
@@ -1504,13 +1512,60 @@ targets:
     file: docker-compose.yml
   - type: ` + TargetCompose + `
     file: docker-compose.yml
-`
-	_, err := Parse([]byte(doc))
-	if err == nil {
-		t.Fatal("Parse succeeded with colliding target identities, want error")
+`,
+		},
+		{
+			name: "shared name different paths",
+			doc: `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+  branch: main
+targets:
+  - name: prod
+    type: ` + TargetCompose + `
+    file: a.yml
+  - name: prod
+    type: ` + TargetCompose + `
+    file: b.yml
+`,
+		},
 	}
-	if !strings.Contains(err.Error(), "collides") {
-		t.Fatalf("Parse error = %v, want a collision error", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.doc))
+			if err == nil {
+				t.Fatal("Parse succeeded with colliding target identities, want error")
+			}
+			if !strings.Contains(err.Error(), "collides") {
+				t.Fatalf("Parse error = %v, want a collision error", err)
+			}
+		})
+	}
+}
+
+// TestValidateTargets_AcceptsNamedTargetsSharingPath verifies that two named
+// targets with different names but the same configured path are accepted: they
+// have distinct Identities (and therefore distinct journals and locks), so
+// rejecting them would block a legal multi-target configuration (issue #103).
+func TestValidateTargets_AcceptsNamedTargetsSharingPath(t *testing.T) {
+	doc := `version: 1
+environment: production
+source:
+  type: git
+  url: git@github.com:acme/infra.git
+  branch: main
+targets:
+  - name: prod
+    type: ` + TargetCompose + `
+    file: docker-compose.yml
+  - name: canary
+    type: ` + TargetCompose + `
+    file: docker-compose.yml
+`
+	if _, err := Parse([]byte(doc)); err != nil {
+		t.Fatalf("Parse rejected distinct named targets sharing a path: %v", err)
 	}
 }
 

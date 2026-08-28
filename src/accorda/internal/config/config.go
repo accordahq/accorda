@@ -1050,7 +1050,11 @@ func validateSourceAuth(p *Project) error {
 // ValidateTargets checks the project's target list (docs/DECISIONS.md #53).
 // A project must declare at least one target, each target must be valid, and
 // target identities must be unique within the project so two targets that
-// would share a receipt journal or deployment lock are rejected.
+// would share a receipt journal or deployment lock are rejected. Uniqueness
+// is keyed on Target.Identity (the operator Name when set, else the derived
+// type+path/image label), which is the same contract receipts and locks key
+// on — so a legal config where two named targets share a path is accepted,
+// and two targets that collide on Name are rejected.
 func ValidateTargets(p *Project) error {
 	targets := p.NormalizedTargets()
 	if len(targets) == 0 {
@@ -1062,9 +1066,9 @@ func ValidateTargets(p *Project) error {
 		if err := validateTarget(tgt); err != nil {
 			return fmt.Errorf("config: targets[%d]: %w", i, err)
 		}
-		identity := tgt.ConfiguredPath()
+		identity := tgt.Identity()
 		if _, dup := seen[identity]; dup {
-			return fmt.Errorf("config: targets[%d] with path %q collides with another target (target identities must be unique within a project)", i, identity)
+			return fmt.Errorf("config: targets[%d] with identity %q collides with another target (target identities must be unique within a project)", i, identity)
 		}
 		seen[identity] = struct{}{}
 	}
