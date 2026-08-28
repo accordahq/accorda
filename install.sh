@@ -174,6 +174,8 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# ProtectSystem=strict makes the filesystem read-only; allow the state dir.
+ReadWritePaths=${state_dir}
 
 [Install]
 WantedBy=multi-user.target
