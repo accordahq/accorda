@@ -145,6 +145,14 @@ if command -v usermod >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; th
   echo "Added $service_user to the docker group"
 fi
 
+# Accorda keeps its runtime state (deployment locks, receipt journal) under
+# $XDG_STATE_HOME/accorda, defaulting to ~/.local/state. The unit hardens the
+# service with ProtectHome=true, which makes the home directory read-only, so
+# point XDG_STATE_HOME at a dedicated writable directory outside the home.
+state_dir="/var/lib/accorda"
+mkdir -p "$state_dir"
+chown "$service_user" "$state_dir"
+
 mkdir -p "$project_dir"
 chown "$service_user" "$project_dir"
 unit="/etc/systemd/system/${service_name}.service"
@@ -157,6 +165,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=${service_user}
+Environment=XDG_STATE_HOME=${state_dir}
 ExecStart=/usr/local/bin/accorda sync --watch --dir ${project_dir}
 Restart=on-failure
 RestartSec=5
