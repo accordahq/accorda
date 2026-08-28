@@ -146,12 +146,14 @@ if command -v usermod >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; th
 fi
 
 # Accorda keeps its runtime state (deployment locks, receipt journal) under
-# $XDG_STATE_HOME/accorda, defaulting to ~/.local/state. The unit hardens the
-# service with ProtectHome=true, which makes the home directory read-only, so
-# point XDG_STATE_HOME at a dedicated writable directory outside the home.
+# $XDG_STATE_HOME/accorda, defaulting to ~/.local/state, and its git cache
+# under $XDG_CACHE_HOME/accorda, defaulting to ~/.cache. The unit hardens the
+# service with ProtectHome=read-only, which makes the home directory
+# read-only, so point both at dedicated writable directories outside the home.
 state_dir="/var/lib/accorda"
-mkdir -p "$state_dir"
-chown "$service_user" "$state_dir"
+cache_dir="/var/cache/accorda"
+mkdir -p "$state_dir" "$cache_dir"
+chown "$service_user" "$state_dir" "$cache_dir"
 
 mkdir -p "$project_dir"
 chown "$service_user" "$project_dir"
@@ -166,6 +168,7 @@ Wants=network-online.target
 Type=simple
 User=${service_user}
 Environment=XDG_STATE_HOME=${state_dir}
+Environment=XDG_CACHE_HOME=${cache_dir}
 ExecStart=/usr/local/bin/accorda sync --watch --dir ${project_dir}
 Restart=on-failure
 RestartSec=5
@@ -175,8 +178,8 @@ ProtectSystem=strict
 # read-only (not inaccessible) so the service can read the SSH key from ~/.ssh
 ProtectHome=read-only
 PrivateTmp=true
-# ProtectSystem=strict makes the filesystem read-only; allow the state dir.
-ReadWritePaths=${state_dir}
+# ProtectSystem=strict makes the filesystem read-only; allow the state/cache dirs.
+ReadWritePaths=${state_dir} ${cache_dir}
 
 [Install]
 WantedBy=multi-user.target
