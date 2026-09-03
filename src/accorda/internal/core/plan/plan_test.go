@@ -354,3 +354,76 @@ func TestPlan_String(t *testing.T) {
 		t.Errorf("String() on nil plan = %q, want a nil marker", got)
 	}
 }
+
+func TestDriftActions_CompletedOneShot_IsNoop(t *testing.T) {
+	// A one-shot job (e.g. a DB migrator with restart: "no") that has exited
+	// with code 0 is completed/converged, not drift. It must not be started
+	// again every cycle (docs/ACCORDA.md §5.3).
+	desired := &state.DesiredState{
+		Commit: "abc",
+		Services: map[string]state.Service{
+			"migrator": {Image: "migrator:1", OneShot: true},
+		},
+	}
+	runtime := &state.RuntimeState{
+		Services: map[string]state.RuntimeService{
+			"migrator": {Status: "exited", Image: "migrator:1", ExitCode: 0},
+		},
+	}
+	actions := DriftActions(desired, nil, runtime)
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %d, want 1: %v", len(actions), actions)
+	}
+	if actions[0].Kind != ActionNoop {
+		t.Errorf("kind = %q, want %q", actions[0].Kind, ActionNoop)
+	}
+}
+
+func TestDriftActions_FailedOneShot_IsStart(t *testing.T) {
+	// A one-shot that exited with a non-zero code failed; it must be started
+	// again (and under drift: repair, re-run) rather than treated as
+	// completed (docs/ACCORDA.md §5.3).
+	desired := &state.DesiredState{
+		Commit: "abc",
+		Services: map[string]state.Service{
+			"migrator": {Image: "migrator:1", OneShot: true},
+		},
+	}
+	runtime := &state.RuntimeState{
+		Services: map[string]state.RuntimeService{
+			"migrator": {Status: "exited", Image: "migrator:1", ExitCode: 1},
+		},
+	}
+	actions := DriftActions(desired, nil, runtime)
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %d, want 1: %v", len(actions), actions)
+	}
+	if actions[0].Kind != ActionStart {
+		t.Errorf("kind = %q, want %q", actions[0].Kind, ActionStart)
+	}
+}
+
+func TestDriftActions_StoppedLongRunning_IsStart(t *testing.T) {
+	// Regression: a long-running service that is manually stopped
+	// (`docker compose stop api`) is still drift, not a completed one-shot.
+	// A service not declared as one-shot must never be treated as completed
+	// even when it exited with code 0 (docs/ACCORDA.md §5.3).
+	desired := &state.DesiredState{
+		Commit: "abc",
+		Services: map[string]state.Service{
+			"api": {Image: "api:1"},
+		},
+	}
+	runtime := &state.RuntimeState{
+		Services: map[string]state.RuntimeService{
+			"api": {Status: "exited", Image: "api:1", ExitCode: 0},
+		},
+	}
+	actions := DriftActions(desired, nil, runtime)
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %d, want 1: %v", len(actions), actions)
+	}
+	if actions[0].Kind != ActionStart {
+		t.Errorf("kind = %q, want %q", actions[0].Kind, ActionStart)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -255,6 +256,7 @@ func diffService(d, s state.Service) []diffNode {
 	fields = append(fields, diffJoined("label_file", externalFileIdentities(d.LabelFiles), externalFileIdentities(s.LabelFiles))...)
 	fields = append(fields, diffHealthcheck(d.Healthcheck, s.Healthcheck)...)
 	fields = append(fields, diffJoined("depends_on", d.DependsOn, s.DependsOn)...)
+	fields = append(fields, diffScalar("one_shot", strconv.FormatBool(d.OneShot), strconv.FormatBool(s.OneShot))...)
 	return fields
 }
 

@@ -75,6 +75,12 @@ type Service struct {
 	// DependsOn is the set of service names this service depends on,
 	// sorted for deterministic comparison and hashing (docs/DECISIONS.md #7).
 	DependsOn []string
+	// OneShot is true when the service is declared as a one-shot job that
+	// runs to completion and exits (for example a database migrator with
+	// `restart: "no"` in Compose). A one-shot that has exited with code 0 is
+	// considered completed/converged rather than drifted, so the deployment
+	// can reach SYNCED (docs/ACCORDA.md §5.3).
+	OneShot bool
 }
 
 // ExternalFile identifies a file-backed Compose input without retaining its
@@ -199,6 +205,11 @@ type RuntimeService struct {
 	// answer "exactly which image digest was running at time Y"
 	// (docs/ACCORDA.md §7). It is empty when the target cannot resolve it.
 	Digest string
+	// ExitCode is the container's exit code, populated when the container has
+	// exited. It lets Accorda distinguish a one-shot job that completed
+	// successfully (exit 0) from one that failed (non-zero), so a completed
+	// one-shot is not reported as drift (docs/ACCORDA.md §5.3).
+	ExitCode int
 }
 
 // Snapshot is a combined view of the three states Accorda reasons about. It
@@ -257,6 +268,7 @@ func (s Service) Clone() Service {
 		LabelFiles:  cloneExternalFiles(s.LabelFiles),
 		Healthcheck: s.Healthcheck.Clone(),
 		DependsOn:   append([]string(nil), s.DependsOn...),
+		OneShot:     s.OneShot,
 	}
 }
 

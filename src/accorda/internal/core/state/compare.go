@@ -39,6 +39,22 @@ func (r Result) String() string { return string(r) }
 // for running services so that Compare can distinguish them.
 const RunningStatus = "running"
 
+// ExitedStatus is the runtime status value that indicates a container has
+// exited. A one-shot job (docs/ACCORDA.md §5.3) that has exited with code 0
+// is completed/converged rather than drifted; a one-shot that exited with a
+// non-zero code is failed.
+const ExitedStatus = "exited"
+
+// OneShotCompleted reports whether a one-shot service has run to completion
+// and exited successfully. A service is a one-shot when its desired
+// declaration marks it as such (for example `restart: "no"` in Compose); it
+// is completed when the runtime reports it exited with code 0. A completed
+// one-shot is converged, not drift, so the deployment can reach SYNCED
+// (docs/ACCORDA.md §5.3).
+func OneShotCompleted(desired Service, runtime RuntimeService) bool {
+	return desired.OneShot && runtime.Status == ExitedStatus && runtime.ExitCode == 0
+}
+
 // Comparison is the structured outcome of Compare. It carries the aggregate
 // Result plus the per-service and per-attribute reasons that produced it, so
 // callers (CLI, events, history) can report exactly what diverged.
@@ -242,12 +258,16 @@ func compareService(
 	// DRIFTED: desired == deployed but runtime diverges. A service present
 	// at runtime but with a Status other than RunningStatus is drifted
 	// (docs/ACCORDA.md §5.3: a manually stopped container is drift even
-	// when its image is unchanged).
+	// when its image is unchanged). A one-shot job that has exited with code
+	// 0 is the exception: it is completed/converged, not drift, so the
+	// deployment can reach SYNCED.
 	switch {
 	case !rHas:
 		sc.Result = ResultDrifted
 		sc.Reasons = append(sc.Reasons, fmt.Sprintf(
 			"service %q: expected running but absent at runtime", name))
+	case OneShotCompleted(dsvc, rsvc):
+		// Completed one-shot: converged, not drift.
 	case rsvc.Status != RunningStatus:
 		sc.Result = ResultDrifted
 		sc.Reasons = append(sc.Reasons, fmt.Sprintf(

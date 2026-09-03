@@ -366,7 +366,10 @@ func unionServiceNames(desired *state.DesiredState, runtime *state.RuntimeState)
 
 // buildRow derives a single service row. State and image come from the
 // running container when present; the declared image from Git fills in when
-// the service is not running. Missing fields get a stable placeholder.
+// the service is not running. A one-shot job that has exited with code 0 is
+// reported as "completed" rather than "exited", so a finished migrator is
+// not shown as a red drifted service (docs/ACCORDA.md §5.3). Missing fields
+// get a stable placeholder.
 func buildRow(n string, desired *state.DesiredState, runtime *state.RuntimeState, hc *health.Health) statusService {
 	row := statusService{name: n}
 	if svc, ok := runtimeService(runtime, n); ok {
@@ -374,6 +377,9 @@ func buildRow(n string, desired *state.DesiredState, runtime *state.RuntimeState
 		row.image = svc.Image
 		if sh, ok := healthService(hc, n); ok {
 			row.health = string(sh.Status)
+		}
+		if dsvc, ok := desiredService(desired, n); ok && state.OneShotCompleted(dsvc, svc) {
+			row.state = "completed"
 		}
 	}
 	if row.image == "" {
@@ -473,11 +479,11 @@ func runtimeColor(label string) string {
 	}
 }
 
-// stateColor maps a per-service state to a terminal color: running green,
-// exited/absent red, other plain.
+// stateColor maps a per-service state to a terminal color: running and
+// completed green, exited/absent red, other plain.
 func stateColor(state string) string {
 	switch state {
-	case "running":
+	case "running", "completed":
 		return format.Green
 	case "exited", "absent":
 		return format.Red

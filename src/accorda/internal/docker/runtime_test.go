@@ -121,3 +121,33 @@ func TestMergeRuntime_AgreeIsShared(t *testing.T) {
 		t.Errorf("MergeRuntime = %+v, want %+v", got, a)
 	}
 }
+
+func TestRuntimeService_ExitCode(t *testing.T) {
+	// A one-shot job that exited surfaces its exit code so Accorda can
+	// distinguish a completed (exit 0) job from a failed (non-zero) one
+	// (docs/ACCORDA.md §5.3).
+	got := RuntimeService(container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			Image: "sha256:migrator",
+			State: &container.State{Status: "exited", ExitCode: 0},
+		},
+		Config: &container.Config{Image: "migrator:1"},
+	})
+	if got.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", got.ExitCode)
+	}
+	if got.Status != "exited" {
+		t.Errorf("Status = %q, want %q", got.Status, "exited")
+	}
+}
+
+func TestMergeRuntime_ExitCodeDisagreementIsDegraded(t *testing.T) {
+	// Replicas that exited with different codes disagree and must surface as
+	// degraded rather than silently letting one win.
+	a := state.RuntimeService{Status: "exited", Health: "", Image: "migrator:1", ExitCode: 0}
+	b := state.RuntimeService{Status: "exited", Health: "", Image: "migrator:1", ExitCode: 1}
+	want := state.RuntimeService{Status: degradedStatus, Health: "", Image: "migrator:1"}
+	if got := MergeRuntime(a, b); !reflect.DeepEqual(got, want) {
+		t.Errorf("MergeRuntime = %+v, want %+v", got, want)
+	}
+}
