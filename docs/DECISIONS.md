@@ -373,6 +373,40 @@ Containers deployed before this change (no label) require a one-time manual
 teardown; the label protects all future deployments. Files:
 `internal/targets/compose/{reclaim.go,reclaim_test.go,deploy.go,docker.go}`.
 
+### 57. One-shot services that exit 0 are completed, not drift
+
+Issue #111 (§5.3): a one-shot job (e.g. a DB migrator with `restart: "no"`)
+runs once, exits 0, and must be treated as completed/converged rather than
+drift, so the deployment can reach SYNCED. The desired state declares intent
+and the runtime exit code confirms success.
+
+Decision:
+
+- `state.Service` gains `OneShot bool`, populated by the Compose parser from
+  `restart: "no"` (`isOneShot` in `internal/targets/compose/parse.go`). It is
+  part of the canonical hash and the `diff` output, so a restart-policy change
+  is a real config change.
+- `state.RuntimeService` gains `ExitCode int`, surfaced by the shared Docker
+  runtime mapping from `ContainerState.ExitCode`
+  (`internal/docker/runtime.go`). `MergeRuntime` treats an exit-code
+  disagreement between replicas as degraded.
+- `state.OneShotCompleted(desired, runtime)` reports a one-shot that exited
+  with code 0. `state.Compare` and `plan.DriftActions` treat it as converged
+  (SYNCED / Noop) instead of drifted/started. A one-shot that exited non-zero
+  stays drifted/started (re-run under `drift: repair`). A long-running service
+  that is manually stopped is still drift even when it exited 0, because it is
+  not declared one-shot (regression preserved).
+- A completed one-shot has no healthcheck, so it reports `StatusUnknown`,
+  which does not block VERIFYING/SYNCED (only `StatusUnhealthy` fails).
+- `accorda status` reports a completed one-shot as `completed` (green) rather
+  than `exited` (red).
+
+Consequence: one-shot jobs converge instead of looping on a `start` action
+every cycle, while the desired-state declaration keeps the long-running
+stopped-service drift case intact. Files: `internal/core/state/{state,compare,hash}.go`,
+`internal/core/plan/plan.go`, `internal/targets/compose/parse.go`,
+`internal/docker/runtime.go`, `cmd/accorda/{status,diff}.go`.
+
 ---
 
 ## Core — reconciliation

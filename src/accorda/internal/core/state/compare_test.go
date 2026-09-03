@@ -313,3 +313,58 @@ func TestCompare_ReasonsAreSorted(t *testing.T) {
 		t.Fatalf("Reasons not sorted: %v", cmp.Reasons)
 	}
 }
+
+func TestCompare_CompletedOneShot_IsSynced(t *testing.T) {
+	// A one-shot job (e.g. a DB migrator with restart: "no") that has exited
+	// with code 0 is completed/converged, not drift, so the deployment can
+	// reach SYNCED (docs/ACCORDA.md §5.3).
+	dSvcs := map[string]Service{"migrator": {Image: "migrator:1", OneShot: true}}
+	cmp := Compare(
+		desired("a84fd21", dSvcs),
+		deployed("dep_1", "a84fd21", dSvcs),
+		runtime(map[string]RuntimeService{"migrator": {Status: "exited", Image: "migrator:1", ExitCode: 0}}),
+	)
+	if cmp.Result != ResultSynced {
+		t.Fatalf("Result = %s, want %s", cmp.Result, ResultSynced)
+	}
+	if got := cmp.Services["migrator"].Result; got != ResultSynced {
+		t.Fatalf("migrator: %s, want %s", got, ResultSynced)
+	}
+}
+
+func TestCompare_FailedOneShot_IsDrifted(t *testing.T) {
+	// A one-shot that exited with a non-zero code failed; it is drift, not
+	// completed, so it can be re-run under drift: repair (docs/ACCORDA.md
+	// §5.3).
+	dSvcs := map[string]Service{"migrator": {Image: "migrator:1", OneShot: true}}
+	cmp := Compare(
+		desired("a84fd21", dSvcs),
+		deployed("dep_1", "a84fd21", dSvcs),
+		runtime(map[string]RuntimeService{"migrator": {Status: "exited", Image: "migrator:1", ExitCode: 1}}),
+	)
+	if cmp.Result != ResultDrifted {
+		t.Fatalf("Result = %s, want %s", cmp.Result, ResultDrifted)
+	}
+	if got := cmp.Services["migrator"].Result; got != ResultDrifted {
+		t.Fatalf("migrator: %s, want %s", got, ResultDrifted)
+	}
+}
+
+func TestCompare_StoppedLongRunning_IsDrifted(t *testing.T) {
+	// Regression: a long-running service that is manually stopped
+	// (`docker compose stop api`) is still drift even when it exited with
+	// code 0, because it is not declared as a one-shot (docs/ACCORDA.md
+	// §5.3).
+	svcs := map[string]Service{"api": svc("api:1")}
+	cmp := Compare(
+		desired("a84fd21", svcs),
+		deployed("dep_1", "a84fd21", svcs),
+		runtime(map[string]RuntimeService{"api": {Status: "exited", Image: "api:1", ExitCode: 0}}),
+	)
+	if cmp.Result != ResultDrifted {
+		t.Fatalf("Result = %s, want %s", cmp.Result, ResultDrifted)
+	}
+	if got := cmp.Services["api"].Result; got != ResultDrifted {
+		t.Fatalf("api: %s, want %s", got, ResultDrifted)
+	}
+}

@@ -31,6 +31,7 @@ func RuntimeService(c container.InspectResponse) state.RuntimeService {
 		svc.Image = ImageReference(c)
 		if c.ContainerJSONBase.State != nil {
 			svc.Status = string(c.ContainerJSONBase.State.Status)
+			svc.ExitCode = c.ContainerJSONBase.State.ExitCode
 			if c.ContainerJSONBase.State.Health != nil {
 				h := string(c.ContainerJSONBase.State.Health.Status)
 				// "none" means no healthcheck; surface it as empty so callers
@@ -66,7 +67,7 @@ func ImageReference(c container.InspectResponse) string {
 // reports the degraded status so per-replica drift is surfaced rather than
 // silently overwritten.
 func MergeRuntime(a, b state.RuntimeService) state.RuntimeService {
-	if a.Status != b.Status || a.Health != b.Health {
+	if a.Status != b.Status || a.Health != b.Health || a.ExitCode != b.ExitCode {
 		return state.RuntimeService{Status: degradedStatus, Health: "", Image: a.Image}
 	}
 	return a

@@ -147,6 +147,43 @@ func TestBuildRows_AbsentRuntimeFallsBackToDesired(t *testing.T) {
 	}
 }
 
+func TestBuildRows_CompletedOneShot_IsCompleted(t *testing.T) {
+	// A one-shot job that has exited with code 0 is reported as "completed"
+	// rather than "exited", so a finished migrator is not shown as a red
+	// drifted service (docs/ACCORDA.md §5.3).
+	desired := &state.DesiredState{Services: map[string]state.Service{
+		"migrator": {Image: "migrator:1", OneShot: true},
+	}}
+	runtime := &state.RuntimeState{Services: map[string]state.RuntimeService{
+		"migrator": {Image: "migrator:1", Status: "exited", ExitCode: 0},
+	}}
+	rows := buildRows(desired, runtime, shareddocker.HealthFromRuntime(runtime, time.Unix(0, 0)))
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want one", len(rows))
+	}
+	if rows[0].state != "completed" {
+		t.Errorf("state = %q, want completed", rows[0].state)
+	}
+}
+
+func TestBuildRows_FailedOneShot_IsExited(t *testing.T) {
+	// A one-shot that exited with a non-zero code failed; it stays "exited"
+	// so the operator sees it as a problem (docs/ACCORDA.md §5.3).
+	desired := &state.DesiredState{Services: map[string]state.Service{
+		"migrator": {Image: "migrator:1", OneShot: true},
+	}}
+	runtime := &state.RuntimeState{Services: map[string]state.RuntimeService{
+		"migrator": {Image: "migrator:1", Status: "exited", ExitCode: 1},
+	}}
+	rows := buildRows(desired, runtime, shareddocker.HealthFromRuntime(runtime, time.Unix(0, 0)))
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want one", len(rows))
+	}
+	if rows[0].state != "exited" {
+		t.Errorf("state = %q, want exited", rows[0].state)
+	}
+}
+
 func TestWriteStatus_ContainsExpectedColumns(t *testing.T) {
 	info := statusInfo{
 		Environment: "production",

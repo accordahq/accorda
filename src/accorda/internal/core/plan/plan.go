@@ -276,6 +276,12 @@ func DriftActions(desired *state.DesiredState, deployed *state.DeployedState, ru
 			// service must be recreated. This case follows the image check so
 			// an image change keeps its specific From/To detail.
 			actions = append(actions, Action{Kind: ActionRecreate, Service: name, Image: dsvc.Image})
+		case state.OneShotCompleted(dsvc, rsvc):
+			// A one-shot job that has exited with code 0 is completed, not
+			// drifted: it ran to completion and converged, so no action is
+			// needed (docs/ACCORDA.md §5.3). This case precedes the status
+			// check so a completed one-shot is not restarted every cycle.
+			actions = append(actions, NoopFor(name))
 		case rsvc.Status != state.RunningStatus:
 			// Present but stopped/exited with an unchanged image: drift, not
 			// convergence. Mirror compareService's status check so a manually

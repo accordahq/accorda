@@ -187,6 +187,36 @@ func TestControlledComposeEnvironment(t *testing.T) {
 	}
 }
 
+func TestParse_RestartNo_IsOneShot(t *testing.T) {
+	// A service with `restart: "no"` is a one-shot job that runs to
+	// completion and exits (docs/ACCORDA.md §5.3). It must be surfaced on
+	// the normalized service so Accorda treats a completed one-shot as
+	// converged rather than drift.
+	data := []byte(`services:
+  migrator:
+    image: migrator:1
+    restart: "no"
+  api:
+    image: api:1
+    restart: always
+  worker:
+    image: worker:1
+`)
+	services, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !services["migrator"].OneShot {
+		t.Errorf("migrator.OneShot = false, want true for restart: no")
+	}
+	if services["api"].OneShot {
+		t.Errorf("api.OneShot = true, want false for restart: always")
+	}
+	if services["worker"].OneShot {
+		t.Errorf("worker.OneShot = true, want false when restart is unspecified")
+	}
+}
+
 // assertAPIService checks the normalized fields of the `api` service.
 func assertAPIService(t *testing.T, api state.Service) {
 	t.Helper()

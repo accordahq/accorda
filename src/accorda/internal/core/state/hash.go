@@ -119,6 +119,10 @@ func (s Service) canonical() string {
 	}
 	b.WriteByte('\n')
 
+	b.WriteString("one_shot=")
+	b.WriteString(strconv.FormatBool(s.OneShot))
+	b.WriteByte('\n')
+
 	return b.String()
 }
 

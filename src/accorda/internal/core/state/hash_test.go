@@ -109,6 +109,7 @@ func TestService_Hash_FieldChangeChangesHash(t *testing.T) {
 		{"healthcheck test", func(s Service) Service { s.Healthcheck.Test = []string{"CMD", "wget"}; return s }},
 		{"healthcheck retries", func(s Service) Service { s.Healthcheck.Retries = 5; return s }},
 		{"depends_on", func(s Service) Service { s.DependsOn = []string{"redis"}; return s }},
+		{"one_shot", func(s Service) Service { s.OneShot = true; return s }},
 	}
 
 	baseHash := base.Hash()

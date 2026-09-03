@@ -206,11 +206,23 @@ func normalizeService(name string, sc types.ServiceConfig, workingDir string) (s
 		LabelFiles:  normalizeLabelFiles(sc.LabelFiles, workingDir),
 		Healthcheck: normalizeHealthcheck(sc.HealthCheck),
 		DependsOn:   normalizeDependsOn(sc.DependsOn),
+		OneShot:     isOneShot(sc.Restart),
 	}
 	if err := validateService(name, svc); err != nil {
 		return state.Service{}, err
 	}
 	return svc, nil
+}
+
+// isOneShot reports whether a Compose restart policy declares a one-shot job
+// that runs to completion and exits (docs/ACCORDA.md §5.3). A service with
+// `restart: "no"` (or the equivalent `restart: no`) is a one-shot: it is not
+// restarted by the engine, so once it exits it stays exited. Accorda treats a
+// one-shot that exited with code 0 as completed/converged rather than drift.
+// Any other policy (always, unless-stopped, on-failure) keeps the service
+// running or restarts it, so it is not a one-shot.
+func isOneShot(restart string) bool {
+	return restart == "no"
 }
 
 // validateService enforces the required-field rules the spec calls out for a
